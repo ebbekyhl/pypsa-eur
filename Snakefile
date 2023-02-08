@@ -25,6 +25,7 @@ ATLITE_NPROCESSES = config["atlite"].get("nprocesses", 4)
 
 
 wildcard_constraints:
+    wyear="[0-9]+m?",
     simpl="[a-zA-Z0-9]*|all",
     clusters="[0-9]+m?|all",
     ll="(v|c)([0-9\.]+|opt|all)|all",
@@ -33,20 +34,20 @@ wildcard_constraints:
 
 rule cluster_all_networks:
     input:
-        expand("networks/" + RDIR + "elec_s{simpl}_{clusters}.nc", **config["scenario"]),
+        expand("networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}.nc", **config["scenario"]),
 
 
 rule extra_components_all_networks:
     input:
         expand(
-            "networks/" + RDIR + "elec_s{simpl}_{clusters}_ec.nc", **config["scenario"]
+            "networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec.nc", **config["scenario"]
         ),
 
 
 rule prepare_all_networks:
     input:
         expand(
-            "networks/" + RDIR + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
+            "networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
             **config["scenario"]
         ),
 
@@ -54,7 +55,7 @@ rule prepare_all_networks:
 rule solve_all_networks:
     input:
         expand(
-            "results/networks/" + RDIR + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
+            "results/networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
             **config["scenario"]
         ),
 
@@ -218,15 +219,15 @@ if config["enable"].get("build_cutout", False):
         input:
             regions_onshore="resources/" + RDIR + "regions_onshore.geojson",
             regions_offshore="resources/" + RDIR + "regions_offshore.geojson",
-        output:
-            "cutouts/" + CDIR + "{cutout}.nc",
+        output: "cutouts/europe-{wyear}-era5.nc",
         log:
-            "logs/" + CDIR + "build_cutout/{cutout}.log",
+            #"logs/" + CDIR + "build_cutout/{cutout}.log",
+            "logs/" + "europe-{wyear}-era5" + ".log",
         benchmark:
-            "benchmarks/" + CDIR + "build_cutout_{cutout}"
+            "benchmarks/" + CDIR + "build_cutout_" + "europe-{wyear}-era5"
         threads: ATLITE_NPROCESSES
         resources:
-            mem_mb=ATLITE_NPROCESSES * 1000,
+            mem_mb=ATLITE_NPROCESSES * 2000,
         script:
             "scripts/build_cutout.py"
 
@@ -236,14 +237,14 @@ if config["enable"].get("retrieve_cutout", True):
     rule retrieve_cutout:
         input:
             HTTP.remote(
-                "zenodo.org/record/6382570/files/{cutout}.nc",
+                "zenodo.org/record/6382570/files/{cutouts}.nc",
                 keep_local=True,
                 static=True,
             ),
         output:
-            "cutouts/" + CDIR + "{cutout}.nc",
+            "cutouts/" + CDIR + "{cutouts}",
         log:
-            "logs/" + CDIR + "retrieve_cutout_{cutout}.log",
+            "logs/" + CDIR + "retrieve_cutout_{cutouts}.log",
         resources:
             mem_mb=5000,
         run:
@@ -273,7 +274,8 @@ if config["enable"].get("build_natura_raster", False):
     rule build_natura_raster:
         input:
             natura="data/bundle/natura/Natura2000_end2015.shp",
-            cutouts=expand("cutouts/" + CDIR + "{cutouts}.nc", **config["atlite"]),
+            #cutouts=expand("cutouts/" + CDIR + "{cutouts}.nc", **config["atlite"]),
+            cutouts=expand("cutouts/{cutouts}", **config['atlite'])
         output:
             "resources/" + RDIR + "natura.tiff",
         resources:
@@ -319,7 +321,9 @@ rule retrieve_ship_raster:
 rule build_ship_raster:
     input:
         ship_density="data/shipdensity_global.zip",
-        cutouts=expand("cutouts/" + CDIR + "{cutouts}.nc", **config["atlite"]),
+        #cutouts=expand("cutouts/{cutouts}", **config['atlite'])
+        cutouts=expand("cutouts/europe-2013-era5.nc", **config["atlite"]),
+        #cutouts=expand("cutouts/{cutouts}", **config['atlite'])
     output:
         "resources/" + RDIR + "shipdensity_raster.nc",
     log:
@@ -332,62 +336,211 @@ rule build_ship_raster:
         "scripts/build_ship_raster.py"
 
 
-rule build_renewable_profiles:
+# rule build_renewable_profiles:
+#     input:
+#         base_network="networks/" + RDIR + "base.nc",
+#         corine="data/bundle/corine/g250_clc06_V18_5.tif",
+#         natura=lambda w: (
+#             "resources/" + RDIR + "natura.tiff"
+#             if config["renewable"][w.technology]["natura"]
+#             else []
+#         ),
+#         gebco=lambda w: (
+#             "data/bundle/GEBCO_2014_2D.nc"
+#             if "max_depth" in config["renewable"][w.technology].keys()
+#             else []
+#         ),
+#         ship_density=lambda w: (
+#             "resources/" + RDIR + "shipdensity_raster.nc"
+#             if "ship_threshold" in config["renewable"][w.technology].keys()
+#             else []
+#         ),
+#         country_shapes="resources/" + RDIR + "country_shapes.geojson",
+#         offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
+#         regions=lambda w: (
+#             "resources/" + RDIR + "regions_onshore.geojson"
+#             if w.technology in ("onwind", "solar")
+#             else "resources/" + RDIR + "regions_offshore.geojson"
+#         ),
+#         cutout="cutouts/europe-{wyear}-era5.nc"
+#     output:
+#         profile="resources/" + RDIR + "profile_{wyear}_{technology}.nc",
+#     log:
+#         "logs/" + RDIR + "build_renewable_profile_{wyear}_{technology}.log",
+#     benchmark:
+#         "benchmarks/" + RDIR + "build_renewable_profiles_{wyear}_{technology}"
+#     threads: ATLITE_NPROCESSES
+#     resources:
+#         mem_mb=ATLITE_NPROCESSES * 5000,
+#     wildcard_constraints:
+#         technology="(?!hydro).*",  # Any technology other than hydro
+#     script:
+#         "scripts/build_renewable_profiles.py"
+
+rule build_renewable_profiles1:
     input:
         base_network="networks/" + RDIR + "base.nc",
+
         corine="data/bundle/corine/g250_clc06_V18_5.tif",
         natura=lambda w: (
             "resources/" + RDIR + "natura.tiff"
-            if config["renewable"][w.technology]["natura"]
+            if config["renewable"]['solar']["natura"]
             else []
         ),
         gebco=lambda w: (
             "data/bundle/GEBCO_2014_2D.nc"
-            if "max_depth" in config["renewable"][w.technology].keys()
+            if "max_depth" in config["renewable"]['solar'].keys()
             else []
         ),
         ship_density=lambda w: (
             "resources/" + RDIR + "shipdensity_raster.nc"
-            if "ship_threshold" in config["renewable"][w.technology].keys()
+            if "ship_threshold" in config["renewable"]['solar'].keys()
             else []
         ),
         country_shapes="resources/" + RDIR + "country_shapes.geojson",
         offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
-        regions=lambda w: (
-            "resources/" + RDIR + "regions_onshore.geojson"
-            if w.technology in ("onwind", "solar")
-            else "resources/" + RDIR + "regions_offshore.geojson"
-        ),
-        cutout=lambda w: "cutouts/"
-        + CDIR
-        + config["renewable"][w.technology]["cutout"]
-        + ".nc",
+        regions="resources/" + RDIR + "regions_onshore.geojson",
+        cutout="cutouts/europe-{wyear}-era5.nc"
     output:
-        profile="resources/" + RDIR + "profile_{technology}.nc",
+        profile="resources/" + RDIR + "profile_solar_{wyear}.nc",
     log:
-        "logs/" + RDIR + "build_renewable_profile_{technology}.log",
+        "logs/" + RDIR + "build_renewable_profile_solar_{wyear}.log",
     benchmark:
-        "benchmarks/" + RDIR + "build_renewable_profiles_{technology}"
+        "benchmarks/" + RDIR + "build_renewable_profiles_solar_{wyear}"
     threads: ATLITE_NPROCESSES
     resources:
         mem_mb=ATLITE_NPROCESSES * 5000,
-    wildcard_constraints:
-        technology="(?!hydro).*",  # Any technology other than hydro
+    # wildcard_constraints:
+    #     technology="(?!hydro).*",  # Any technology other than hydro
     script:
-        "scripts/build_renewable_profiles.py"
+        "scripts/build_renewable_profiles1.py"
 
+rule build_renewable_profiles2:
+    input:
+        base_network="networks/" + RDIR + "base.nc",
+
+        corine="data/bundle/corine/g250_clc06_V18_5.tif",
+        natura=lambda w: (
+            "resources/" + RDIR + "natura.tiff"
+            if config["renewable"]['onwind']["natura"]
+            else []
+        ),
+        gebco=lambda w: (
+            "data/bundle/GEBCO_2014_2D.nc"
+            if "max_depth" in config["renewable"]['onwind'].keys()
+            else []
+        ),
+        ship_density=lambda w: (
+            "resources/" + RDIR + "shipdensity_raster.nc"
+            if "ship_threshold" in config["renewable"]['onwind'].keys()
+            else []
+        ),
+        country_shapes="resources/" + RDIR + "country_shapes.geojson",
+        offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
+        regions="resources/" + RDIR + "regions_onshore.geojson",
+        cutout="cutouts/europe-{wyear}-era5.nc"
+    output:
+        profile="resources/" + RDIR + "profile_onwind_{wyear}.nc",
+    log:
+        "logs/" + RDIR + "build_renewable_profile_onwind_{wyear}.log",
+    benchmark:
+        "benchmarks/" + RDIR + "build_renewable_profiles_onwind_{wyear}"
+    threads: ATLITE_NPROCESSES
+    resources:
+        mem_mb=ATLITE_NPROCESSES * 5000,
+    #wildcard_constraints:
+    #    technology="(?!hydro).*",  # Any technology other than hydro
+    script:
+        "scripts/build_renewable_profiles2.py"
+
+rule build_renewable_profiles3:
+    input:
+        base_network="networks/" + RDIR + "base.nc",
+
+        corine="data/bundle/corine/g250_clc06_V18_5.tif",
+        natura=lambda w: (
+            "resources/" + RDIR + "natura.tiff"
+            if config["renewable"]['offwind-ac']["natura"]
+            else []
+        ),
+        gebco=lambda w: (
+            "data/bundle/GEBCO_2014_2D.nc"
+            if "max_depth" in config["renewable"]['offwind-ac'].keys()
+            else []
+        ),
+        ship_density=lambda w: (
+            "resources/" + RDIR + "shipdensity_raster.nc"
+            if "ship_threshold" in config["renewable"]['offwind-ac'].keys()
+            else []
+        ),
+        country_shapes="resources/" + RDIR + "country_shapes.geojson",
+        offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
+        regions="resources/" + RDIR + "regions_offshore.geojson",
+        cutout="cutouts/europe-{wyear}-era5.nc"
+    output:
+        profile="resources/" + RDIR + "profile_offwind-ac_{wyear}.nc",
+    log:
+        "logs/" + RDIR + "build_renewable_profile_offwind-ac_{wyear}.log",
+    benchmark:
+        "benchmarks/" + RDIR + "build_renewable_profiles_offwind-ac_{wyear}"
+    threads: ATLITE_NPROCESSES
+    resources:
+        mem_mb=ATLITE_NPROCESSES * 5000,
+    #wildcard_constraints:
+    #    technology="(?!hydro).*",  # Any technology other than hydro
+    script:
+        "scripts/build_renewable_profiles3.py"
+
+rule build_renewable_profiles4:
+    input:
+        base_network="networks/" + RDIR + "base.nc",
+
+        corine="data/bundle/corine/g250_clc06_V18_5.tif",
+        natura=lambda w: (
+            "resources/" + RDIR + "natura.tiff"
+            if config["renewable"]['offwind-dc']["natura"]
+            else []
+        ),
+        gebco=lambda w: (
+            "data/bundle/GEBCO_2014_2D.nc"
+            if "max_depth" in config["renewable"]['offwind-dc'].keys()
+            else []
+        ),
+        ship_density=lambda w: (
+            "resources/" + RDIR + "shipdensity_raster.nc"
+            if "ship_threshold" in config["renewable"]['offwind-dc'].keys()
+            else []
+        ),
+        country_shapes="resources/" + RDIR + "country_shapes.geojson",
+        offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
+        regions="resources/" + RDIR + "regions_offshore.geojson",
+        cutout="cutouts/europe-{wyear}-era5.nc"
+    output:
+        profile="resources/" + RDIR + "profile_offwind-dc_{wyear}.nc",
+    log:
+        "logs/" + RDIR + "build_renewable_profile_offwind-dc_{wyear}.log",
+    benchmark:
+        "benchmarks/" + RDIR + "build_renewable_profiles_offwind-dc_{wyear}"
+    threads: ATLITE_NPROCESSES
+    resources:
+        mem_mb=ATLITE_NPROCESSES * 5000,
+    #wildcard_constraints:
+    #    technology="(?!hydro).*",  # Any technology other than hydro
+    script:
+        "scripts/build_renewable_profiles4.py"
 
 rule build_hydro_profile:
     input:
         country_shapes="resources/" + RDIR + "country_shapes.geojson",
         eia_hydro_generation="data/eia_hydro_annual_generation.csv",
-        cutout=f"cutouts/" + CDIR + config["renewable"]["hydro"]["cutout"] + ".nc"
-        if "hydro" in config["renewable"]
-        else [],
+        #cutout=f"cutouts/" + CDIR + config["renewable"]["hydro"]["cutout"] + ".nc"
+        #if "hydro" in config["renewable"]
+        #else [],
+        cutout="cutouts/europe-{wyear}-era5.nc"
     output:
-        "resources/" + RDIR + "profile_hydro.nc",
+        "resources/" + RDIR + "profile_hydro_{wyear}.nc",
     log:
-        "logs/" + RDIR + "build_hydro_profile.log",
+        "logs/" + RDIR + "build_hydro_profile_{wyear}.log",
     resources:
         mem_mb=5000,
     script:
@@ -397,7 +550,7 @@ rule build_hydro_profile:
 rule add_electricity:
     input:
         **{
-            f"profile_{tech}": "resources/" + RDIR + f"profile_{tech}.nc"
+            f"profile_{tech}": "resources/" + RDIR + f"profile_{tech}_" + "{wyear}.nc"
             for tech in config["renewable"]
         },
         **{
@@ -415,11 +568,11 @@ rule add_electricity:
         load="resources/" + RDIR + "load.csv",
         nuts3_shapes="resources/" + RDIR + "nuts3_shapes.geojson",
     output:
-        "networks/" + RDIR + "elec.nc",
+        "networks/" + RDIR + "elec_wy{wyear}.nc",
     log:
-        "logs/" + RDIR + "add_electricity.log",
+        "logs/" + RDIR + "add_electricity_wy{wyear}.log",
     benchmark:
-        "benchmarks/" + RDIR + "add_electricity"
+        "benchmarks/" + RDIR + "add_electricity_wy{wyear}"
     threads: 1
     resources:
         mem_mb=5000,
@@ -429,20 +582,20 @@ rule add_electricity:
 
 rule simplify_network:
     input:
-        network="networks/" + RDIR + "elec.nc",
+        network="networks/" + RDIR + "elec_wy{wyear}.nc",
         tech_costs=COSTS,
         regions_onshore="resources/" + RDIR + "regions_onshore.geojson",
         regions_offshore="resources/" + RDIR + "regions_offshore.geojson",
     output:
-        network="networks/" + RDIR + "elec_s{simpl}.nc",
-        regions_onshore="resources/" + RDIR + "regions_onshore_elec_s{simpl}.geojson",
-        regions_offshore="resources/" + RDIR + "regions_offshore_elec_s{simpl}.geojson",
-        busmap="resources/" + RDIR + "busmap_elec_s{simpl}.csv",
-        connection_costs="resources/" + RDIR + "connection_costs_s{simpl}.csv",
+        network="networks/" + RDIR + "elec_wy{wyear}_s{simpl}.nc",
+        regions_onshore="resources/" + RDIR + "regions_onshore_elec_wy{wyear}_s{simpl}.geojson",
+        regions_offshore="resources/" + RDIR + "regions_offshore_elec_wy{wyear}_s{simpl}.geojson",
+        busmap="resources/" + RDIR + "busmap_elec_wy{wyear}_s{simpl}.csv",
+        connection_costs="resources/" + RDIR + "connection_costs_elec_wy{wyear}_s{simpl}.csv",
     log:
-        "logs/" + RDIR + "simplify_network/elec_s{simpl}.log",
+        "logs/" + RDIR + "simplify_network/elec_wy{wyear}_s{simpl}.log",
     benchmark:
-        "benchmarks/" + RDIR + "simplify_network/elec_s{simpl}"
+        "benchmarks/" + RDIR + "simplify_network/elec_wy{wyear}_s{simpl}"
     threads: 1
     resources:
         mem_mb=4000,
@@ -452,30 +605,30 @@ rule simplify_network:
 
 rule cluster_network:
     input:
-        network="networks/" + RDIR + "elec_s{simpl}.nc",
-        regions_onshore="resources/" + RDIR + "regions_onshore_elec_s{simpl}.geojson",
-        regions_offshore="resources/" + RDIR + "regions_offshore_elec_s{simpl}.geojson",
-        busmap=ancient("resources/" + RDIR + "busmap_elec_s{simpl}.csv"),
+        network="networks/" + RDIR + "elec_wy{wyear}_s{simpl}.nc",
+        regions_onshore="resources/" + RDIR + "regions_onshore_elec_wy{wyear}_s{simpl}.geojson",
+        regions_offshore="resources/" + RDIR + "regions_offshore_elec_wy{wyear}_s{simpl}.geojson",
+        busmap=ancient("resources/" + RDIR + "busmap_elec_wy{wyear}_s{simpl}.csv"),
         custom_busmap=(
-            "data/custom_busmap_elec_s{simpl}_{clusters}.csv"
+            "data/custom_busmap_elec_wy{wyear}_s{simpl}_{clusters}.csv"
             if config["enable"].get("custom_busmap", False)
             else []
         ),
         tech_costs=COSTS,
     output:
-        network="networks/" + RDIR + "elec_s{simpl}_{clusters}.nc",
+        network="networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}.nc",
         regions_onshore="resources/"
         + RDIR
-        + "regions_onshore_elec_s{simpl}_{clusters}.geojson",
+        + "regions_onshore_elec_wy{wyear}_s{simpl}_{clusters}.geojson",
         regions_offshore="resources/"
         + RDIR
-        + "regions_offshore_elec_s{simpl}_{clusters}.geojson",
-        busmap="resources/" + RDIR + "busmap_elec_s{simpl}_{clusters}.csv",
-        linemap="resources/" + RDIR + "linemap_elec_s{simpl}_{clusters}.csv",
+        + "regions_offshore_elec_wy{wyear}_s{simpl}_{clusters}.geojson",
+        busmap="resources/" + RDIR + "busmap_elec_wy{wyear}_s{simpl}_{clusters}.csv",
+        linemap="resources/" + RDIR + "linemap_elec_wy{wyear}_s{simpl}_{clusters}.csv",
     log:
-        "logs/" + RDIR + "cluster_network/elec_s{simpl}_{clusters}.log",
+        "logs/" + RDIR + "cluster_network/elec_wy{wyear}_s{simpl}_{clusters}.log",
     benchmark:
-        "benchmarks/" + RDIR + "cluster_network/elec_s{simpl}_{clusters}"
+        "benchmarks/" + RDIR + "cluster_network/elec_wy{wyear}_s{simpl}_{clusters}"
     threads: 1
     resources:
         mem_mb=6000,
@@ -485,14 +638,14 @@ rule cluster_network:
 
 rule add_extra_components:
     input:
-        network="networks/" + RDIR + "elec_s{simpl}_{clusters}.nc",
+        network="networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}.nc",
         tech_costs=COSTS,
     output:
-        "networks/" + RDIR + "elec_s{simpl}_{clusters}_ec.nc",
+        "networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec.nc",
     log:
-        "logs/" + RDIR + "add_extra_components/elec_s{simpl}_{clusters}.log",
+        "logs/" + RDIR + "add_extra_components/elec_wy{wyear}_s{simpl}_{clusters}.log",
     benchmark:
-        "benchmarks/" + RDIR + "add_extra_components/elec_s{simpl}_{clusters}_ec"
+        "benchmarks/" + RDIR + "add_extra_components/elec_wy{wyear}_s{simpl}_{clusters}_ec"
     threads: 1
     resources:
         mem_mb=3000,
@@ -502,17 +655,17 @@ rule add_extra_components:
 
 rule prepare_network:
     input:
-        "networks/" + RDIR + "elec_s{simpl}_{clusters}_ec.nc",
+        "networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec.nc",
         tech_costs=COSTS,
     output:
-        "networks/" + RDIR + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
+        "networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
     log:
-        "logs/" + RDIR + "prepare_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.log",
+        "logs/" + RDIR + "prepare_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.log",
     benchmark:
         (
             "benchmarks/"
             + RDIR
-            + "prepare_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}"
+            + "prepare_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}"
         )
     threads: 1
     resources:
@@ -543,23 +696,23 @@ def memory(w):
 
 rule solve_network:
     input:
-        "networks/" + RDIR + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
+        "networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
     output:
-        "results/networks/" + RDIR + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
+        "results/networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
     log:
         solver=normpath(
             "logs/"
             + RDIR
-            + "solve_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_solver.log"
+            + "solve_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_solver.log"
         ),
         python="logs/"
         + RDIR
-        + "solve_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_python.log",
+        + "solve_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_python.log",
         memory="logs/"
         + RDIR
-        + "solve_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_memory.log",
+        + "solve_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_memory.log",
     benchmark:
-        "benchmarks/" + RDIR + "solve_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}"
+        "benchmarks/" + RDIR + "solve_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}"
     threads: 4
     resources:
         mem_mb=memory,
@@ -571,29 +724,29 @@ rule solve_network:
 
 rule solve_operations_network:
     input:
-        unprepared="networks/" + RDIR + "elec_s{simpl}_{clusters}_ec.nc",
+        unprepared="networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec.nc",
         optimized="results/networks/"
         + RDIR
-        + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
+        + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
     output:
-        "results/networks/" + RDIR + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_op.nc",
+        "results/networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_op.nc",
     log:
         solver=normpath(
             "logs/"
             + RDIR
-            + "solve_operations_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_op_solver.log"
+            + "solve_operations_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_op_solver.log"
         ),
         python="logs/"
         + RDIR
-        + "solve_operations_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_op_python.log",
+        + "solve_operations_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_op_python.log",
         memory="logs/"
         + RDIR
-        + "solve_operations_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_op_memory.log",
+        + "solve_operations_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_op_memory.log",
     benchmark:
         (
             "benchmarks/"
             + RDIR
-            + "solve_operations_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}"
+            + "solve_operations_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}"
         )
     threads: 4
     resources:
@@ -608,19 +761,19 @@ rule plot_network:
     input:
         network="results/networks/"
         + RDIR
-        + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
+        + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
         tech_costs=COSTS,
     output:
         only_map="results/plots/"
         + RDIR
-        + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_{attr}.{ext}",
+        + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_{attr}.{ext}",
         ext="results/plots/"
         + RDIR
-        + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_{attr}_ext.{ext}",
+        + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_{attr}_ext.{ext}",
     log:
         "logs/"
         + RDIR
-        + "plot_network/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_{attr}_{ext}.log",
+        + "plot_network/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_{attr}_{ext}.log",
     script:
         "scripts/plot_network.py"
 
@@ -634,7 +787,7 @@ def input_make_summary(w):
     else:
         ll = w.ll
     return [COSTS] + expand(
-        "results/networks/" + RDIR + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
+        "results/networks/" + RDIR + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}.nc",
         ll=ll,
         **{
             k: config["scenario"][k] if getattr(w, k) == "all" else getattr(w, k)
@@ -650,12 +803,12 @@ rule make_summary:
         directory(
             "results/summaries/"
             + RDIR
-            + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}"
+            + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}"
         ),
     log:
         "logs/"
         + RDIR
-        + "make_summary/elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}.log",
+        + "make_summary/elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}.log",
     resources:
         mem_mb=500,
     script:
@@ -666,15 +819,15 @@ rule plot_summary:
     input:
         "results/summaries/"
         + RDIR
-        + "elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}",
+        + "elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}",
     output:
         "results/plots/"
         + RDIR
-        + "summary_{summary}_elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}.{ext}",
+        + "summary_{summary}_elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}.{ext}",
     log:
         "logs/"
         + RDIR
-        + "plot_summary/{summary}_elec_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}_{ext}.log",
+        + "plot_summary/{summary}_elec_wy{wyear}_s{simpl}_{clusters}_ec_l{ll}_{opts}_{country}_{ext}.log",
     resources:
         mem_mb=500,
     script:
@@ -686,7 +839,7 @@ def input_plot_p_nom_max(w):
         (
             "results/networks/"
             + RDIR
-            + "elec_s{simpl}{maybe_cluster}.nc".format(
+            + "elec_wy{wyear}_s{simpl}{maybe_cluster}.nc".format(
                 maybe_cluster=("" if c == "full" else ("_" + c)), **w
             )
         )
@@ -700,11 +853,11 @@ rule plot_p_nom_max:
     output:
         "results/plots/"
         + RDIR
-        + "elec_s{simpl}_cum_p_nom_max_{clusts}_{techs}_{country}.{ext}",
+        + "elec_wy{wyear}_s{simpl}_cum_p_nom_max_{clusts}_{techs}_{country}.{ext}",
     log:
         "logs/"
         + RDIR
-        + "plot_p_nom_max/elec_s{simpl}_{clusts}_{techs}_{country}_{ext}.log",
+        + "plot_p_nom_max/elec_wy{wyear}_s{simpl}_{clusts}_{techs}_{country}_{ext}.log",
     resources:
         mem_mb=500,
     script:

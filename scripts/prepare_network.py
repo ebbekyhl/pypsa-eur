@@ -325,8 +325,17 @@ if __name__ == "__main__":
                 add_emission_prices(n, snakemake.config["costs"]["emission_prices"])
             break
 
+    # ll_type, factor = snakemake.wildcards.ll[0], snakemake.wildcards.ll[1:]
+    # set_transmission_limit(n, ll_type, factor, costs, Nyears)
+
+    #ll_type, factor = 'v',snakemake.wildcards.lv #snakemake.wildcards.lv[0], snakemake.wildcards.ll[1:]
     ll_type, factor = snakemake.wildcards.ll[0], snakemake.wildcards.ll[1:]
     set_transmission_limit(n, ll_type, factor, costs, Nyears)
+    # print('type:')
+    # print(ll_type)
+    # print('factor:')
+    # print(factor)
+    # set_transmission_limit(n, ll_type, factor, Nyears)
 
     set_line_nom_max(
         n,

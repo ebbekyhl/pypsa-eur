@@ -132,7 +132,12 @@ if __name__ == "__main__":
     configure_logging(snakemake)
 
     config_hydro = snakemake.config["renewable"]["hydro"]
-    cutout = atlite.Cutout(snakemake.input.cutout)
+    #cutout = atlite.Cutout(snakemake.input.cutout)
+
+    #cutout_i = snakemake.input.cutout[8:]
+    #cutout_dir = os.path.dirname(snakemake.input.cutout)
+    #cutout = atlite.Cutout(cutout_i, cutout_dir=cutout_dir)
+    cutout = atlite.Cutout(snakemake.input["cutout"])
 
     countries = snakemake.config["countries"]
     country_shapes = (
@@ -147,6 +152,7 @@ if __name__ == "__main__":
 
     inflow = cutout.runoff(
         shapes=country_shapes,
+        year4norm = config_hydro['normyear'], # "year4norm" is a new input in the function "runoff" in the ATLITE module in the script "convert.py" line 708.
         smooth=True,
         lower_threshold_quantile=True,
         normalize_using_yearly=eia_stats,

@@ -79,16 +79,10 @@ def load_timeseries(fn, years, countries, powerstatistics=True):
     pattern = f"_load_actual_entsoe_{pattern}"
     rename = lambda s: s[: -len(pattern)]
     date_parser = lambda x: dateutil.parser.parse(x, ignoretz=True)
-    return (
-        pd.read_csv(fn, index_col=0, parse_dates=[0], date_parser=date_parser)
-        .filter(like=pattern)
-        .rename(columns=rename)
-        .dropna(how="all", axis=0)
-        .rename(columns={"GB_UKM": "GB"})
-        .filter(items=countries)
-        .loc[years]
-    )
+    df = pd.read_csv(fn, index_col=0, parse_dates=[0], date_parser=date_parser)
+    df1 = df.filter(like=pattern).rename(columns=rename).dropna(how="all", axis=0).rename(columns={"GB_UKM": "GB"}).filter(items=countries)
 
+    return df1.loc[df1.index.year == year]
 
 def consecutive_nans(ds):
     return (
@@ -280,11 +274,20 @@ if __name__ == "__main__":
     powerstatistics = snakemake.config["load"]["power_statistics"]
     interpolate_limit = snakemake.config["load"]["interpolate_limit"]
     countries = snakemake.config["countries"]
-    snapshots = pd.date_range(freq="h", **snakemake.config["snapshots"])
-    years = slice(snapshots[0], snapshots[-1])
+    snapshots = pd.date_range(freq="h", **snakemake.config["snapshots_load"])
+    
+    print('year start:')
+    print(snapshots[0].year)
+    print('year end:')
+    print(snapshots[-1].year)
+    year = snakemake.config['load']['year'] #2006 # snapshots[0] # slice(snapshots[0], snapshots[-1])
+
+    #load = load_timeseries(url, year, countries, powerstatistics)
+    
+    #years = slice(snapshots[0], snapshots[-1])
     time_shift = snakemake.config["load"]["time_shift_for_large_gaps"]
 
-    load = load_timeseries(snakemake.input[0], years, countries, powerstatistics)
+    load = load_timeseries(snakemake.input[0], year, countries, powerstatistics)
 
     if snakemake.config["load"]["manual_adjustments"]:
         load = manual_adjustment(load, snakemake.input[0], powerstatistics)

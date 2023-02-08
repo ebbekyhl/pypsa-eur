@@ -15,6 +15,7 @@ run:
 
 
 scenario:
+  wyear: [2010]
   simpl: ['']
   ll: ['copt']
   clusters: [37, 128, 256, 512, 1024]

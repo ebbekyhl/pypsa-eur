@@ -108,16 +108,12 @@ if __name__ == "__main__":
         snakemake = mock_snakemake("build_cutout", cutout="europe-2013-era5")
     configure_logging(snakemake)
 
-    #cutout_params = snakemake.config["atlite"]["cutouts"][snakemake.wildcards.cutout]
+    if os.path.isfile(snakemake.output[0]):
+        print("Cutout ", snakemake.output[0], " already exists. Stopping script.")
+        quit()
+
     cutout_params = snakemake.config['atlite']['cutouts']['europe-era5']
 
-    #cutout_params['months'] = [1,12]
-    #cutout_params['years'] = [int(snakemake.config["renewable"]["year"]),int(snakemake.config["renewable"]["year"])]
-    #cutout_params['years'] = [int(snakemake.wildcards.wyear),int(snakemake.wildcards.wyear)]
-    #print(type(cutout_params))
-    #print(cutout_params)
-    
-    # snapshots = pd.date_range('1/1/'+snakemake.wildcards.wyear,'31/12/'+snakemake.wildcards.wyear,freq="h",inclusive='both')
     snapshots = pd.date_range('1/1/'+snakemake.wildcards.wyear,'1/1/' + str(int(snakemake.wildcards.wyear)+1),freq="h")[:-1]
     time = [snapshots[0], snapshots[-1]]
     cutout_params["time"] = slice(*cutout_params.get("time", time))

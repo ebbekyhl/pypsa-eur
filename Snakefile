@@ -213,42 +213,42 @@ rule build_bus_regions:
         "scripts/build_bus_regions.py"
 
 
-if config["enable"].get("build_cutout", False):
+#if config["enable"].get("build_cutout", False):
 
-    rule build_cutout:
-        input:
-            regions_onshore="resources/" + RDIR + "regions_onshore.geojson",
-            regions_offshore="resources/" + RDIR + "regions_offshore.geojson",
-        output: "cutouts/europe-{wyear}-era5.nc",
-        log:
-            #"logs/" + CDIR + "build_cutout/{cutout}.log",
-            "logs/" + "europe-{wyear}-era5" + ".log",
-        benchmark:
-            "benchmarks/" + CDIR + "build_cutout_" + "europe-{wyear}-era5"
-        threads: ATLITE_NPROCESSES
-        resources:
-            mem_mb=ATLITE_NPROCESSES * 2000,
-        script:
-            "scripts/build_cutout.py"
+rule build_cutout:
+    input:
+        regions_onshore="resources/" + RDIR + "regions_onshore.geojson",
+        regions_offshore="resources/" + RDIR + "regions_offshore.geojson",
+    output: protected("/home/com/meenergy/cutouts/europe-{wyear}-era5.nc"),
+    log:
+        #"logs/" + CDIR + "build_cutout/{cutout}.log",
+        "logs/" + "europe-{wyear}-era5" + ".log",
+    benchmark:
+        "benchmarks/" + CDIR + "build_cutout_" + "europe-{wyear}-era5"
+    threads: ATLITE_NPROCESSES
+    resources:
+        mem_mb=ATLITE_NPROCESSES * 2000,
+    script:
+        "scripts/build_cutout.py"
 
 
-if config["enable"].get("retrieve_cutout", True):
+# if config["enable"].get("retrieve_cutout", True):
 
-    rule retrieve_cutout:
-        input:
-            HTTP.remote(
-                "zenodo.org/record/6382570/files/{cutouts}.nc",
-                keep_local=True,
-                static=True,
-            ),
-        output:
-            "cutouts/" + CDIR + "{cutouts}",
-        log:
-            "logs/" + CDIR + "retrieve_cutout_{cutouts}.log",
-        resources:
-            mem_mb=5000,
-        run:
-            move(input[0], output[0])
+#     rule retrieve_cutout:
+#         input:
+#             HTTP.remote(
+#                 "zenodo.org/record/6382570/files/{cutouts}.nc",
+#                 keep_local=True,
+#                 static=True,
+#             ),
+#         output:
+#             "cutouts/" + CDIR + "{cutouts}",
+#         log:
+#             "logs/" + CDIR + "retrieve_cutout_{cutouts}.log",
+#         resources:
+#             mem_mb=5000,
+#         run:
+#             move(input[0], output[0])
 
 
 if config["enable"].get("retrieve_cost_data", True):
@@ -275,7 +275,7 @@ if config["enable"].get("build_natura_raster", False):
         input:
             natura="data/bundle/natura/Natura2000_end2015.shp",
             #cutouts=expand("cutouts/" + CDIR + "{cutouts}.nc", **config["atlite"]),
-            cutouts=expand("cutouts/{cutouts}", **config['atlite'])
+            cutouts=expand("/home/com/meenergy/cutouts/{cutouts}", **config['atlite']),
         output:
             "resources/" + RDIR + "natura.tiff",
         resources:
@@ -322,8 +322,9 @@ rule build_ship_raster:
     input:
         ship_density="data/shipdensity_global.zip",
         #cutouts=expand("cutouts/{cutouts}", **config['atlite'])
-        cutouts=expand("cutouts/europe-2013-era5.nc", **config["atlite"]),
+        #cutouts=expand("cutouts/europe-2013-era5.nc", **config["atlite"]),
         #cutouts=expand("cutouts/{cutouts}", **config['atlite'])
+        cutouts=expand("/home/com/meenergy/cutouts/{cutouts}", **config['atlite'])
     output:
         "resources/" + RDIR + "shipdensity_raster.nc",
     log:
@@ -400,7 +401,7 @@ rule build_renewable_profiles1:
         country_shapes="resources/" + RDIR + "country_shapes.geojson",
         offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
         regions="resources/" + RDIR + "regions_onshore.geojson",
-        cutout="cutouts/europe-{wyear}-era5.nc"
+        cutout="/home/com/meenergy/cutouts/europe-{wyear}-era5.nc"
     output:
         profile="resources/" + RDIR + "profile_solar_{wyear}.nc",
     log:
@@ -438,7 +439,7 @@ rule build_renewable_profiles2:
         country_shapes="resources/" + RDIR + "country_shapes.geojson",
         offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
         regions="resources/" + RDIR + "regions_onshore.geojson",
-        cutout="cutouts/europe-{wyear}-era5.nc"
+        cutout="/home/com/meenergy/cutouts/europe-{wyear}-era5.nc"
     output:
         profile="resources/" + RDIR + "profile_onwind_{wyear}.nc",
     log:
@@ -476,7 +477,7 @@ rule build_renewable_profiles3:
         country_shapes="resources/" + RDIR + "country_shapes.geojson",
         offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
         regions="resources/" + RDIR + "regions_offshore.geojson",
-        cutout="cutouts/europe-{wyear}-era5.nc"
+        cutout="/home/com/meenergy/cutouts/europe-{wyear}-era5.nc"
     output:
         profile="resources/" + RDIR + "profile_offwind-ac_{wyear}.nc",
     log:
@@ -514,7 +515,7 @@ rule build_renewable_profiles4:
         country_shapes="resources/" + RDIR + "country_shapes.geojson",
         offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
         regions="resources/" + RDIR + "regions_offshore.geojson",
-        cutout="cutouts/europe-{wyear}-era5.nc"
+        cutout="/home/com/meenergy/cutouts/europe-{wyear}-era5.nc"
     output:
         profile="resources/" + RDIR + "profile_offwind-dc_{wyear}.nc",
     log:
@@ -536,7 +537,7 @@ rule build_hydro_profile:
         #cutout=f"cutouts/" + CDIR + config["renewable"]["hydro"]["cutout"] + ".nc"
         #if "hydro" in config["renewable"]
         #else [],
-        cutout="cutouts/europe-{wyear}-era5.nc"
+        cutout="/home/com/meenergy/cutouts/europe-{wyear}-era5.nc"
     output:
         "resources/" + RDIR + "profile_hydro_{wyear}.nc",
     log:

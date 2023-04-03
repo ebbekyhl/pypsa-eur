@@ -215,22 +215,21 @@ rule build_bus_regions:
 
 #if config["enable"].get("build_cutout", False):
 
-rule build_cutout:
-    input:
-        regions_onshore="resources/" + RDIR + "regions_onshore.geojson",
-        regions_offshore="resources/" + RDIR + "regions_offshore.geojson",
-    output: protected("/home/com/meenergy/cutouts/europe-{wyear}-era5.nc"),
-    log:
-        #"logs/" + CDIR + "build_cutout/{cutout}.log",
-        "logs/" + "europe-{wyear}-era5" + ".log",
-    benchmark:
-        "benchmarks/" + CDIR + "build_cutout_" + "europe-{wyear}-era5"
-    threads: ATLITE_NPROCESSES
-    resources:
-        mem_mb=ATLITE_NPROCESSES * 2000,
-    script:
-        "scripts/build_cutout.py"
-
+# rule build_cutout:
+#     input:
+#         regions_onshore="resources/" + RDIR + "regions_onshore.geojson",
+#         regions_offshore="resources/" + RDIR + "regions_offshore.geojson",
+#     output: protected("/home/com/meenergy/cutouts/europe-{wyear}-era5.nc"),
+#     log:
+#         #"logs/" + CDIR + "build_cutout/{cutout}.log",
+#         "logs/" + "europe-{wyear}-era5" + ".log",
+#     benchmark:
+#         "benchmarks/" + CDIR + "build_cutout_" + "europe-{wyear}-era5"
+#     threads: ATLITE_NPROCESSES
+#     resources:
+#         mem_mb=ATLITE_NPROCESSES * 2000,
+#     script:
+#         "scripts/build_cutout.py"
 
 # if config["enable"].get("retrieve_cutout", True):
 
@@ -324,7 +323,8 @@ rule build_ship_raster:
         #cutouts=expand("cutouts/{cutouts}", **config['atlite'])
         #cutouts=expand("cutouts/europe-2013-era5.nc", **config["atlite"]),
         #cutouts=expand("cutouts/{cutouts}", **config['atlite'])
-        cutouts=expand("/home/com/meenergy/cutouts/{cutouts}", **config['atlite'])
+        #cutouts=expand("/home/com/meenergy/cutouts/{cutouts}", **config['atlite'])
+        cutouts = "/home/com/meenergy/cutouts/europe-2013-era5.nc"
     output:
         "resources/" + RDIR + "shipdensity_raster.nc",
     log:

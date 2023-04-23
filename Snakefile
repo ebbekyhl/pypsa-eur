@@ -320,11 +320,7 @@ rule retrieve_ship_raster:
 rule build_ship_raster:
     input:
         ship_density="data/shipdensity_global.zip",
-        #cutouts=expand("cutouts/{cutouts}", **config['atlite'])
-        #cutouts=expand("cutouts/europe-2013-era5.nc", **config["atlite"]),
-        #cutouts=expand("cutouts/{cutouts}", **config['atlite'])
-        #cutouts=expand("/home/com/meenergy/cutouts/{cutouts}", **config['atlite'])
-        cutouts = "/home/com/meenergy/cutouts/europe-2013-era5.nc"
+        cutout = "/home/com/meenergy/cutouts/europe-2013-era5.nc"
     output:
         "resources/" + RDIR + "shipdensity_raster.nc",
     log:
@@ -336,47 +332,6 @@ rule build_ship_raster:
     script:
         "scripts/build_ship_raster.py"
 
-
-# rule build_renewable_profiles:
-#     input:
-#         base_network="networks/" + RDIR + "base.nc",
-#         corine="data/bundle/corine/g250_clc06_V18_5.tif",
-#         natura=lambda w: (
-#             "resources/" + RDIR + "natura.tiff"
-#             if config["renewable"][w.technology]["natura"]
-#             else []
-#         ),
-#         gebco=lambda w: (
-#             "data/bundle/GEBCO_2014_2D.nc"
-#             if "max_depth" in config["renewable"][w.technology].keys()
-#             else []
-#         ),
-#         ship_density=lambda w: (
-#             "resources/" + RDIR + "shipdensity_raster.nc"
-#             if "ship_threshold" in config["renewable"][w.technology].keys()
-#             else []
-#         ),
-#         country_shapes="resources/" + RDIR + "country_shapes.geojson",
-#         offshore_shapes="resources/" + RDIR + "offshore_shapes.geojson",
-#         regions=lambda w: (
-#             "resources/" + RDIR + "regions_onshore.geojson"
-#             if w.technology in ("onwind", "solar")
-#             else "resources/" + RDIR + "regions_offshore.geojson"
-#         ),
-#         cutout="cutouts/europe-{wyear}-era5.nc"
-#     output:
-#         profile="resources/" + RDIR + "profile_{wyear}_{technology}.nc",
-#     log:
-#         "logs/" + RDIR + "build_renewable_profile_{wyear}_{technology}.log",
-#     benchmark:
-#         "benchmarks/" + RDIR + "build_renewable_profiles_{wyear}_{technology}"
-#     threads: ATLITE_NPROCESSES
-#     resources:
-#         mem_mb=ATLITE_NPROCESSES * 5000,
-#     wildcard_constraints:
-#         technology="(?!hydro).*",  # Any technology other than hydro
-#     script:
-#         "scripts/build_renewable_profiles.py"
 
 rule build_renewable_profiles1:
     input:

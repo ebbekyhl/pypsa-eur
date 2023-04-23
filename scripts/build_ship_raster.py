@@ -54,14 +54,24 @@ if __name__ == "__main__":
         snakemake = mock_snakemake("build_ship_raster")
     configure_logging(snakemake)
 
-    cutouts = snakemake.input.cutouts
-    xs, Xs, ys, Ys = zip(*(determine_cutout_xXyY(cutout) for cutout in cutouts))
+    cutout = snakemake.input.cutout
+
+    print('testing')
+    test = determine_cutout_xXyY(cutout)
+    print(test)
+
+    xs, Xs, ys, Ys = determine_cutout_xXyY(cutout)
+
+    print(xs,Xs,ys,Ys)
+
+    #xs, Xs, ys, Ys = zip(*(determine_cutout_xXyY(cutout) for cutout in cutouts))
 
     with zipfile.ZipFile(snakemake.input.ship_density) as zip_f:
         zip_f.extract("shipdensity_global.tif")
         with xr.open_rasterio("shipdensity_global.tif") as ship_density:
             ship_density = ship_density.drop(["band"]).sel(
-                x=slice(min(xs), max(Xs)), y=slice(max(Ys), min(ys))
+                #x=slice(min(xs), max(Xs)), y=slice(max(Ys), min(ys))
+                x=slice(xs, Xs), y=slice(Ys, ys)
             )
             ship_density.to_netcdf(snakemake.output[0])
 

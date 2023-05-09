@@ -152,10 +152,10 @@ if __name__ == "__main__":
 
     inflow = cutout.runoff(
         shapes=country_shapes,
-        year4norm = config_hydro['normyear'], # "year4norm" is a new input in the function "runoff" in the ATLITE module in the script "convert.py" line 708.
+        #year4norm = config_hydro['normyear'], # "year4norm" is a new input in the function "runoff" in the ATLITE module in the script "convert.py" line 708.
         smooth=True,
         lower_threshold_quantile=True,
-        normalize_using_yearly=eia_stats,
+        #normalize_using_yearly=eia_stats,
     )
 
     if "clip_min_inflow" in config_hydro:

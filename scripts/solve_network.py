@@ -563,6 +563,46 @@ def add_pipe_retrofit_constraint(n):
 
     n.model.add_constraints(lhs == rhs, name="Link-pipe_retrofit")
 
+def read_hydro_dispatch(country):
+    # Path must be changed to an external repository!
+    historical_dispatch = pd.read_csv('hydro_dispatch/hydro_res_dispatch_' + country + '_ENTSOE.csv',index_col=0)
+    
+    historical_dispatch.index = pd.to_datetime(historical_dispatch.index,utc=True)
+    historical_dispatch = historical_dispatch.resample('h').sum()
+    df = pd.DataFrame(index=pd.date_range('1/1/2013','1/1/2014',freq='h',inclusive='left'))
+    
+    df1 = pd.DataFrame(historical_dispatch)
+    years_to_drop = df1.index.year.value_counts()[df1.index.year.value_counts() < 8700].index
+    index_to_drop = [df1.index[df1.index.year == years_to_drop[i]] for i in range(len(years_to_drop))]
+    for i in range(len(index_to_drop)):
+        df1 = df1.drop(index_to_drop[i])
+    df1['year'] = df1.index.year
+    for year in df1.index.year.unique():
+        #print(year)
+        df1_year = df1.query('year == @year')
+        df1_year = df1_year[~df1_year.index.duplicated(keep='first')]
+
+        year_datetime = pd.date_range(start = str(df1_year.index[0])[0:11], 
+                                      end = str(int(str(df1_year.index[0])[0:4])+1) + str(df1_year.index[0])[4:11],
+                                      freq='h',tz='UTC')[0:-1]
+
+        missing_dates = year_datetime.difference(df1_year.index)
+        #if len(missing_dates) > 0:
+        #    print('Imputing ',len(missing_dates), ' missing timestamp(s)!')
+        add_data = pd.DataFrame(columns=['Hydro Water Reservoir','year'],index=missing_dates)
+        add_data['year'] = missing_dates.year.values
+        df1_year = pd.concat([df1_year,add_data]).sort_index()
+        df1_year.interpolate().loc[missing_dates]
+
+        if (year % 4 == 0) and (year % 100 != 0): # leap year    
+            day_29 = df1_year.index.day == 29
+            feb_29 = df1_year[day_29][df1_year[day_29].index.month == 2]
+            df1_year = df1_year.drop(index=feb_29.index)
+
+        df[year] = df1_year.T.iloc[0].values
+        
+    return df
+   
 
 def extra_functionality(n, snapshots):
     """
@@ -589,6 +629,8 @@ def extra_functionality(n, snapshots):
             add_EQ_constraints(n, o)
     add_battery_constraints(n)
     add_pipe_retrofit_constraint(n)
+    if "hydroconstrained" in snakemake.wildcards.sector_opts:
+        add_hydropower_constraint(n)
 
 
 def solve_network(n, config, opts="", **kwargs):

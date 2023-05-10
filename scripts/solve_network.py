@@ -603,7 +603,66 @@ def read_hydro_dispatch(country):
         
     return df
    
+def add_hydropower_constraint(n):
+    
+    quantile_lower = 0.01
+    quantile_upper = 0.99
+    avg_steps = int(len(n.snapshots)/52) # weekly averaging
+    
+    constraint_countries = ['AT', 'BA', 'BE', 'BG', 'CH', 'CZ', 
+                            'DE', 'ES', 'FI', 'FR', 'GR', 'HR', 
+                            'HU', 'IT', 'LU', 'LV', 'ME', 'MK', 
+                            'NO', 'SE', 'SI','GB'] # countries for which historical data is available
+    
+    # hydro units
+    hydro = n.storage_units.query('carrier == "hydro"')
+    hydro_units = hydro.index
+    hydro_units_constrained = []
+    for c in constraint_countries:
+        hydro_units_constrained.append(list(hydro_units[hydro_units.str.contains(c)]))
+    hydro_units_constrained = [item for sublist in hydro_units_constrained for item in sublist]
+    
+    # constrain hydro units
+    for i in hydro_units_constrained:
+        if hydro.loc[i].max_hours > 6:
+            ######################## HISTORICAL DISPATCH LIMITS ############################
+            country = i[0:2]
+            
+            if country == 'GB':
+                df = read_hydro_dispatch('UK')
+            else:
+                df = read_hydro_dispatch(country)
+            
+            # calculate nodal share of country cumulative capacity
+            country_cum_capacity = hydro.loc[hydro.index[hydro.index.str.contains(country)]].p_nom.sum()
+            nodal_share = n.storage_units.loc[i].p_nom/country_cum_capacity
+            
+            # account for time resolution 
+            tres_factor = 8760/len(n.snapshots)
+           
+            # Scale according to inflow
+            inflow = n.storage_units_t.inflow[i].sum()
+            # ----------- add equation
+            
+            ############################# Get variable #######################################
+            p = n.model.variables["StorageUnit-p_dispatch"]
+            # LHS
+            lhs = p.sel(StorageUnit=hydro_units[i]).rolling_sum(snapshot=avg_steps)
+            
+            ############################ DEFINE LOWER LIMIT ###################################
+            # RHS 1
+            rhs_lower = nodal_share*(df.rolling(avg_steps).sum().quantile(quantile_lower,axis=1)) # historical lower limit
+            n.model.add_constraints(lhs >= rhs_lower, name="hydro dispatch lower bound " + i)
+            
+            ########################### DEFINE UPPER LIMIT ####################################
+            # RHS 2
+            rhs_upper = nodal_share*(df.rolling(avg_steps).sum().quantile(quantile_upper,axis=1)) # historical upper limit
+            n.model.add_constraints(lhs <= rhs_upper, name="hydro dispatch upper bound " + i)
 
+        else:
+            print('hydro unit ', i, ' is attributed with max hours = 6 which already constrains the seasonal hydropower operation.')
+
+    
 def extra_functionality(n, snapshots):
     """
     Collects supplementary constraints which will be passed to

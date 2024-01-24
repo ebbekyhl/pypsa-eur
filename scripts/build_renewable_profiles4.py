@@ -278,37 +278,8 @@ if __name__ == "__main__":
             snakemake.input.country_shapes, buffer=buffer, invert=True
         )
 
-    print("Excluder:")
-    print(excluder)
-    print("")
-
-    print("Regions:")
-    print(regions)
-    print("")
-
-
-    print("Cutout:")
-    print(cutout)
-    print("")
-    
-    print("Availability matrix:")
-    print(cutout.availabilitymatrix)
-    print("")
-
     kwargs = dict(nprocesses=nprocesses, disable_progressbar=noprogress)
-    print("kwargs:")
-    print(kwargs)
-
-    #if noprogress:
-        #logger.info("Calculate landuse availabilities...")
-        #start = time.time()
-    #availability = cutout.availabilitymatrix(regions, excluder, **kwargs)
     availability = cutout.availabilitymatrix(regions, excluder, nprocesses=None, disable_progressbar=False)
-        #duration = time.time() - start
-        #logger.info(f"Completed availability calculation ({duration:2.2f}s)")
-    #else:
-    #    availability = cutout.availabilitymatrix(regions, excluder, **kwargs)
-
     area = cutout.grid.to_crs(3035).area / 1e6
     area = xr.DataArray(
         area.values.reshape(cutout.shape), [cutout.coords["y"], cutout.coords["x"]]

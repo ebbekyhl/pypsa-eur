@@ -335,8 +335,7 @@ rule build_ship_raster:
 
 rule build_renewable_profiles1:
     input:
-        base_network="networks/" + RDIR + "base.nc",
-
+        #base_network="networks/" + RDIR + "base.nc",
         corine="data/bundle/corine/g250_clc06_V18_5.tif",
         natura=lambda w: (
             "resources/" + RDIR + "natura.tiff"
@@ -373,8 +372,7 @@ rule build_renewable_profiles1:
 
 rule build_renewable_profiles2:
     input:
-        base_network="networks/" + RDIR + "base.nc",
-
+        #base_network="networks/" + RDIR + "base.nc",
         corine="data/bundle/corine/g250_clc06_V18_5.tif",
         natura=lambda w: (
             "resources/" + RDIR + "natura.tiff"
@@ -411,8 +409,7 @@ rule build_renewable_profiles2:
 
 rule build_renewable_profiles3:
     input:
-        base_network="networks/" + RDIR + "base.nc",
-
+        #base_network="networks/" + RDIR + "base.nc",
         corine="data/bundle/corine/g250_clc06_V18_5.tif",
         natura=lambda w: (
             "resources/" + RDIR + "natura.tiff"
@@ -449,8 +446,7 @@ rule build_renewable_profiles3:
 
 rule build_renewable_profiles4:
     input:
-        base_network="networks/" + RDIR + "base.nc",
-
+        #base_network="networks/" + RDIR + "base.nc",
         corine="data/bundle/corine/g250_clc06_V18_5.tif",
         natura=lambda w: (
             "resources/" + RDIR + "natura.tiff"

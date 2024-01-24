@@ -337,11 +337,11 @@ def attach_wind_and_solar(
                 capital_cost = costs.at[tech, "capital_cost"]
 
             prof = ds['profile'].transpose('time', 'bus').to_pandas()
-            print(prof)
+            #print(prof)
             prof_wo_ly = prof[~((prof.index.month == 2) & (prof.index.day == 29))] # remove 29th feb from leap year
-            print(prof_wo_ly)
+            #print(prof_wo_ly)
             prof_wo_ly.set_index(t_index,inplace=True)
-            print(prof_wo_ly)
+            #print(prof_wo_ly)
 
             n.madd(
                 "Generator",
@@ -427,15 +427,23 @@ def attach_conventional_generators(
 def attach_hydro(n, costs, ppl, profile_hydro, hydro_capacities, carriers, **config):
     _add_missing_carriers_from_costs(n, costs, carriers)
     t_index = pd.date_range(snakemake.config['snapshots_load']['start'],snakemake.config['snapshots_load']['end'],freq='h')[0:-1]
-
+    
     ppl = (
         ppl.query('carrier == "hydro"')
         .reset_index(drop=True)
         .rename(index=lambda s: str(s) + " hydro")
     )
     ror = ppl.query('technology == "Run-Of-River"')
+    ror_p_nom = ror.groupby('bus').sum()['p_nom']
+    print(ror_p_nom)
+
     phs = ppl.query('technology == "Pumped Storage"')
+    phs_p_nom = ror.groupby('bus').sum()['p_nom']
+    print(phs_p_nom)
+
     hydro = ppl.query('technology == "Reservoir"')
+    hydro_p_nom = hydro.groupby('bus').sum()['p_nom']
+    print(hydro_p_nom)
 
     country = ppl["bus"].map(n.buses.country).rename("country")
 
@@ -444,6 +452,54 @@ def attach_hydro(n, costs, ppl, profile_hydro, hydro_capacities, carriers, **con
         dist_key = ppl.loc[inflow_idx, "p_nom"].groupby(country).transform(normed)
 
         with xr.open_dataarray(profile_hydro) as inflow:
+            ###### calibration starts
+            calibration_factors = {'AL': 326.8801140331509,
+                                    'AT': 144.0552949939238,
+                                    'BA': 248.61267082935882,
+                                    'BG': 378.06973898998694,
+                                    'CH': 262.7855703235373,
+                                    'CZ': 187.6660087612114,
+                                    'DE': 18.722617390442505,
+                                    'ES': 450.25095699367864,
+                                    'FI': 136.1880822209414,
+                                    'FR': 238.45794228091196,
+                                    'GB': 1.7406606114255454,
+                                    'GR': 277.05663991007765,
+                                    'HR': 477.3121881250496,
+                                    'HU': 30493.70629918286,
+                                    'IE': 0.8671636449748835,
+                                    'IT': 98.04540575816745,
+                                    'ME': 69.18042075894107,
+                                    'NO': 430.09894728578155,
+                                    'PL': 112.28937432494736,
+                                    'PT': 317.7169811769693,
+                                    'RO': 394.93147139210646,
+                                    'RS': 632.0929164528612,
+                                    'SE': 369.05172913112017,
+                                    'SI': 78.9222996736851,
+                                    'SK': 287.0350648023865}
+            
+            # calibration factors were retrieved by comparing 2013 hydro profile with 2013 hist. dispatch:
+                # > calibration_factors = {historical_dispatch_2013}.sum()/{hydro_profile_2013}.sum()
+
+            # countries included in the dataset:
+            country_coords = list(inflow.coords['countries'].values)
+            
+            # countries in calibration factors dict (not all countries could be calibrated):
+            country_calib = list(calibration_factors.keys())
+            
+            # overlapping countries boolean:
+            country_b = [country_coords[i] in country_calib for i in range(len(country_coords))]
+            country_index = [i for i, x in enumerate(country_b) if x]
+            
+            # calibration factors
+            calibration_factors_array = np.array(np.ones(len(country_coords)))
+            calibration_factors_array[country_index] = np.array(list(calibration_factors.values()))
+            
+            # calibration
+            inflow.data = calibration_factors_array*inflow.data
+
+            ###### calibration ends
             inflow_countries = pd.Index(country[inflow_idx])
             missing_c = inflow_countries.unique().difference(
                 inflow.indexes["countries"]
@@ -462,11 +518,8 @@ def attach_hydro(n, costs, ppl, profile_hydro, hydro_capacities, carriers, **con
                 .multiply(dist_key, axis=1)
             )
 
-            print(inflow_t)
             inflow_t_wo_ly = inflow_t[~((inflow_t.index.month == 2) & (inflow_t.index.day == 29))] # remove 29th feb from leap year
-            print(inflow_t_wo_ly)
             inflow_t_wo_ly.set_index(t_index,inplace=True)
-            print(inflow_t_wo_ly)
 
     if "ror" in carriers and not ror.empty:
         n.madd(

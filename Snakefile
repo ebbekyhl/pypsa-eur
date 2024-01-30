@@ -519,6 +519,8 @@ rule add_electricity:
         geth_hydro_capacities="data/geth2015_hydro_capacities.csv",
         load="resources/" + RDIR + "load.csv",
         nuts3_shapes="resources/" + RDIR + "nuts3_shapes.geojson",
+        irena_hydro = "data/irena_hydro_generation_scaled_w_2013_capacity.csv",
+        hydro_avg_scaling = "data/hydro_annual_scaling_factors.csv",
     output:
         "networks/" + RDIR + "elec_wy{wyear}.nc",
     log:

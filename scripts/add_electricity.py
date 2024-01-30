@@ -434,16 +434,10 @@ def attach_hydro(n, costs, ppl, profile_hydro, hydro_capacities, carriers, **con
         .rename(index=lambda s: str(s) + " hydro")
     )
     ror = ppl.query('technology == "Run-Of-River"')
-    ror_p_nom = ror.groupby('bus').sum()['p_nom']
-    print(ror_p_nom)
-
     phs = ppl.query('technology == "Pumped Storage"')
-    phs_p_nom = ror.groupby('bus').sum()['p_nom']
-    print(phs_p_nom)
-
     hydro = ppl.query('technology == "Reservoir"')
-    hydro_p_nom = hydro.groupby('bus').sum()['p_nom']
-    print(hydro_p_nom)
+
+    weatheryear = snakemake.wildcards.wyear
 
     country = ppl["bus"].map(n.buses.country).rename("country")
 
@@ -452,54 +446,58 @@ def attach_hydro(n, costs, ppl, profile_hydro, hydro_capacities, carriers, **con
         dist_key = ppl.loc[inflow_idx, "p_nom"].groupby(country).transform(normed)
 
         with xr.open_dataarray(profile_hydro) as inflow:
-            ###### calibration starts
-            calibration_factors = {'AL': 326.8801140331509,
-                                    'AT': 144.0552949939238,
-                                    'BA': 248.61267082935882,
-                                    'BG': 378.06973898998694,
-                                    'CH': 262.7855703235373,
-                                    'CZ': 187.6660087612114,
-                                    'DE': 18.722617390442505,
-                                    'ES': 450.25095699367864,
-                                    'FI': 136.1880822209414,
-                                    'FR': 238.45794228091196,
-                                    'GB': 1.7406606114255454,
-                                    'GR': 277.05663991007765,
-                                    'HR': 477.3121881250496,
-                                    'HU': 30493.70629918286,
-                                    'IE': 0.8671636449748835,
-                                    'IT': 98.04540575816745,
-                                    'ME': 69.18042075894107,
-                                    'NO': 430.09894728578155,
-                                    'PL': 112.28937432494736,
-                                    'PT': 317.7169811769693,
-                                    'RO': 394.93147139210646,
-                                    'RS': 632.0929164528612,
-                                    'SE': 369.05172913112017,
-                                    'SI': 78.9222996736851,
-                                    'SK': 287.0350648023865}
-            
-            # calibration factors were retrieved by comparing 2013 hydro profile with 2013 hist. dispatch:
-                # > calibration_factors = {historical_dispatch_2013}.sum()/{hydro_profile_2013}.sum()
+            ###### scaling starts
 
             # countries included in the dataset:
             country_coords = list(inflow.coords['countries'].values)
-            
-            # countries in calibration factors dict (not all countries could be calibrated):
-            country_calib = list(calibration_factors.keys())
-            
-            # overlapping countries boolean:
-            country_b = [country_coords[i] in country_calib for i in range(len(country_coords))]
-            country_index = [i for i, x in enumerate(country_b) if x]
-            
-            # calibration factors
-            calibration_factors_array = np.array(np.ones(len(country_coords)))
-            calibration_factors_array[country_index] = np.array(list(calibration_factors.values()))
-            
-            # calibration
-            inflow.data = calibration_factors_array*inflow.data
 
-            ###### calibration ends
+            if weatheryear >= 2000:
+                # Get annual generation acc. to weatheryear with data from IRENA.
+                # The generation from IRENA has been scaled to capacity from 2013.
+                # Currently, this approach can only be done for the years from 
+                # 2000 and forward.
+                df_irena = pd.read_csv(snakemake.input.irena_hydro, index_col=0)
+                df_irena = df_irena.astype(float)
+                irena_countries = list(df_irena.columns)
+
+                # specify weather year
+                df_irena_y = df_irena.loc[weatheryear]
+
+                # overlapping countries boolean:
+                country_b = [country_coords[i] in irena_countries for i in range(len(country_coords))]
+                country_index = [i for i, x in enumerate(country_b) if x]
+
+                # generation array
+                annual_generation_array = np.array(np.zeros(len(country_coords)))
+                annual_generation_array[country_index] = np.array(list(df_irena_y.values))
+
+                # annual inflow array
+                annual_inflow_array = inflow.data[:,:].sum(axis=0)
+
+                # scaling factor
+                scaling_factor = np.divide(annual_generation_array,annual_inflow_array, where=annual_inflow_array!=0)
+                scaling_factor[scaling_factor == 0] = 1 # replacing 0s with 1s
+
+            elif weatheryear < 2000:
+                scaling_factors_df = pd.read_csv(snakemake.input.hydro_avg_scaling, index_col=0)
+                scaling_factors_df = scaling_factors_df.astype(float)
+                scaling_factors_df_avg = scaling_factors_df.mean(axis=1)
+
+                # countries in dataframe containing scaling factors:
+                country_calib = scaling_factors_df.index
+                # overlapping countries:
+                country_b = [country_coords[i] in country_calib for i in range(len(country_coords))]
+                country_index = [i for i, x in enumerate(country_b) if x]
+
+                # calibration factors
+                scaling_factor = np.array(np.ones(len(country_coords)))
+                scaling_factor[country_index] = scaling_factors_df_avg.values
+                
+            # scaling the inflow according to generation from specific year
+            inflow.data = scaling_factor*inflow.data
+
+            ###### scaling ends
+
             inflow_countries = pd.Index(country[inflow_idx])
             missing_c = inflow_countries.unique().difference(
                 inflow.indexes["countries"]

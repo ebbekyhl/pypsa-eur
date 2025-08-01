@@ -97,6 +97,59 @@ GEO_CRS = "EPSG:4326"
 DISTANCE_CRS = "EPSG:3035"
 BUS_TOL = 500  # meters
 
+def correct_north_ireland_clusters(n):
+    """
+    Reduce the number of buses in Northern Ireland to one bus.
+
+    Parameters
+    ----------
+    n : pypsa.Network
+        The PyPSA network to modify.
+    """
+    
+    # get the buses in Northern Ireland (filter based on coordinates)
+    ni_buses = n.buses[n.buses.country == 'GB'] 
+    ni_buses = ni_buses[(ni_buses.x < -5.3) & (ni_buses.x > -8.2)]
+    ni_buses = ni_buses[(ni_buses.y > 53.9) & (ni_buses.y < 55.3)]
+
+    ni_bus_name = 'GBNI' # temporary name for Northern Ireland bus
+    # add new bus for Northern Ireland
+    n.add("Bus", 
+            ni_bus_name, 
+            country='GB', 
+            v_nom=380.0,
+            x=ni_buses.x.mean(), 
+            y=ni_buses.y.mean())
+
+    # drop remaining buses in the Northern Ireland and replace with new bus
+    n.buses = n.buses.drop(ni_buses.index)
+    north_ireland_bus = "GB3 0"
+    buses_copy = n.buses.copy()
+    buses_copy.rename({"GBNI": north_ireland_bus}, inplace=True)
+    n.buses = buses_copy
+
+    # drop internal lines in Northern Ireland
+    lines_NIE = n.lines.loc[n.lines.bus1.isin(ni_buses.index)]
+    lines_NIE_0 = n.lines.loc[n.lines.bus0.isin(ni_buses.index)]
+    lines_NIE_1 = lines_NIE_0.loc[lines_NIE_0.bus1.isin(ni_buses.index)]
+    n.lines = n.lines.drop(lines_NIE_1.index)
+
+    # rename bus0 and bus1 on interconnections with Northern Ireland
+    for line in n.lines.itertuples():
+        if line.bus0 in ni_buses.index:
+            n.lines.at[line.Index, 'bus0'] = north_ireland_bus
+            print("Bus 0 changed for lines")
+        if line.bus1 in ni_buses.index:
+            n.lines.at[line.Index, 'bus1'] = north_ireland_bus
+            print("Bus 1 changed for lines")
+        
+    for link in n.links.itertuples():    
+        if link.bus0 in ni_buses.index:
+            n.links.at[link.Index, 'bus0'] = north_ireland_bus
+            print("Bus 0 changed for links")
+        if link.bus1 in ni_buses.index:
+            n.links.at[link.Index, 'bus1'] = north_ireland_bus
+            print("Bus 1 changed for links")
 
 def normed(x):
     return (x / x.sum()).fillna(0.0)
@@ -708,6 +761,13 @@ if __name__ == "__main__":
         # append_bus_shapes(nc, clustered_regions, type=which.split("_")[1])
 
     nc.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
+
+    # print type
+    logger.info(f"Clustered network type: {type(nc)}")
+
+    # correct clusters in North Ireland
+    correct_north_ireland_clusters(nc)
+
     nc.export_to_netcdf(snakemake.output.network)
 
     logger.info(

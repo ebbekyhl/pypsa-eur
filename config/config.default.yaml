@@ -80,6 +80,9 @@ countries:
 - SK
 - XK
 
+uk_settings:
+  remove_ireland: true
+
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:
   start: "2013-01-01"

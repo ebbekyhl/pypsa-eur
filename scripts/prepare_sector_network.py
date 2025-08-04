@@ -49,6 +49,44 @@ spatial = SimpleNamespace()
 logger = logging.getLogger(__name__)
 
 
+def remove_ie_from_network(n):
+    """ 
+    Remove Ireland from the network.
+
+    This is a quick workaround of the error when running GB as the only country. 
+    The workflow requires an IDEEES country to be present when building the 
+    network (in this case, Ireland). Before solving the network, we remove all 
+    components connected to Ireland, including buses, lines, links, generators, to 
+    model Great Britain only.
+    """
+    # Remove all buses in Ireland
+    ireland_buses = n.buses[n.buses.country == "IE"].index
+    n.remove("Bus", ireland_buses)
+
+    # Remove all lines connected to these buses
+    ireland_lines = n.lines[n.lines.bus0.isin(ireland_buses) | n.lines.bus1.isin(ireland_buses)].index
+    n.remove("Line", ireland_lines)
+
+    # Remove all links connected to these buses
+    ireland_links = n.links[n.links.bus0.isin(ireland_buses) | n.links.bus1.isin(ireland_buses)].index
+    n.remove("Link", ireland_links)
+
+    # Remove all generators connected to these buses
+    ireland_generators = n.generators[n.generators.bus.isin(ireland_buses)].index
+    n.remove("Generator", ireland_generators)
+
+    # Remove all loads connected to these buses
+    ireland_loads = n.loads[n.loads.bus.isin(ireland_buses)].index
+    n.remove("Load", ireland_loads)
+
+    # Remove all storage units connected to these buses
+    ireland_storage_units = n.storage_units[n.storage_units.bus.isin(ireland_buses)].index
+    n.remove("StorageUnit", ireland_storage_units)
+
+    # Remove all stores connected to these buses
+    ireland_stores = n.stores[n.stores.bus.isin(ireland_buses)].index
+    n.remove("Store", ireland_stores)
+
 def define_spatial(nodes, options):
     """
     Namespace for spatial.
@@ -6149,6 +6187,7 @@ if __name__ == "__main__":
 
     options = snakemake.params.sector
     cf_industry = snakemake.params.industry
+    uk_settings = snakemake.params.uk_settings
 
     investment_year = int(snakemake.wildcards.planning_horizons)
 
@@ -6385,6 +6424,12 @@ if __name__ == "__main__":
         n, snakemake.params.time_resolution, snakemake.input.snapshot_weightings
     )
 
+    countries = snakemake.params.countries
+    if uk_settings["remove_uk"]:
+        countries.remove("IE")
+
+        remove_ie_from_network(n)
+
     co2_budget = snakemake.params.co2_budget
     if isinstance(co2_budget, str) and co2_budget.startswith("cb"):
         fn = "results/" + snakemake.params.RDIR + "/csvs/carbon_budget_distribution.csv"
@@ -6398,18 +6443,19 @@ if __name__ == "__main__":
                 emissions_scope,
                 input_co2,
                 options,
-                snakemake.params.countries,
+                countries,
                 snakemake.params.planning_horizons,
             )
         co2_cap = pd.read_csv(fn, index_col=0).squeeze()
         limit = co2_cap.loc[investment_year]
     else:
         limit = get(co2_budget, investment_year)
+    
     add_co2limit(
         n,
         options,
         snakemake.input.co2_totals_name,
-        snakemake.params.countries,
+        countries,
         nyears,
         limit,
     )

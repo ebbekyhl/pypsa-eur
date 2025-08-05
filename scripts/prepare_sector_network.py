@@ -6479,7 +6479,7 @@ if __name__ == "__main__":
     )
 
     countries = snakemake.params.countries
-    if uk_settings["remove_uk"]:
+    if uk_settings["remove_ireland"]:
         countries.remove("IE")
 
         remove_ie_from_network(n)

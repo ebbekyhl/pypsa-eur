@@ -123,7 +123,7 @@ def correct_north_ireland_clusters(n):
 
     # drop remaining buses in the Northern Ireland and replace with new bus
     n.buses = n.buses.drop(ni_buses.index)
-    north_ireland_bus = "GB3 0"
+    north_ireland_bus = ni_buses.index.str[0:3][0] + " 0"  # e.g. "GB3 0"
     buses_copy = n.buses.copy()
     buses_copy.rename({"GBNI": north_ireland_bus}, inplace=True)
     n.buses = buses_copy

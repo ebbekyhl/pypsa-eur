@@ -60,7 +60,7 @@ def remove_ie_from_network(n):
     model Great Britain only.
     """
     # Remove all buses in Ireland
-    ireland_buses = n.buses[n.buses.country == "IE"].index
+    ireland_buses = n.buses.loc[n.buses.index.str.contains("IE")].index
     n.remove("Bus", ireland_buses)
 
     # Remove all lines connected to these buses

@@ -6424,42 +6424,6 @@ if __name__ == "__main__":
         n, snakemake.params.time_resolution, snakemake.input.snapshot_weightings
     )
 
-    countries = snakemake.params.countries
-    if uk_settings["remove_uk"]:
-        countries.remove("IE")
-
-        remove_ie_from_network(n)
-
-    co2_budget = snakemake.params.co2_budget
-    if isinstance(co2_budget, str) and co2_budget.startswith("cb"):
-        fn = "results/" + snakemake.params.RDIR + "/csvs/carbon_budget_distribution.csv"
-        if not os.path.exists(fn):
-            emissions_scope = snakemake.params.emissions_scope
-            input_co2 = snakemake.input.co2
-            build_carbon_budget(
-                co2_budget,
-                snakemake.input.eurostat,
-                fn,
-                emissions_scope,
-                input_co2,
-                options,
-                countries,
-                snakemake.params.planning_horizons,
-            )
-        co2_cap = pd.read_csv(fn, index_col=0).squeeze()
-        limit = co2_cap.loc[investment_year]
-    else:
-        limit = get(co2_budget, investment_year)
-    
-    add_co2limit(
-        n,
-        options,
-        snakemake.input.co2_totals_name,
-        countries,
-        nyears,
-        limit,
-    )
-
     maxext = snakemake.params["lines"]["max_extension"]
     if maxext is not None:
         limit_individual_line_extension(n, maxext)
@@ -6512,6 +6476,42 @@ if __name__ == "__main__":
 
     maybe_adjust_costs_and_potentials(
         n, snakemake.params["adjustments"], investment_year
+    )
+
+    countries = snakemake.params.countries
+    if uk_settings["remove_uk"]:
+        countries.remove("IE")
+
+        remove_ie_from_network(n)
+
+    co2_budget = snakemake.params.co2_budget
+    if isinstance(co2_budget, str) and co2_budget.startswith("cb"):
+        fn = "results/" + snakemake.params.RDIR + "/csvs/carbon_budget_distribution.csv"
+        if not os.path.exists(fn):
+            emissions_scope = snakemake.params.emissions_scope
+            input_co2 = snakemake.input.co2
+            build_carbon_budget(
+                co2_budget,
+                snakemake.input.eurostat,
+                fn,
+                emissions_scope,
+                input_co2,
+                options,
+                countries,
+                snakemake.params.planning_horizons,
+            )
+        co2_cap = pd.read_csv(fn, index_col=0).squeeze()
+        limit = co2_cap.loc[investment_year]
+    else:
+        limit = get(co2_budget, investment_year)
+    
+    add_co2limit(
+        n,
+        options,
+        snakemake.input.co2_totals_name,
+        countries,
+        nyears,
+        limit,
     )
 
     n.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))

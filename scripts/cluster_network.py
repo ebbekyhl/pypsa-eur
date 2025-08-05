@@ -151,6 +151,21 @@ def correct_north_ireland_clusters(n):
             n.links.at[link.Index, 'bus1'] = north_ireland_bus
             print("Bus 1 changed for links")
 
+def correct_north_ireland_busmap(busmap):
+    """
+    Corrects the busmap for Northern Ireland to point to the new bus.
+    
+    Parameters
+    ----------
+    busmap : pd.Series
+        The busmap to correct.
+    """
+    busmap_subset = busmap.loc[busmap.str.contains("GB3")]
+
+    busmap.loc[busmap_subset.index] = ["GB3 0"]* len(busmap_subset)
+
+    return busmap
+
 def normed(x):
     return (x / x.sum()).fillna(0.0)
 
@@ -750,23 +765,22 @@ if __name__ == "__main__":
     if snakemake.params.copperplate_regions:
         copperplate_buses(nc, snakemake.params.copperplate_regions)
 
-    for attr in ["busmap", "linemap"]:
+    for attr in ["linemap"]:
         getattr(clustering, attr).to_csv(snakemake.output[attr])
+
+    nc.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
+
+    # correct clusters in North Ireland
+    correct_north_ireland_clusters(nc)
+    busmap_clustering = correct_north_ireland_busmap(clustering.busmap)
+    busmap_clustering.to_csv(snakemake.output.busmap)
 
     # nc.shapes = n.shapes.copy()
     for which in ["regions_onshore", "regions_offshore"]:
         regions = gpd.read_file(snakemake.input[which])
-        clustered_regions = cluster_regions((clustering.busmap,), regions)
+        clustered_regions = cluster_regions((busmap_clustering,), regions)
         clustered_regions.to_file(snakemake.output[which])
         # append_bus_shapes(nc, clustered_regions, type=which.split("_")[1])
-
-    nc.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
-
-    # print type
-    logger.info(f"Clustered network type: {type(nc)}")
-
-    # correct clusters in North Ireland
-    correct_north_ireland_clusters(nc)
 
     nc.export_to_netcdf(snakemake.output.network)
 

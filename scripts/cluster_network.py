@@ -150,8 +150,10 @@ def correct_north_ireland_clusters(n):
         if link.bus1 in ni_buses.index:
             n.links.at[link.Index, 'bus1'] = north_ireland_bus
             print("Bus 1 changed for links")
+    
+    return north_ireland_bus, n
 
-def correct_north_ireland_busmap(busmap):
+def correct_north_ireland_busmap(busmap, north_ireland_bus):
     """
     Corrects the busmap for Northern Ireland to point to the new bus.
     
@@ -160,9 +162,9 @@ def correct_north_ireland_busmap(busmap):
     busmap : pd.Series
         The busmap to correct.
     """
-    busmap_subset = busmap.loc[busmap.str.contains("GB3")]
+    busmap_subset = busmap.loc[busmap.str.contains(north_ireland_bus[0:3])]
 
-    busmap.loc[busmap_subset.index] = ["GB3 0"]* len(busmap_subset)
+    busmap.loc[busmap_subset.index] = [north_ireland_bus] * len(busmap_subset)
 
     return busmap
 
@@ -771,8 +773,8 @@ if __name__ == "__main__":
     nc.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
 
     # correct clusters in North Ireland
-    correct_north_ireland_clusters(nc)
-    busmap_clustering = correct_north_ireland_busmap(clustering.busmap)
+    north_ireland_bus, nc = correct_north_ireland_clusters(nc)
+    busmap_clustering = correct_north_ireland_busmap(clustering.busmap, north_ireland_bus)
     busmap_clustering.to_csv(snakemake.output.busmap)
 
     # nc.shapes = n.shapes.copy()

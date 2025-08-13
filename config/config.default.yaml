@@ -83,6 +83,9 @@ countries:
 uk_settings:
   remove_ireland: true
 
+local_co2:
+  GB: {2025: 1.0}
+
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:
   start: "2013-01-01"

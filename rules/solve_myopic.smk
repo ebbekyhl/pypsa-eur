@@ -115,8 +115,8 @@ ruleorder: add_existing_baseyear > add_brownfield
 
 rule solve_sector_network_myopic:
     params:
+        sector=config_provider("sector"),
         local_co2=config_provider("local_co2"),
-        co2_totals = resources("co2_totals.csv"),
         solving=config_provider("solving"),
         foresight=config_provider("foresight"),
         co2_sequestration_potential=config_provider(
@@ -124,6 +124,7 @@ rule solve_sector_network_myopic:
         ),
         custom_extra_functionality=input_custom_extra_functionality,
     input:
+        co2_totals = resources("co2_totals.csv"),
         network=resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}_brownfield.nc"
         ),

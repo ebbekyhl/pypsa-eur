@@ -43,6 +43,7 @@ import yaml
 from pypsa.descriptors import get_activity_mask
 from pypsa.descriptors import get_switchable_as_dense as get_as_dense
 
+from scripts.prepare_sector_network import determine_emission_sectors
 from scripts._benchmark import memory_logger
 from scripts._helpers import (
     PYPSA_V1,
@@ -239,16 +240,19 @@ def add_solar_potential_constraints(n: pypsa.Network, config: dict) -> None:
     logger.info("Adding solar potential constraint.")
     n.model.add_constraints(lhs <= rhs, name="solar_potential")
 
-def add_local_co2_constraint(n: pypsa.Network, config: dict) -> None:
+def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
     """
     This function adds local CO2 emissions constraints for each country specified 
     in the dictionary "local_co2" in the config file.
     """
-    co2_limits = snakemake.params.local_co2
-    co2_totals = snakemake.params.co2_totals
-    countries = co2_limits.keys()
-    year = snakemake.wildcards.planning_horizons
+    co2_totals_file = snakemake.input.co2_totals
+    co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0) # convert Mt to tCO2
 
+    options = snakemake.params.sector
+    sectors = determine_emission_sectors(options)
+
+    year = int(snakemake.wildcards.planning_horizons)
+    countries = local_co2.keys()
     for country in countries:
         ################## 1 1 1 1 1 1 1 1 1 ##################
         co2_process = n.links.query('bus1 == "co2 atmosphere"')
@@ -278,14 +282,15 @@ def add_local_co2_constraint(n: pypsa.Network, config: dict) -> None:
         ################## LOAD LOAD LOAD LOAD LOAD ##################
         loads_co2 = n.loads.index[n.loads.index.str.contains('emissions')]
         loads_co2_country = loads_co2[loads_co2.str.contains(country)]
-        loads_co2_country_sum = -(n.loads_t.p[loads_co2_country].sum(axis=1)*n.snapshot_weightings["generators"]).sum()
+        loads_co2_country_sum = -(n.loads.loc[loads_co2_country].p_set*8760).sum()
 
         ################## SUM SUM SUM SUM SUM SUM ##################
         country_co2_emissions_total = country_co2_emissions_1_sum + country_co2_emissions_2_sum + country_co2_emissions_3_sum
 
         ################## CO2 limits ###############################
-        co2_lim_relative_to_1990 = co2_limits[country][year]
-        co2_1990 = co2_totals.loc[country].sum() # sum of all sectors (need to only include sectors that are present)
+        co2_lim_relative_to_1990 = local_co2[country][year]
+        co2_1990 = co2_totals.loc[country, sectors].sum()
+        logger.info("CO2 emissions for " + country + " :", co2_1990)
         co2_allowance = co2_lim_relative_to_1990*co2_1990
 
         lhs = country_co2_emissions_total
@@ -1285,6 +1290,9 @@ def extra_functionality(
     if config["sector"]["imports"]["enable"]:
         add_import_limit_constraint(n, snapshots)
 
+    if isinstance(config["local_co2"], dict):
+        add_local_co2_constraint(n, config["local_co2"])
+
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality
         assert os.path.exists(source_path), f"{source_path} does not exist"
@@ -1293,7 +1301,6 @@ def extra_functionality(
         module = importlib.import_module(module_name)
         custom_extra_functionality = getattr(module, module_name)
         custom_extra_functionality(n, snapshots, snakemake)  # pylint: disable=E0601
-
 
 def check_objective_value(n: pypsa.Network, solving: dict) -> None:
     """

@@ -265,7 +265,7 @@ def add_solar_potential_constraints(n: pypsa.Network, config: dict) -> None:
     n.model.add_constraints(lhs <= rhs, name="solar_potential")
 
 
-def add_global_co2_constraint(n: pypsa.Network) -> None:
+def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     """
     This function adds a collective CO2 emissions constraints for all countries that
     do not have their own targets.
@@ -281,6 +281,7 @@ def add_global_co2_constraint(n: pypsa.Network) -> None:
 
     options = snakemake.params.sector
     investment_year = int(snakemake.wildcards.planning_horizons)
+    sectors = determine_emission_sectors(options)
     nhours = n.snapshot_weightings.generators.sum()
     nyears = nhours / 8760
     limit = calculate_co2_limit(investment_year, options, collective)
@@ -321,7 +322,7 @@ def add_global_co2_constraint(n: pypsa.Network) -> None:
     ################## LOAD LOAD LOAD LOAD LOAD ##################
     loads_co2 = n.loads.index[n.loads.index.str.contains('emissions')]
     loads_co2_collective = loads_co2[~loads_co2.str[0:2].isin(local_co2_countries)]
-    loads_co2_collective_sum = -(n.loads_t.p[loads_co2_collective].sum(axis=1)*n.snapshot_weightings["generators"]).sum()
+    loads_co2_collective_sum = -(n.loads.loc[loads_co2_collective].p_set*8760).sum()
 
     ################## SUM SUM SUM SUM SUM SUM ##################
     collective_co2_emissions_total = collective_co2_emissions_1_sum + collective_co2_emissions_2_sum + collective_co2_emissions_3_sum
@@ -1389,7 +1390,7 @@ def extra_functionality(
     if isinstance(config["local_co2"], dict):
         add_local_co2_constraint(n, config["local_co2"])
 
-    add_global_co2_constraint(n)
+    add_global_co2_constraint(n, config)
 
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality

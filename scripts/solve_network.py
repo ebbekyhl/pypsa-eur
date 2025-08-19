@@ -278,6 +278,11 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
 
         # remove local co2 countries from the collective
         collective = [x for x in countries if x not in local_co2_countries]
+    
+    else: 
+        collective = countries
+
+    logger.info("Collective = %s", collective)
 
     options = snakemake.params.sector
     investment_year = int(snakemake.wildcards.planning_horizons)
@@ -294,6 +299,13 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
 
     # Get emission variables
 
+    ################## 0 0 0 0 0 0 0 0 0 ##################
+    co2_dac = n.links.query('carrier == "DAC"')
+
+    collective_co2_dac = co2_dac[co2_dac.bus0.str[0:2].isin(countries)]
+    collective_co2_emissions_0 = n.model["Link-p"].loc[:, collective_co2_dac.index]*collective_co2_dac.efficiency3*n.snapshot_weightings["generators"]
+    collective_co2_emissions_0_sum = -collective_co2_emissions_0.sum()
+
     ################## 1 1 1 1 1 1 1 1 1 ##################
     co2_process = n.links.query('bus1 == "co2 atmosphere"')
 
@@ -304,8 +316,9 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     ################## 2 2 2 2 2 2 2 2 2 ##################
     co2_emittors = n.links.query('bus2 == "co2 atmosphere"') # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
 
+    co2_emittors = co2_emittors.drop(co2_emittors.query("carrier == 'DAC'").index) # excluding DAC
+
     collective_co2_emittors = co2_emittors[~co2_emittors.bus0.str[0:2].isin(local_co2_countries)]
-    collective_co2_emittors = collective_co2_emittors.query('efficiency2 != 0') # excluding links with no CO2 emissions
     collective_co2_emittors_index = collective_co2_emittors.index
 
     collective_co2_emissions_2 = n.model["Link-p"].loc[:, collective_co2_emittors_index]*n.links.loc[collective_co2_emittors_index].efficiency2*n.snapshot_weightings["generators"]
@@ -325,7 +338,7 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     loads_co2_collective_sum = -(n.loads.loc[loads_co2_collective].p_set*8760).sum()
 
     ################## SUM SUM SUM SUM SUM SUM ##################
-    collective_co2_emissions_total = collective_co2_emissions_1_sum + collective_co2_emissions_2_sum + collective_co2_emissions_3_sum
+    collective_co2_emissions_total = collective_co2_emissions_0_sum + collective_co2_emissions_1_sum + collective_co2_emissions_2_sum + collective_co2_emissions_3_sum
 
     # Add constraint
     lhs = collective_co2_emissions_total
@@ -351,6 +364,13 @@ def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
     year = int(snakemake.wildcards.planning_horizons)
     countries = local_co2.keys()
     for country in countries:
+        ################## 0 0 0 0 0 0 0 0 0 ##################
+        co2_dac = n.links.query('carrier == "DAC"')
+
+        country_co2_dac = co2_dac[co2_dac.bus0.str.contains(country)]
+        country_co2_emissions_0 = n.model["Link-p"].loc[:, country_co2_dac.index]*country_co2_dac.efficiency3*n.snapshot_weightings["generators"]
+        country_co2_emissions_0_sum = -country_co2_emissions_0.sum()
+
         ################## 1 1 1 1 1 1 1 1 1 ##################
         co2_process = n.links.query('bus1 == "co2 atmosphere"')
 
@@ -361,8 +381,9 @@ def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
         ################## 2 2 2 2 2 2 2 2 2 ##################
         co2_emittors = n.links.query('bus2 == "co2 atmosphere"') # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
 
+        co2_emittors = co2_emittors.drop(co2_emittors.query("carrier == 'DAC'").index) # excluding DAC
+
         country_co2_emittors = co2_emittors[co2_emittors.bus0.str.contains(country)]
-        country_co2_emittors = country_co2_emittors.query('efficiency2 != 0') # excluding links with no CO2 emissions
         country_co2_emittors_index = country_co2_emittors.index
 
         country_co2_emissions_2 = n.model["Link-p"].loc[:, country_co2_emittors_index]*n.links.loc[country_co2_emittors_index].efficiency2*n.snapshot_weightings["generators"]
@@ -382,7 +403,7 @@ def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
         loads_co2_country_sum = -(n.loads.loc[loads_co2_country].p_set*8760).sum()
 
         ################## SUM SUM SUM SUM SUM SUM ##################
-        country_co2_emissions_total = country_co2_emissions_1_sum + country_co2_emissions_2_sum + country_co2_emissions_3_sum
+        country_co2_emissions_total = country_co2_emissions_0_sum + country_co2_emissions_1_sum + country_co2_emissions_2_sum + country_co2_emissions_3_sum
 
         ################## CO2 limits ###############################
         co2_lim_relative_to_1990 = local_co2[country][year]
@@ -1428,6 +1449,52 @@ def check_objective_value(n: pypsa.Network, solving: dict) -> None:
                 f"{expected_value} by more than {atol}."
             )
 
+def save_co2_constraint_duals(n: pypsa.Network) -> None:
+    """
+    Save dual values of CO2 constraints to CSV files.
+    """
+    investment_year = snakemake.wildcards.planning_horizons
+    countries = n.config["local_co2"].keys()
+    for country in countries:
+
+        constraint_name = "local co2 emissions constraint " + country
+
+        logger.info(f"constraint: {n.model.dual[constraint_name]}")
+
+        df = pd.Series(n.model.dual[constraint_name].values)
+        coord = list(n.model.dual[constraint_name].coords)
+
+        if len(coord) == 1:
+            df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
+            df.index.name = coord[0]
+        
+        if len(coord) == 2:
+            df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
+            df.columns = pd.Series(n.model.dual[constraint_name].coords[coord[1]])
+
+            df.index.name = coord[0]
+            df.columns.name = coord[1]
+
+        df.to_csv("results/" + snakemake.params.RDIR + "/csvs/dual_local_co2_" + country + "_" + investment_year + ".csv")
+
+    constraint_name = "collective co2 emissions constraint"
+
+    df = pd.Series(n.model.dual[constraint_name].values)
+    coord = list(n.model.dual[constraint_name].coords)
+
+    if len(coord) == 1:
+        df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
+        df.index.name = coord[0]
+    
+    if len(coord) == 2:
+        df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
+        df.columns = pd.Series(n.model.dual[constraint_name].coords[coord[1]])
+
+        df.index.name = coord[0]
+        df.columns.name = coord[1]
+
+    df.to_csv("results/" + snakemake.params.RDIR + "/csvs/dual_collective_co2_" + investment_year + ".csv")
+
 
 def solve_network(
     n: pypsa.Network,
@@ -1545,6 +1612,7 @@ def solve_network(
         n.model.print_infeasibilities()
         raise RuntimeError("Solving status 'infeasible'. Infeasibilities computed.")
 
+    save_co2_constraint_duals(n)
 
 if __name__ == "__main__":
     if "snakemake" not in globals():

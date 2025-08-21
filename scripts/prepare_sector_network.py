@@ -4469,6 +4469,123 @@ def add_industry(
     nhours = n.snapshot_weightings.generators.sum()
     nyears = nhours / 8760
 
+    endogenous_sectors = []
+    if options["endogenous_steel"]:
+        endogenous_sectors += ["DRI + Electric arc"]
+    sectors_b = ~industrial_demand.index.get_level_values("sector").isin(
+        endogenous_sectors
+    )
+
+    if options["endogenous_steel"]:
+        logger.info("Adding endogenous primary steel demand in tonnes.")
+
+        sector = "DRI + Electric arc"
+
+        no_relocation = not options["relocation_steel"]
+
+        s = " not" if no_relocation else ""
+        logger.info(f"Steel industry relocation{s} activated.")
+
+        n.add(
+            "Bus",
+            "EU steel",
+            location="EU",
+            carrier="steel",
+            unit="t",
+        )
+
+        n.add(
+            "Bus",
+            "EU HBI",
+            location="EU",
+            carrier="HBI",
+            unit="t",
+        )
+
+        n.add(
+            "Load",
+            "EU steel",
+            bus="EU steel",
+            carrier="steel",
+            p_set=industrial_production[sector].sum() / nhours,
+        )
+
+        if not no_relocation:
+            n.add(
+                "Store",
+                "EU steel Store",
+                bus="EU steel",
+                e_nom_extendable=True,
+                e_cyclic=True,
+                carrier="steel",
+            )
+
+            n.add(
+                "Store",
+                "EU HBI Store",
+                bus="EU HBI",
+                e_nom_extendable=True,
+                e_cyclic=True,
+                carrier="HBI",
+            )
+
+        electricity_input = costs.at[
+            "direct iron reduction furnace", "electricity-input"
+        ]
+
+        hydrogen_input = costs.at["direct iron reduction furnace", "hydrogen-input"]
+
+        # so that for each region supply matches consumption
+        p_nom = (
+            industrial_production[sector]
+            * costs.at["electric arc furnace", "hbi-input"]
+            * electricity_input
+            / nhours
+        )
+
+        marginal_cost = (
+            costs.at["iron ore DRI-ready", "commodity"]
+            * costs.at["direct iron reduction furnace", "ore-input"]
+            / electricity_input
+        )
+
+        n.madd(
+            "Link",
+            nodes,
+            suffix=" DRI",
+            carrier="DRI",
+            capital_cost=costs.at["direct iron reduction furnace", "fixed"]
+            / electricity_input,
+            marginal_cost=marginal_cost,
+            p_nom=p_nom if no_relocation else 0,
+            p_nom_extendable=False if no_relocation else True,
+            bus0=nodes,
+            bus1="EU HBI",
+            bus2=nodes + " H2",
+            efficiency=1 / electricity_input,
+            efficiency2=-hydrogen_input / electricity_input,
+        )
+
+        electricity_input = costs.at["electric arc furnace", "electricity-input"]
+
+        p_nom = industrial_production[sector] * electricity_input / nhours
+
+        n.madd(
+            "Link",
+            nodes,
+            suffix=" EAF",
+            carrier="EAF",
+            capital_cost=costs.at["electric arc furnace", "fixed"] / electricity_input,
+            p_nom=p_nom if no_relocation else 0,
+            p_nom_extendable=False if no_relocation else True,
+            bus0=nodes,
+            bus1="EU steel",
+            bus2="EU HBI",
+            efficiency=1 / electricity_input,
+            efficiency2=-costs.at["electric arc furnace", "hbi-input"]
+            / electricity_input,
+        )
+
     # 1e6 to convert TWh to MWh
     industrial_demand = pd.read_csv(industrial_demand_file, index_col=0) * 1e6 * nyears
 
@@ -6162,6 +6279,12 @@ if __name__ == "__main__":
     nhours = n.snapshot_weightings.generators.sum()
     nyears = nhours / 8760
 
+    industrial_production = (
+        pd.read_csv(snakemake.input.industrial_production, index_col=0)
+        * 1e3
+        * nyears  # kt/a -> t/a
+    )
+    
     costs = load_costs(
         snakemake.input.costs,
         snakemake.params.costs,

@@ -484,6 +484,8 @@ sector:
   aviation: true
   agriculture: true
   fossil_fuels: true
+  endogenous_steel: true
+  relocation_steel: true
   district_heating:
     potential: 0.6
     progress:
@@ -910,7 +912,7 @@ industry:
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#costs
 costs:
   year: 2050
-  version: v0.13.3
+  version: 40675bf
   social_discountrate: 0.02
   fill_values:
     FOM: 0

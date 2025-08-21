@@ -97,63 +97,69 @@ GEO_CRS = "EPSG:4326"
 DISTANCE_CRS = "EPSG:3035"
 BUS_TOL = 500  # meters
 
-def correct_north_ireland_clusters(n):
+def group_clusters(n, country):
     """
-    Reduce the number of buses in Northern Ireland to one bus.
+    Group the buses in a country to one bus.
 
     Parameters
     ----------
     n : pypsa.Network
         The PyPSA network to modify.
+    country : str
+        The country code (e.g. 'GB', 'IE') for which to correct the clusters.
     """
-    
-    # get the buses in Northern Ireland (filter based on coordinates)
-    ni_buses = n.buses[n.buses.country == 'GB'] 
-    ni_buses = ni_buses[(ni_buses.x < -5.3) & (ni_buses.x > -8.2)]
-    ni_buses = ni_buses[(ni_buses.y > 53.9) & (ni_buses.y < 55.3)]
 
-    ni_bus_name = 'GBNI' # temporary name for Northern Ireland bus
-    # add new bus for Northern Ireland
+    if country == "GB":
+        # get the buses in Northern Ireland (filter based on coordinates)
+        ni_buses = n.buses[n.buses.country == 'GB'] 
+        ni_buses = ni_buses[(ni_buses.x < -5.3) & (ni_buses.x > -8.2)]
+        ni_buses = ni_buses[(ni_buses.y > 53.9) & (ni_buses.y < 55.3)]
+    else:
+        ni_buses = n.buses[n.buses.country == country]
+
+    ni_bus_name = 'new_bus' # temporary name for country bus
+
+    # add new bus for country
     n.add("Bus", 
             ni_bus_name, 
-            country='GB', 
+            country=country, 
             v_nom=380.0,
             x=ni_buses.x.mean(), 
             y=ni_buses.y.mean())
 
-    # drop remaining buses in the Northern Ireland and replace with new bus
+    # drop remaining buses in country and replace with new bus
     n.buses = n.buses.drop(ni_buses.index)
-    north_ireland_bus = ni_buses.index.str[0:3][0] + " 0"  # e.g. "GB3 0"
+    new_bus = ni_buses.index.str[0:3][0] + " 0"  # e.g. "GB3 0"
     buses_copy = n.buses.copy()
-    buses_copy.rename({"GBNI": north_ireland_bus}, inplace=True)
+    buses_copy.rename({ni_bus_name: new_bus}, inplace=True)
     n.buses = buses_copy
 
-    # drop internal lines in Northern Ireland
-    lines_NIE = n.lines.loc[n.lines.bus1.isin(ni_buses.index)]
-    lines_NIE_0 = n.lines.loc[n.lines.bus0.isin(ni_buses.index)]
-    lines_NIE_1 = lines_NIE_0.loc[lines_NIE_0.bus1.isin(ni_buses.index)]
-    n.lines = n.lines.drop(lines_NIE_1.index)
+    # drop internal lines in country
+    lines_country = n.lines.loc[n.lines.bus1.isin(ni_buses.index)]
+    lines_country_0 = n.lines.loc[n.lines.bus0.isin(ni_buses.index)]
+    lines_country_1 = lines_country_0.loc[lines_country_0.bus1.isin(ni_buses.index)]
+    n.lines = n.lines.drop(lines_country_1.index)
 
     # rename bus0 and bus1 on interconnections with Northern Ireland
     for line in n.lines.itertuples():
         if line.bus0 in ni_buses.index:
-            n.lines.at[line.Index, 'bus0'] = north_ireland_bus
+            n.lines.at[line.Index, 'bus0'] = new_bus
             print("Bus 0 changed for lines")
         if line.bus1 in ni_buses.index:
-            n.lines.at[line.Index, 'bus1'] = north_ireland_bus
+            n.lines.at[line.Index, 'bus1'] = new_bus
             print("Bus 1 changed for lines")
         
     for link in n.links.itertuples():    
         if link.bus0 in ni_buses.index:
-            n.links.at[link.Index, 'bus0'] = north_ireland_bus
+            n.links.at[link.Index, 'bus0'] = new_bus
             print("Bus 0 changed for links")
         if link.bus1 in ni_buses.index:
-            n.links.at[link.Index, 'bus1'] = north_ireland_bus
+            n.links.at[link.Index, 'bus1'] = new_bus
             print("Bus 1 changed for links")
-    
-    return north_ireland_bus, n
 
-def correct_north_ireland_busmap(busmap, north_ireland_bus):
+    return new_bus, n
+
+def correct_busmap(busmap, bus):
     """
     Corrects the busmap for Northern Ireland to point to the new bus.
     
@@ -162,9 +168,9 @@ def correct_north_ireland_busmap(busmap, north_ireland_bus):
     busmap : pd.Series
         The busmap to correct.
     """
-    busmap_subset = busmap.loc[busmap.str.contains(north_ireland_bus[0:3])]
+    busmap_subset = busmap.loc[busmap.str.contains(bus[0:3])]
 
-    busmap.loc[busmap_subset.index] = [north_ireland_bus] * len(busmap_subset)
+    busmap.loc[busmap_subset.index] = [bus] * len(busmap_subset)
 
     return busmap
 
@@ -772,9 +778,14 @@ if __name__ == "__main__":
 
     nc.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
 
-    # correct clusters in North Ireland
-    north_ireland_bus, nc = correct_north_ireland_clusters(nc)
-    busmap_clustering = correct_north_ireland_busmap(clustering.busmap, north_ireland_bus)
+    busmap_clustering = clustering.busmap.copy()
+    # group clusters in country
+    if params.group_clusters:
+        countries = params.countries
+        for country in countries:
+            country_bus, nc = group_clusters(nc, country)
+            busmap_clustering = correct_busmap(busmap_clustering, country_bus)
+
     busmap_clustering.to_csv(snakemake.output.busmap)
 
     # nc.shapes = n.shapes.copy()

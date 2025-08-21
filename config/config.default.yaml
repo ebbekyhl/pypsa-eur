@@ -956,9 +956,11 @@ costs:
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#clustering
 clustering:
-  mode: busmap
+  mode: administrative
+  group_clusters: false
   administrative:
-    level: 1
+    level: 0
+    GB: 3
   focus_weights: {'GB':0.8}
   copperplate_regions: []
   build_bidding_zones:

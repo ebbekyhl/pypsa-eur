@@ -1461,12 +1461,11 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
     Save dual values of CO2 constraints to CSV files.
     """
     investment_year = snakemake.wildcards.planning_horizons
+    clusters = snakemake.wildcards.clusters
     countries = n.config["local_co2"].keys()
     for country in countries:
 
         constraint_name = "local co2 emissions constraint " + country
-
-        logger.info(f"constraint: {n.model.dual[constraint_name]}")
 
         df = pd.Series(n.model.dual[constraint_name].values)
         coord = list(n.model.dual[constraint_name].coords)
@@ -1482,7 +1481,7 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
             df.index.name = coord[0]
             df.columns.name = coord[1]
 
-        df.to_csv("results/" + snakemake.params.RDIR + "/csvs/dual_local_co2_" + country + "_" + investment_year + ".csv")
+        df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_local_co2_" + country + "_" + investment_year + "_" + clusters + ".csv")
 
     constraint_name = "collective co2 emissions constraint"
 
@@ -1500,7 +1499,7 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
         df.index.name = coord[0]
         df.columns.name = coord[1]
 
-    df.to_csv("results/" + snakemake.params.RDIR + "/csvs/dual_collective_co2_" + investment_year + ".csv")
+    df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_collective_co2_" + investment_year + "_" + clusters + ".csv")
 
 
 def solve_network(

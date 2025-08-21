@@ -637,6 +637,7 @@ rule cluster_network:
         countries=config_provider("countries"),
         mode=config_provider("clustering", "mode"),
         administrative=config_provider("clustering", "administrative"),
+        group_clusters=config_provider("clustering", "group_clusters"),
         cluster_network=config_provider("clustering", "cluster_network"),
         aggregation_strategies=config_provider(
             "clustering", "aggregation_strategies", default={}

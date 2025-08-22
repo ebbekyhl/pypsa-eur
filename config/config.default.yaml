@@ -956,12 +956,11 @@ costs:
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#clustering
 clustering:
-  mode: administrative
+  mode: administrative_mixed
   group_clusters: false
   administrative:
-    level: 0
     GB: 3
-  focus_weights: {'GB':0.8}
+  focus_weights: False
   copperplate_regions: []
   build_bidding_zones:
     remove_islands: false

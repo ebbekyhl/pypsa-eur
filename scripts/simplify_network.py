@@ -264,11 +264,14 @@ def remove_stubs(
 def remove_stubs_within_admin(
     n: pypsa.Network, simplify_network: dict, admin_shapes: str
 ) -> tuple[pypsa.Network, pd.Series]:
+    administrative = params.administrative
+    countries = params.countries
     busmap = busmap_for_admin_regions(
         n,
         admin_shapes,
-        params,
-    )
+        countries,
+        administrative
+        )
     n.buses["admin"] = n.buses.index.map(busmap)
 
     logger.info("Removing stubs within administrative regions.")

@@ -534,7 +534,8 @@ def cluster_regions(
 def busmap_for_admin_regions(
     n: pypsa.Network,
     admin_shapes: str,
-    params: dict,
+    countries: list,
+    administrative: dict,
 ) -> pd.Series:
     """
     Create a busmap based on administrative regions using the NUTS3 shapefile.
@@ -549,11 +550,9 @@ def busmap_for_admin_regions(
     -------
         busmap (pd.Series): Busmap mapping each bus to an administrative region.
     """
-    countries = params.countries
     admin_regions = gpd.read_file(admin_shapes)
 
-    admin_levels = params.administrative
-    level = admin_levels.get("level", 0)
+    level = administrative.get("level", 0)
     logger.info(f"Clustering at administrative level {level}.")
 
     # check if BA, MD, UA, or XK are in the network
@@ -569,7 +568,7 @@ def busmap_for_admin_regions(
         )
 
     country_level = {
-        k: v for k, v in admin_levels.items() if (k != "level") and (k in countries)
+        k: v for k, v in administrative.items() if (k != "level") and (k in countries)
     }
     if country_level:
         country_level_list = "\n".join(
@@ -585,7 +584,7 @@ def busmap_for_admin_regions(
 
     # Map based for each country
     logger.info("Mapping buses to administrative regions.")
-    for country in tqdm.tqdm(buses["country"].unique()):
+    for country in countries:
         buses_subset = buses.loc[buses["country"] == country]
 
         buses.loc[buses_subset.index, "busmap"] = gpd.sjoin_nearest(
@@ -671,8 +670,14 @@ def update_bus_coordinates(
     )
 
     # Update x, y coordinates of original network
-    n.buses["x"] = busmap_df["x"]
-    n.buses["y"] = busmap_df["y"]
+    buses = n.buses.copy()
+    update_buses = buses.loc[busmap.index]
+    update_buses["x"] = busmap_df["x"]
+    update_buses["y"] = busmap_df["y"]
+
+    buses.loc[update_buses.index, :] = update_buses
+
+    n.buses = buses
 
 
 if __name__ == "__main__":
@@ -685,7 +690,13 @@ if __name__ == "__main__":
 
     params = snakemake.params
     mode = params.mode
+    administrative = params.administrative
+    countries = params.countries
+    n_clusters = int(snakemake.wildcards.clusters)
     solver_name = snakemake.config["solving"]["solver"]["name"]
+
+    algorithm = params.cluster_network["algorithm"]
+    features = None
 
     n = pypsa.Network(snakemake.input.network)
     buses_prev, lines_prev, links_prev = len(n.buses), len(n.lines), len(n.links)
@@ -705,11 +716,79 @@ if __name__ == "__main__":
     else:
         Nyears = n.snapshot_weightings.objective.sum() / 8760
 
+        if mode == "administrative_mixed":
+            administrative_df = pd.Series(administrative)
+            admin_countries = list(administrative_df.index[administrative_df.index.isin(countries)])
+
+            busmap_a = busmap_for_admin_regions(
+                                                n,
+                                                snakemake.input.admin_shapes,
+                                                admin_countries,
+                                                administrative,
+                                            )
+
+            n_clusters = int(n_clusters) - busmap_a[busmap_a != ""].unique().shape[0] # withdraw administrative regions
+
+            buses = n.buses.copy()
+            lines = n.lines.copy()
+            links = n.links.copy()
+            load_reduced = load.copy()
+            admin_buses_lst = []
+            for admin_country in admin_countries:
+                admin_buses = buses.query("country == @admin_country").index
+                buses.drop(index=admin_buses, inplace=True)
+
+                admin_lines_0 = lines[lines.bus0.isin(admin_buses)].index
+                admin_lines_1 = lines[lines.bus1.isin(admin_buses)].index
+                lines.drop(index=admin_lines_0.union(admin_lines_1), inplace=True)
+
+                admin_links_0 = links[links.bus0.isin(admin_buses)].index
+                admin_links_1 = links[links.bus1.isin(admin_buses)].index
+                links.drop(index=admin_links_0.union(admin_links_1), inplace=True)
+
+                load_reduced = load.drop(admin_buses)
+
+                admin_buses_lst += list(admin_buses)
+
+            n_temp = n.copy()
+            n_temp.buses = buses
+            n_temp.lines = lines
+            n_temp.links = links
+
+            if algorithm == "hac":
+                features = get_feature_data_for_hac(snakemake.input.hac_features)
+                fix_country_assignment_for_hac(n)
+
+            n_temp.determine_network_topology()
+
+            n_clusters_c = distribute_n_clusters_to_countries(
+                n_temp,
+                n_clusters,
+                load_reduced,
+                focus_weights=params.focus_weights,
+                solver_name=solver_name,
+            )
+            busmap_c = busmap_for_n_clusters(
+                n_temp,
+                n_clusters_c,
+                cluster_weights=load_reduced,
+                algorithm=algorithm,
+                features=features,
+            )
+            busmap = pd.concat([busmap_c, busmap_a.loc[pd.Index(admin_buses_lst)]])
+            # Update x, y coordinates, ensuring that bus locations are inside the administrative region
+            update_bus_coordinates(
+                n,
+                busmap_a[busmap_a != ""],
+                snakemake.input.admin_shapes,
+            )
+
         if mode == "administrative":
             busmap = busmap_for_admin_regions(
                 n,
                 snakemake.input.admin_shapes,
-                params,
+                countries,
+                administrative,
             )
             # Update x, y coordinates, ensuring that bus locations are inside the administrative region
             update_bus_coordinates(
@@ -737,9 +816,6 @@ if __name__ == "__main__":
             logger.info(f"Imported custom busmap from {snakemake.input.custom_busmap}")
             busmap = custom_busmap
         else:
-            n_clusters = int(snakemake.wildcards.clusters)
-            algorithm = params.cluster_network["algorithm"]
-            features = None
             if algorithm == "hac":
                 features = get_feature_data_for_hac(snakemake.input.hac_features)
                 fix_country_assignment_for_hac(n)

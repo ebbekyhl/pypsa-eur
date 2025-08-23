@@ -957,7 +957,8 @@ costs:
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#clustering
 clustering:
   mode: administrative_mixed
-  group_clusters: false
+  group_clusters:
+    - Northern Ireland
   administrative:
     GB: 3
   focus_weights: False

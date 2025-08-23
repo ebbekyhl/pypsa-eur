@@ -1467,7 +1467,7 @@ def build_admin_shapes(
 
     level = admin_levels.get("level", 0)
 
-    if clustering == "administrative" or clustering == "administrative_mixed":
+    if clustering in ("administrative", "administrative_mixed"):
         logger.info(f"Building bus regions at administrative level {level}")
 
         nuts3_regions["column"] = level_map[level]

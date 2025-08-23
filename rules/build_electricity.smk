@@ -164,7 +164,7 @@ rule build_shapes:
         nuts3_pop="data/jrc-ardeco/ARDECO-SNPTD.2021.table.csv",
         bidding_zones=lambda w: (
             resources("bidding_zones.geojson")
-            if config_provider("clustering", "mode")(w) == "administrative"
+            if config_provider("clustering", "mode")(w) in {"administrative", "administrative_mixed"}
             else []
         ),
         other_gdp="data/bundle/GDP_per_capita_PPP_1990_2015_v2.nc",
@@ -657,7 +657,7 @@ rule cluster_network:
         admin_shapes=resources("admin_shapes.geojson"),
         bidding_zones=lambda w: (
             resources("bidding_zones.geojson")
-            if config_provider("clustering", "mode")(w) == "administrative"
+            if config_provider("clustering", "mode")(w) in {"administrative", "administrative_mixed"}
             else []
         ),
         regions_onshore=resources("regions_onshore_base_s.geojson"),

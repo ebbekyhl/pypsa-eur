@@ -446,7 +446,7 @@ if __name__ == "__main__":
     busmaps.append(simplify_links_map)
 
     if params.simplify_network["remove_stubs"]:
-        if params.mode == "administrative":
+        if params.mode in ("administrative", "administrative_mixed"):
             n, stub_map = remove_stubs_within_admin(
                 n, params.simplify_network, snakemake.input.admin_shapes
             )

@@ -109,7 +109,7 @@ def group_clusters(n, country):
         The country code (e.g. 'GB', 'IE') for which to correct the clusters.
     """
 
-    if country == "GB":
+    if country == "Northern Ireland":
         # get the buses in Northern Ireland (filter based on coordinates)
         ni_buses = n.buses[n.buses.country == 'GB'] 
         ni_buses = ni_buses[(ni_buses.x < -5.3) & (ni_buses.x > -8.2)]
@@ -720,6 +720,9 @@ if __name__ == "__main__":
             administrative_df = pd.Series(administrative)
             admin_countries = list(administrative_df.index[administrative_df.index.isin(countries)])
 
+            # print admin_countries
+            logger.info(f"Administrative countries: {admin_countries}")
+
             busmap_a = busmap_for_admin_regions(
                                                 n,
                                                 snakemake.input.admin_shapes,
@@ -727,7 +730,12 @@ if __name__ == "__main__":
                                                 administrative,
                                             )
 
+            # print busmap_a
+            logger.info(f"Busmap for administrative regions: {busmap_a}")
+
             n_clusters = int(n_clusters) - busmap_a[busmap_a != ""].unique().shape[0] # withdraw administrative regions
+
+            logger.info(f"Number of clusters after withdrawing administrative regions: {n_clusters}")
 
             buses = n.buses.copy()
             lines = n.lines.copy()
@@ -775,7 +783,11 @@ if __name__ == "__main__":
                 algorithm=algorithm,
                 features=features,
             )
+            logger.info(f"Busmap for the rest: {busmap_c}")
+
             busmap = pd.concat([busmap_c, busmap_a.loc[pd.Index(admin_buses_lst)]])
+            logger.info(f"Combined busmap: {busmap}")
+
             # Update x, y coordinates, ensuring that bus locations are inside the administrative region
             update_bus_coordinates(
                 n,
@@ -783,7 +795,10 @@ if __name__ == "__main__":
                 snakemake.input.admin_shapes,
             )
 
-        if mode == "administrative":
+            logger.info(f"Updated x-coords: {n.buses.x}")
+            logger.info(f"Updated y-coords: {n.buses.y}")
+
+        elif mode == "administrative":
             busmap = busmap_for_admin_regions(
                 n,
                 snakemake.input.admin_shapes,
@@ -857,7 +872,7 @@ if __name__ == "__main__":
     busmap_clustering = clustering.busmap.copy()
     # group clusters in country
     if params.group_clusters:
-        countries = params.countries
+        countries = params.group_clusters
         for country in countries:
             country_bus, nc = group_clusters(nc, country)
             busmap_clustering = correct_busmap(busmap_clustering, country_bus)

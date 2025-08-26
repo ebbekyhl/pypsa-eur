@@ -872,12 +872,13 @@ if __name__ == "__main__":
     busmap_clustering = clustering.busmap.copy()
     # group clusters in country
     if params.group_clusters:
-        countries = params.group_clusters
-        for country in countries:
+        group_countries = params.group_clusters
+        for country in group_countries:
             country_bus, nc = group_clusters(nc, country)
             busmap_clustering = correct_busmap(busmap_clustering, country_bus)
-
-    busmap_clustering.to_csv(snakemake.output.busmap)
+        
+    busmap_clustering.index.name = "Bus"
+    busmap_clustering.to_csv(snakemake.output.busmap, index=True)
 
     # nc.shapes = n.shapes.copy()
     for which in ["regions_onshore", "regions_offshore"]:

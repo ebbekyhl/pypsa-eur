@@ -122,7 +122,7 @@ def group_clusters(n, country):
     # add new bus for country
     n.add("Bus", 
             ni_bus_name, 
-            country=country, 
+            country=country if country != "Northern Ireland" else "GB", 
             v_nom=380.0,
             x=ni_buses.x.mean(), 
             y=ni_buses.y.mean())

@@ -81,17 +81,17 @@ countries:
 - XK
 
 uk_settings:
-  remove_ireland: true
+  remove_ireland: false
 
 local_co2: # false or dict
   # countries listed here does not commit to the co2_budget targets
   GB:
-    2025: 1.0
-    2030: 1.0
-    2035: 1.0
-    2040: 1.0
-    2045: 1.0
-    2050: 1.0
+    2025: 0.648
+    2030: 0.450
+    2035: 0.250
+    2040: 0.100
+    2045: 0.050
+    2050: 0.000
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:

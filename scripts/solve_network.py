@@ -346,12 +346,14 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     collective_co2_emissions_total = collective_co2_emissions_0_sum + collective_co2_emissions_1_sum + collective_co2_emissions_2_sum + collective_co2_emissions_3_sum
 
     # Add constraint
-    lhs = collective_co2_emissions_total
+    lhs = collective_co2_emissions_total + loads_co2_collective_sum
     rhs = co2_limit
 
     logger.info("Adding a collective CO2 emissions constraint")
+    logger.info("LHS = VAR + " + str(loads_co2_collective_sum))
+    logger.info("RHS = " + str(rhs))
     n.model.add_constraints(
-        lhs + loads_co2_collective_sum <= rhs,
+        lhs <= rhs,
         name="collective co2 emissions constraint",
     )
 
@@ -416,12 +418,14 @@ def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
         logger.info("CO2 emissions for " + country + " :", co2_1990)
         co2_allowance = co2_lim_relative_to_1990*co2_1990
 
-        lhs = country_co2_emissions_total
+        lhs = country_co2_emissions_total + loads_co2_country_sum
         rhs = co2_allowance
 
         logger.info("Adding local CO2 emissions constraint for " + country)
+        logger.info("LHS = VAR + " + str(loads_co2_country_sum))
+        logger.info("RHS = " + str(rhs))
         n.model.add_constraints(
-            lhs + loads_co2_country_sum <= rhs,
+            lhs <= rhs,
             name="local co2 emissions constraint " + country ,
         )
 

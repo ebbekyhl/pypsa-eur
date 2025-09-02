@@ -270,6 +270,38 @@ def add_solar_potential_constraints(n: pypsa.Network, config: dict) -> None:
     n.model.add_constraints(lhs <= rhs, name="solar_potential")
 
 
+def algebra_process_emissions(n, index):
+    pe = n.model["Link-p"].loc[:, index]*n.links.loc[index].efficiency*n.snapshot_weightings["generators"]
+    pe_sum = pe.sum()
+
+    return pe_sum
+
+def algebra_generation_emissions(n, index):
+    ge = n.model["Link-p"].loc[:, index]*n.links.loc[index].efficiency2*n.snapshot_weightings["generators"]
+    ge_sum = ge.sum()
+
+    return ge_sum
+
+def algebra_carboncapture(n, index, sign = "negative"):
+    # bus0 is the electricity bus
+    # bus1 is the urban heating bus 
+    # bus2 is the CO2 atmosphere
+    # bus3 is the CO2 storage bus
+    # sign convention: when power is being discharged from bus0, then p0 (or "p" in the constraint) is positive
+    
+    cc = n.model["Link-p"].loc[:, index]*n.links.loc[index].efficiency3*n.snapshot_weightings["generators"]
+    
+    cc_sum = cc.sum() if sign == "positive" else -cc.sum()
+
+    return cc_sum
+
+def algebra_bio_gas(n, index):
+
+    bg = n.model["Link-p"].loc[:, index]*n.links.loc[index].efficiency3*n.snapshot_weightings["generators"]
+    bg_sum = bg.sum()
+
+    return bg_sum
+
 def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     """
     This function adds a collective CO2 emissions constraints for all countries that
@@ -286,6 +318,8 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     
     else: 
         collective = countries
+        local_co2_countries = False
+
 
     logger.info("Collective = %s", collective)
 
@@ -295,63 +329,53 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     nhours = n.snapshot_weightings.generators.sum()
     nyears = nhours / 8760
     limit = calculate_co2_limit(investment_year, options, collective)
-    
+    logger.info("Collective CO2 emissions limit relative to 1990 :", limit)
+
+    # CO2 allowance
     co2_totals_file = snakemake.input.co2_totals
     co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0)
+    co2_1990 = co2_totals.loc[collective, sectors].sum().sum()
+    co2_allowance = co2_1990 * limit * nyears
+    logger.info("CO2 emissions allowance for collective :", co2_allowance)
 
-    co2_limit = co2_totals.loc[collective, sectors].sum().sum()
-    co2_limit *= limit * nyears
+    # 1. Carbon Capture 
+    dac = n.links.query('carrier == "DAC"')
+    CarbCapt = dac[dac.index.str[0:2].isin(collective)]
+    CarbCapt_algebra = algebra_carboncapture(n, CarbCapt.index, sign = "positive")
 
-    # Get emission variables
+    # 2. Process emissions (A) 
+    pe = n.links.query('bus1 == "co2 atmosphere"')
+    ProcEmissions = pe if not local_co2_countries else pe[~pe.index.str[0:2].isin(local_co2_countries)]
+    ProcEmissions_algebra = algebra_process_emissions(n, ProcEmissions.index)
 
-    ################## 0 0 0 0 0 0 0 0 0 ##################
-    co2_dac = n.links.query('carrier == "DAC"')
+    # 3. Process emissions (B) 
+    pe_2 = n.loads.index[n.loads.index.str.contains('emissions')]
+    ProcEmissions_2 = pe_2 if not local_co2_countries else pe_2[~pe_2.str[0:2].isin(local_co2_countries)]
+    ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*8760).sum()
 
-    collective_co2_dac = co2_dac[co2_dac.bus0.str[0:2].isin(countries)]
-    collective_co2_emissions_0 = n.model["Link-p"].loc[:, collective_co2_dac.index]*collective_co2_dac.efficiency3*n.snapshot_weightings["generators"]
-    collective_co2_emissions_0_sum = -collective_co2_emissions_0.sum()
+    # 4. Generation emissions
+    ge = n.links.query('bus2 == "co2 atmosphere"').copy() # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
+    ge.drop(ge.query("carrier == 'DAC'").index, inplace=True) # excluding DAC
+    GenEmissions = ge if not local_co2_countries else ge[~ge.index.str[0:2].isin(local_co2_countries)]
+    GenEmissions_algebra = algebra_generation_emissions(n, GenEmissions.index)
 
-    ################## 1 1 1 1 1 1 1 1 1 ##################
-    co2_process = n.links.query('bus1 == "co2 atmosphere"')
+    # 5. Biomass and Gas CHP
+    bg = n.links.query('bus3 == "co2 atmosphere"') 
+    bg = bg if not local_co2_countries else bg[~bg.index.str[0:2].isin(local_co2_countries)]
+    BioGas = bg[bg.efficiency3 > 0]
+    BioGas_algebra = algebra_bio_gas(n, BioGas.index)
 
-    collective_co2_process = co2_process[~co2_process.bus0.str[0:2].isin(local_co2_countries)]
-    collective_co2_emissions_1 = n.model["Link-p"].loc[:, collective_co2_process.index]*collective_co2_process.efficiency*n.snapshot_weightings["generators"]
-    collective_co2_emissions_1_sum = collective_co2_emissions_1.sum()
+    # 6. Carbon Removal from CHP CC and production of electrobiofuels  
+    CarbRem = bg[bg.efficiency3 < 0]
+    CarbRem_algebra = algebra_carboncapture(n, CarbRem.index, sign = "negative")
 
-    ################## 2 2 2 2 2 2 2 2 2 ##################
-    co2_emittors = n.links.query('bus2 == "co2 atmosphere"') # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
+    # Net CO2 Emissions Constraint
+    emissions = ProcEmissions_algebra + GenEmissions_algebra + BioGas_algebra + ProcEmissions_2_sum
+    removal = CarbCapt_algebra + CarbRem_algebra
 
-    co2_emittors = co2_emittors.drop(co2_emittors.query("carrier == 'DAC'").index) # excluding DAC
+    lhs = emissions 
+    rhs = removal + co2_allowance
 
-    collective_co2_emittors = co2_emittors[~co2_emittors.bus0.str[0:2].isin(local_co2_countries)]
-    collective_co2_emittors_index = collective_co2_emittors.index
-
-    collective_co2_emissions_2 = n.model["Link-p"].loc[:, collective_co2_emittors_index]*n.links.loc[collective_co2_emittors_index].efficiency2*n.snapshot_weightings["generators"]
-    collective_co2_emissions_2_sum = collective_co2_emissions_2.sum()
-
-    ################## 3 3 3 3 3 3 3 3 3 3 ##################
-    chp = n.links.query('bus3 == "co2 atmosphere"') # emissions and capturing from CHP and electrobiofuels
-
-    country_chp_index = chp[~chp.bus0.str[0:2].isin(local_co2_countries)].index
-
-    collective_co2_emissions_3 = n.model["Link-p"].loc[:,country_chp_index]*n.links.loc[country_chp_index].efficiency3*n.snapshot_weightings["generators"]
-    collective_co2_emissions_3_sum = collective_co2_emissions_3.sum()
-
-    ################## LOAD LOAD LOAD LOAD LOAD ##################
-    loads_co2 = n.loads.index[n.loads.index.str.contains('emissions')]
-    loads_co2_collective = loads_co2[~loads_co2.str[0:2].isin(local_co2_countries)]
-    loads_co2_collective_sum = -(n.loads.loc[loads_co2_collective].p_set*8760).sum()
-
-    ################## SUM SUM SUM SUM SUM SUM ##################
-    collective_co2_emissions_total = collective_co2_emissions_0_sum + collective_co2_emissions_1_sum + collective_co2_emissions_2_sum + collective_co2_emissions_3_sum
-
-    # Add constraint
-    lhs = collective_co2_emissions_total + loads_co2_collective_sum
-    rhs = co2_limit
-
-    logger.info("Adding a collective CO2 emissions constraint")
-    logger.info("LHS = VAR + " + str(loads_co2_collective_sum))
-    logger.info("RHS = " + str(rhs))
     n.model.add_constraints(
         lhs <= rhs,
         name="collective co2 emissions constraint",
@@ -367,63 +391,57 @@ def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
 
     options = snakemake.params.sector
     sectors = determine_emission_sectors(options)
+    nhours = n.snapshot_weightings.generators.sum()
+    nyears = nhours / 8760
 
     year = int(snakemake.wildcards.planning_horizons)
     countries = local_co2.keys()
     for country in countries:
-        ################## 0 0 0 0 0 0 0 0 0 ##################
-        co2_dac = n.links.query('carrier == "DAC"')
+        # CO2 allowance
+        limit = local_co2[country][year]
+        logger.info("Individual CO2 emissions limit relative to 1990 :", limit)
+        co2_1990 = co2_totals.loc[country, sectors].sum() # tCO2 emissions per year
+        co2_allowance = co2_1990 * limit * nyears
+        logger.info("CO2 emissions allowance for " + country + " :", co2_allowance)
 
-        country_co2_dac = co2_dac[co2_dac.bus0.str.contains(country)]
-        country_co2_emissions_0 = n.model["Link-p"].loc[:, country_co2_dac.index]*country_co2_dac.efficiency3*n.snapshot_weightings["generators"]
-        country_co2_emissions_0_sum = -country_co2_emissions_0.sum()
+        # 1. Carbon Capture 
+        dac = n.links.query('carrier == "DAC"')
+        CarbCapt = dac[dac.index.str.contains(country)]
+        CarbCapt_algebra = algebra_carboncapture(n, CarbCapt.index, sign = "positive")
+        
+        # 2. Process emissions (A) 
+        pe = n.links.query('bus1 == "co2 atmosphere"')
+        ProcEmissions = pe[pe.index.str.contains(country)]
+        ProcEmissions_algebra = algebra_process_emissions(n, ProcEmissions.index)
 
-        ################## 1 1 1 1 1 1 1 1 1 ##################
-        co2_process = n.links.query('bus1 == "co2 atmosphere"')
+        # 3. Process emissions (B)
+        pe_2 = n.loads.index[n.loads.index.str.contains('emissions')]
+        ProcEmissions_2 = pe_2[pe_2.str.contains(country)]
+        ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*8760).sum()
 
-        country_co2_process = co2_process.loc[co2_process.bus0.str.contains(country)]
-        country_co2_emissions_1 = n.model["Link-p"].loc[:, country_co2_process.index]*country_co2_process.efficiency*n.snapshot_weightings["generators"]
-        country_co2_emissions_1_sum = country_co2_emissions_1.sum()
+        # 4. Generation emissions
+        ge = n.links.query('bus2 == "co2 atmosphere"').copy() # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
+        ge.drop(ge.query("carrier == 'DAC'").index, inplace=True) # excluding DAC
+        GenEmissions = ge[ge.index.str.contains(country)]
+        GenEmissions_algebra = algebra_generation_emissions(n, GenEmissions.index)
 
-        ################## 2 2 2 2 2 2 2 2 2 ##################
-        co2_emittors = n.links.query('bus2 == "co2 atmosphere"') # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
+        # 5. Biomass and Gas CHP
+        bg = n.links.query('bus3 == "co2 atmosphere"') 
+        bg = bg[bg.index.str.contains(country)]
+        BioGas = bg[bg.efficiency3 > 0]
+        BioGas_algebra = algebra_bio_gas(n, BioGas.index)
 
-        co2_emittors = co2_emittors.drop(co2_emittors.query("carrier == 'DAC'").index) # excluding DAC
+        # 6. Carbon Removal from CHP CC and production of electrobiofuels  
+        CarbRem = bg[bg.efficiency3 < 0]
+        CarbRem_algebra = algebra_carboncapture(n, CarbRem.index, sign = "negative")
 
-        country_co2_emittors = co2_emittors[co2_emittors.bus0.str.contains(country)]
-        country_co2_emittors_index = country_co2_emittors.index
+        # Net CO2 Emissions Constraint
+        emissions = ProcEmissions_algebra + GenEmissions_algebra + BioGas_algebra + ProcEmissions_2_sum
+        removal = CarbCapt_algebra + CarbRem_algebra
 
-        country_co2_emissions_2 = n.model["Link-p"].loc[:, country_co2_emittors_index]*n.links.loc[country_co2_emittors_index].efficiency2*n.snapshot_weightings["generators"]
-        country_co2_emissions_2_sum = country_co2_emissions_2.sum()
+        lhs = emissions 
+        rhs = removal + co2_allowance
 
-        ################## 3 3 3 3 3 3 3 3 3 3 ##################
-        chp = n.links.query('bus3 == "co2 atmosphere"') # emissions and capturing from CHP and electrobiofuels
-
-        country_chp_index = chp.loc[chp.bus0.str.contains(country)].index
-
-        country_co2_emissions_3 = n.model["Link-p"].loc[:,country_chp_index]*n.links.loc[country_chp_index].efficiency3*n.snapshot_weightings["generators"]
-        country_co2_emissions_3_sum = country_co2_emissions_3.sum()
-
-        ################## LOAD LOAD LOAD LOAD LOAD ##################
-        loads_co2 = n.loads.index[n.loads.index.str.contains('emissions')]
-        loads_co2_country = loads_co2[loads_co2.str.contains(country)]
-        loads_co2_country_sum = -(n.loads.loc[loads_co2_country].p_set*8760).sum()
-
-        ################## SUM SUM SUM SUM SUM SUM ##################
-        country_co2_emissions_total = country_co2_emissions_0_sum + country_co2_emissions_1_sum + country_co2_emissions_2_sum + country_co2_emissions_3_sum
-
-        ################## CO2 limits ###############################
-        co2_lim_relative_to_1990 = local_co2[country][year]
-        co2_1990 = co2_totals.loc[country, sectors].sum()
-        logger.info("CO2 emissions for " + country + " :", co2_1990)
-        co2_allowance = co2_lim_relative_to_1990*co2_1990
-
-        lhs = country_co2_emissions_total + loads_co2_country_sum
-        rhs = co2_allowance
-
-        logger.info("Adding local CO2 emissions constraint for " + country)
-        logger.info("LHS = VAR + " + str(loads_co2_country_sum))
-        logger.info("RHS = " + str(rhs))
         n.model.add_constraints(
             lhs <= rhs,
             name="local co2 emissions constraint " + country ,
@@ -1407,11 +1425,11 @@ def extra_functionality(
     add_lossy_bidirectional_link_constraints(n)
     add_pipe_retrofit_constraint(n)
     if n._multi_invest:
-        add_carbon_constraint(n, snapshots)
-        add_carbon_budget_constraint(n, snapshots)
+        # add_carbon_constraint(n, snapshots)
+        # add_carbon_budget_constraint(n, snapshots)
         add_retrofit_gas_boiler_constraint(n, snapshots)
-    else:
-        add_co2_atmosphere_constraint(n, snapshots)
+    # else:
+    #     add_co2_atmosphere_constraint(n, snapshots)
 
     if config["sector"]["enhanced_geothermal"]["enable"]:
         add_flexible_egs_constraint(n)
@@ -1422,7 +1440,19 @@ def extra_functionality(
     if isinstance(config["local_co2"], dict):
         add_local_co2_constraint(n, config["local_co2"])
 
-    add_global_co2_constraint(n, config)
+    countries = snakemake.params.countries
+    local_co2_countries = config["local_co2"].keys() if config["local_co2"] is not False else False
+
+    if isinstance(local_co2_countries, list):
+        collective = [x for x in countries if x not in local_co2_countries]
+        collective_co2_countries = True if len(collective) > 0 else False
+    else: 
+        collective = countries
+        collective_co2_countries = True
+        local_co2_countries = False
+
+    if collective_co2_countries:
+        add_global_co2_constraint(n, config)
 
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality
@@ -1466,12 +1496,42 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
     """
     investment_year = snakemake.wildcards.planning_horizons
     clusters = snakemake.wildcards.clusters
-    countries = n.config["local_co2"].keys()
-    for country in countries:
+    
+    countries = snakemake.params.countries
+    local_co2_countries = n.config["local_co2"].keys() if n.config["local_co2"] is not False else False
 
-        constraint_name = "local co2 emissions constraint " + country
+    if isinstance(local_co2_countries, list):
+        collective = [x for x in countries if x not in local_co2_countries]
+        collective_co2_countries = True if len(collective) > 0 else False
+    else: 
+        collective = countries
+        local_co2_countries = False
 
-        df = pd.Series(n.model.dual[constraint_name].values)
+    if local_co2_countries:
+        for country in local_co2_countries:
+
+            constraint_name = "local co2 emissions constraint " + country
+
+            df = pd.Series(n.model.dual[constraint_name].values)
+            coord = list(n.model.dual[constraint_name].coords)
+
+            if len(coord) == 1:
+                df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])*(-1)
+                df.index.name = coord[0]
+            
+            if len(coord) == 2:
+                df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])*(-1)
+                df.columns = pd.Series(n.model.dual[constraint_name].coords[coord[1]])
+
+                df.index.name = coord[0]
+                df.columns.name = coord[1]
+
+            df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_local_co2_" + country + "_" + investment_year + "_" + clusters + ".csv")
+
+    if collective_co2_countries:
+        constraint_name = "collective co2 emissions constraint"
+
+        df = pd.Series(n.model.dual[constraint_name].values)*(-1)
         coord = list(n.model.dual[constraint_name].coords)
 
         if len(coord) == 1:
@@ -1485,25 +1545,7 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
             df.index.name = coord[0]
             df.columns.name = coord[1]
 
-        df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_local_co2_" + country + "_" + investment_year + "_" + clusters + ".csv")
-
-    constraint_name = "collective co2 emissions constraint"
-
-    df = pd.Series(n.model.dual[constraint_name].values)
-    coord = list(n.model.dual[constraint_name].coords)
-
-    if len(coord) == 1:
-        df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
-        df.index.name = coord[0]
-    
-    if len(coord) == 2:
-        df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
-        df.columns = pd.Series(n.model.dual[constraint_name].coords[coord[1]])
-
-        df.index.name = coord[0]
-        df.columns.name = coord[1]
-
-    df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_collective_co2_" + investment_year + "_" + clusters + ".csv")
+        df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_collective_co2_" + investment_year + "_" + clusters + ".csv")
 
 
 def solve_network(

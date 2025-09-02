@@ -1445,11 +1445,11 @@ def extra_functionality(
 
     if isinstance(local_co2_countries, list):
         collective = [x for x in countries if x not in local_co2_countries]
-        collective_co2_countries = True if len(collective) > 0 else False
     else: 
         collective = countries
-        collective_co2_countries = True
         local_co2_countries = False
+
+    collective_co2_countries = True if len(collective) > 0 else False
 
     if collective_co2_countries:
         add_global_co2_constraint(n, config)
@@ -1502,7 +1502,6 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
 
     if isinstance(local_co2_countries, list):
         collective = [x for x in countries if x not in local_co2_countries]
-        collective_co2_countries = True if len(collective) > 0 else False
     else: 
         collective = countries
         local_co2_countries = False
@@ -1527,6 +1526,8 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
                 df.columns.name = coord[1]
 
             df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_local_co2_" + country + "_" + investment_year + "_" + clusters + ".csv")
+
+    collective_co2_countries = True if len(collective) > 0 else False
 
     if collective_co2_countries:
         constraint_name = "collective co2 emissions constraint"

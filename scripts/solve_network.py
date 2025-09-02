@@ -1511,11 +1511,11 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
             coord = list(n.model.dual[constraint_name].coords)
 
             if len(coord) == 1:
-                df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])*(-1)
+                df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
                 df.index.name = coord[0]
             
             if len(coord) == 2:
-                df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])*(-1)
+                df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
                 df.columns = pd.Series(n.model.dual[constraint_name].coords[coord[1]])
 
                 df.index.name = coord[0]
@@ -1532,7 +1532,7 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
     if len(collective) > 0:
         constraint_name = "collective co2 emissions constraint"
 
-        df = pd.Series(n.model.dual[constraint_name].values)*(-1)
+        df = pd.Series(n.model.dual[constraint_name].values)
         coord = list(n.model.dual[constraint_name].coords)
 
         if len(coord) == 1:

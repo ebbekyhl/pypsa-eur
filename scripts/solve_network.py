@@ -351,7 +351,7 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     # 3. Process emissions (B) 
     pe_2 = n.loads.index[n.loads.index.str.contains('emissions')]
     ProcEmissions_2 = pe_2 if not local_co2_countries else pe_2[~pe_2.str[0:2].isin(local_co2_countries)]
-    ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*8760).sum()
+    ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*nhours).sum()
 
     # 4. Generation emissions
     ge = n.links.query('bus2 == "co2 atmosphere"').copy() # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
@@ -417,7 +417,7 @@ def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
         # 3. Process emissions (B)
         pe_2 = n.loads.index[n.loads.index.str.contains('emissions')]
         ProcEmissions_2 = pe_2[pe_2.str.contains(country)]
-        ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*8760).sum()
+        ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*nhours).sum()
 
         # 4. Generation emissions
         ge = n.links.query('bus2 == "co2 atmosphere"').copy() # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus

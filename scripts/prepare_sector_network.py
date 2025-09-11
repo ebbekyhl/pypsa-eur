@@ -687,6 +687,17 @@ def add_carrier_buses(
             marginal_cost=costs.at[carrier, "fuel"],
         )
 
+    elif carrier == 'uranium':
+        suffix = ""
+        n.add(
+            "Generator",
+            nodes + suffix,
+            bus=nodes + suffix,
+            p_nom_extendable=True,
+            carrier=carrier + suffix,
+            marginal_cost=costs.at[carrier, "fuel"],
+            )
+
 
 # TODO: PyPSA-Eur merge issue
 def remove_elec_base_techs(n: pypsa.Network, carriers_to_keep: dict) -> None:

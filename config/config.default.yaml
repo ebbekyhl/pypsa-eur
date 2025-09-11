@@ -26,21 +26,26 @@ run:
     policy: false
     exclude: []
   shared_cutouts: true
-  use_shadow_directory: false
+  use_shadow_directory: true
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#foresight
-foresight: overnight
+foresight: myopic
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#scenario
 # Wildcard docs in https://pypsa-eur.readthedocs.io/en/latest/wildcards.html
 scenario:
   clusters:
-  - 50
+  - 132
   opts:
   - ''
   sector_opts:
-  - ''
+  - '3h'
   planning_horizons:
+  - 2025
+  - 2030
+  - 2035
+  - 2040
+  - 2045
   - 2050
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#countries
@@ -81,17 +86,7 @@ countries:
 - XK
 
 uk_settings:
-  remove_ireland: false
-
-local_co2: # false or dict
-  # countries listed here does not commit to the co2_budget targets
-  GB:
-    2025: 0.648
-    2030: 0.450
-    2035: 0.250
-    2040: 0.100
-    2045: 0.050
-    2050: 0.000
+  remove_ireland: false # necessary for an analysis of GB only (IE needs to be included in 'countries')
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:
@@ -107,6 +102,16 @@ enable:
   build_cutout: false
   retrieve_cutout: true
   drop_leap_day: true
+
+# Add national CO2 emissions reduction targets
+local_co2: 
+  GB:
+    2025: 0.433 # Legislated carbon budget 
+    2030: 0.383 # Legislated carbon budget 
+    2035: 0.220 # The Sixth Carbon Budget
+    2040: 0.130 # Adviced by the CCC
+    2045: 0.050
+    2050: 0.000
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#co2-budget
 co2_budget:
@@ -140,7 +145,7 @@ electricity:
     H2: 168
 
   extendable_carriers:
-    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, nuclear]
+    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, nuclear, coal, lignite, oil, uranium]
     StorageUnit: [] # battery, H2
     Store: [battery, H2]
     Link: [] # H2 pipeline
@@ -149,7 +154,7 @@ electricity:
   custom_powerplants: false
   everywhere_powerplants: []
 
-  conventional_carriers: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass]
+  conventional_carriers: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass, uranium]
   renewable_carriers: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, hydro]
 
   estimate_renewable_capacities:
@@ -197,7 +202,7 @@ renewable:
       turbine: Vestas_V112_3MW
       smooth: false
       add_cutout_windspeed: true
-    resource_classes: 1
+    resource_classes: 4
     capacity_per_sqkm: 3
     # correction_factor: 0.93
     corine:
@@ -218,7 +223,7 @@ renewable:
       turbine: NREL_ReferenceTurbine_2020ATB_5.5MW
       smooth: false
       add_cutout_windspeed: true
-    resource_classes: 1
+    resource_classes: 4
     capacity_per_sqkm: 2
     correction_factor: 0.8855
     corine: [44, 255]
@@ -237,7 +242,7 @@ renewable:
       turbine: NREL_ReferenceTurbine_2020ATB_5.5MW
       smooth: false
       add_cutout_windspeed: true
-    resource_classes: 1
+    resource_classes: 4
     capacity_per_sqkm: 2
     correction_factor: 0.8855
     corine: [44, 255]
@@ -256,7 +261,7 @@ renewable:
       turbine: NREL_ReferenceTurbine_5MW_offshore
       smooth: false
       add_cutout_windspeed: true
-    resource_classes: 1
+    resource_classes: 4
     # ScholzPhd Tab 4.3.1: 10MW/km^2
     capacity_per_sqkm: 2
     correction_factor: 0.8855
@@ -279,7 +284,7 @@ renewable:
       orientation:
         slope: 35.
         azimuth: 180.
-    resource_classes: 1
+    resource_classes: 4
     capacity_per_sqkm: 5.1
     # correction_factor: 0.854337
     corine: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 26, 31, 32]
@@ -296,7 +301,7 @@ renewable:
         slope: 35.
         azimuth: 180.
       tracking: horizontal
-    resource_classes: 1
+    resource_classes: 4
     capacity_per_sqkm: 4.43 # 15% higher land usage acc. to NREL
     corine: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 26, 31, 32]
     luisa: false # [1111, 1121, 1122, 1123, 1130, 1210, 1221, 1222, 1230, 1241, 1242, 1310, 1320, 1330, 1410, 1421, 1422, 2110, 2120, 2130, 2210, 2220, 2230, 2310, 2410, 2420, 3210, 3320, 3330]
@@ -411,7 +416,7 @@ pypsa_eur:
   - solar-hsat
   - solar
   - ror
-  - nuclear
+  # - nuclear <----------------------------------------- needs to be removed in myopic foresight
   StorageUnit:
   - PHS
   - hydro
@@ -735,14 +740,14 @@ sector:
     transport_cost: 0.027 # assumed price in "Minimal methanol paper" by P Glaum et al.
     methanol_reforming: false
     methanol_reforming_cc: false
-    methanol_to_kerosene: false
+    methanol_to_kerosene: true
     methanol_to_power:
-      ccgt: false
+      ccgt: true
       ccgt_cc: false
       ocgt: true
-      allam: false
+      allam: true
     biomass_to_methanol: true
-    biomass_to_methanol_cc: false
+    biomass_to_methanol_cc: true
   ammonia: true
   min_part_load_fischer_tropsch: 0.5
   min_part_load_methanolisation: 0.3
@@ -821,8 +826,8 @@ sector:
     max_amount: 1390 # TWh
     upstream_emissions_factor: .1 #share of solid biomass CO2 emissions at full combustion
   imports:
-    enable: false
-    limit: .inf
+    enable: true
+    limit: 500 # TWh (if no limit wanted: .inf) 
     limit_sense: <=
     price:
       H2: 74
@@ -924,7 +929,7 @@ industry:
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#costs
 costs:
-  year: 2050
+  year: 2030
   version: v0.13.3
   social_discountrate: 0.02
   fill_values:
@@ -966,7 +971,7 @@ clustering:
   focus_weights: False
   copperplate_regions: []
   build_bidding_zones:
-    remove_islands: false
+    remove_islands: true
     aggregate_to_tyndp: false
   simplify_network:
     to_substations: false

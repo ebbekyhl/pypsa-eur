@@ -448,6 +448,8 @@ plotting:
     residential urban decentral heat: '#a33c3c'
     services urban decentral heat: '#cc1f1f'
     low-temperature heat for industry: '#8f2727'
+    high heat for industry: '#8f2727'
+    medium heat for industry: '#bd4848'
     process heat: '#ff0000'
     agriculture heat: '#d9a5a5'
     # heat supply

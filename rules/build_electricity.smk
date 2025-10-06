@@ -591,7 +591,7 @@ rule simplify_network:
         network=resources("networks/base_extended.nc"),
         regions_onshore=resources("regions_onshore.geojson"),
         regions_offshore=resources("regions_offshore.geojson"),
-        admin_shapes=resources("admin_shapes.geojson"),
+        admin_shapes=ancient(resources("admin_shapes.geojson")),
     output:
         network=resources("networks/base_s.nc"),
         regions_onshore=resources("regions_onshore_base_s.geojson"),
@@ -635,6 +635,7 @@ def input_custom_busmap(w):
 rule cluster_network:
     params:
         countries=config_provider("countries"),
+        area_threshold=config_provider("clustering", "area_threshold"),
         mode=config_provider("clustering", "mode"),
         administrative=config_provider("clustering", "administrative"),
         group_clusters=config_provider("clustering", "group_clusters"),
@@ -654,7 +655,7 @@ rule cluster_network:
     input:
         unpack(input_custom_busmap),
         network=resources("networks/base_s.nc"),
-        admin_shapes=resources("admin_shapes.geojson"),
+        admin_shapes=ancient(resources("admin_shapes.geojson")),
         bidding_zones=lambda w: (
             resources("bidding_zones.geojson")
             if config_provider("clustering", "mode")(w) in {"administrative", "administrative_mixed"}

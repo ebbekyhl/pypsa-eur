@@ -86,6 +86,10 @@ countries:
 - XK
 
 uk_settings:
+  uk_new_industry_data: false 
+  uk_new_powerplants_data: false
+  uk_new_electricity_demand: false
+  uk_new_heat_demand: false
   uk_only: false # whether study is for UK only or for Europe including UK. If true, for data flow structure, IE needs to be listed in the countries above.
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
@@ -104,14 +108,14 @@ enable:
   drop_leap_day: true
 
 # Add national CO2 emissions reduction targets
-local_co2: 
+local_co2:
   GB:
     2025: 0.433 # Legislated carbon budget 
     2030: 0.383 # Legislated carbon budget 
     2035: 0.220 # The Sixth Carbon Budget
-    2040: 0.130 # Adviced by the CCC
-    2045: 0.050
-    2050: 0.000
+    2040: 0.092 # Exponential decay
+    2045: 0.038 # Exponential decay
+    2050: 0.000 # Target of reaching net zero by 2050
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#co2-budget
 co2_budget:
@@ -171,7 +175,7 @@ electricity:
     enable: false
     by_country: false
 
-  transmission_limit: vopt
+  transmission_limit: vopt # v2.0
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#atlite
 atlite:
@@ -685,6 +689,7 @@ sector:
     fuel:
     - solid biomass # For solid biomass, CHP with and without CC are added
     - gas # For all other fuels the same techno economic data from gas CHP is taken
+    - methanol
     micro_chp: false # Only gas is used for micro_chp
   solar_thermal: true
   solar_cf_correction: 0.788457  # =  >>> 1/1.2683
@@ -726,7 +731,7 @@ sector:
   co2_sequestration_cost: 30
   co2_sequestration_lifetime: 50
   co2_spatial: true
-  co2_network: false
+  co2_network: true # <------------------------------------------------------------------------------------ include or not? relevant for A6 in PA
   co2_network_cost_factor: 1
   cc_fraction: 0.9
   hydrogen_underground_storage: true
@@ -738,16 +743,20 @@ sector:
     regional_methanol_demand: true
     transport: true
     transport_cost: 0.027 # assumed price in "Minimal methanol paper" by P Glaum et al.
-    methanol_reforming: false
-    methanol_reforming_cc: false
-    methanol_to_kerosene: true
-    methanol_to_power:
-      ccgt: true
-      ccgt_cc: false
-      ocgt: true
-      allam: true
-    biomass_to_methanol: true
-    biomass_to_methanol_cc: true
+    methanol_reforming: true 
+    methanol_reforming_cc: true 
+    methanol_to_kerosene: true # <------------------------------------------------------------------------------------ include or not?
+    # methanol_to_olefins: true
+    methanol_to_power: 
+      ccgt: true # <------------------------------------------------------------------------------------ include or not?
+      ccgt_cc: false # <------------------------------------------------------------------------------------ include or not?
+      ocgt: true # <------------------------------------------------------------------------------------ include or not?
+      allam: true # <------------------------------------------------------------------------------------ include or not?
+    force_industry_heat: false
+    biomass_to_methanol: true # <------------------------------------------------------------------------------------ include or not?
+    biomass_to_methanol_cc: true # <------------------------------------------------------------------------------------ include or not?
+    biogas_to_methanol: true # <------------------------------------------------------------------------------------ include or not?
+  replace_medium_heat: false
   ammonia: true
   min_part_load_fischer_tropsch: 0.5
   min_part_load_methanolisation: 0.3
@@ -778,15 +787,21 @@ sector:
       compression_per_1000km: 0.01
     electricity distribution grid:
       efficiency_static: 0.97
-  H2_network: true
+  H2_network: true 
   gas_network: true
+  existing_gas_pipeline_capacities: true
+  existing_gas_storage_capacities: true 
   H2_retrofit: false
   H2_retrofit_capacity_per_CH4: 0.6
   gas_network_connectivity_upgrade: 1
   gas_distribution_grid: true
   gas_distribution_grid_cost_factor: 1.0
+  methanol_distribution_cost: false
+  gas_spatial: true
   biomass_spatial: true
-  biomass_transport: false
+  biomass_transport: true
+  solid_biomass_transport_cost: false
+  biogas_transport_cost: false
   biogas_upgrading: true
   biogas_upgrading_cc: false
   conventional_generation:
@@ -794,7 +809,7 @@ sector:
     CCGT: gas
   biomass_to_liquid: true
   biomass_to_liquid_cc: false
-  electrobiofuels: true
+  electrobiofuels: true # <------------------------------------------------------------------------------------ include or not?
   biosng: false
   biosng_cc: false
   bioH2: false
@@ -826,7 +841,7 @@ sector:
     max_amount: 1390 # TWh
     upstream_emissions_factor: .1 #share of solid biomass CO2 emissions at full combustion
   imports:
-    enable: true
+    enable: false # <------------------------------------------------------------------------------------ include or not?
     limit: 500 # TWh (if no limit wanted: .inf) 
     limit_sense: <=
     price:
@@ -929,7 +944,7 @@ industry:
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#costs
 costs:
-  year: 2030
+  year: 2025
   version: v0.13.3
   social_discountrate: 0.02
   fill_values:
@@ -964,11 +979,12 @@ costs:
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#clustering
 clustering:
   mode: administrative_mixed
+  area_threshold: 10000 # km2
   group_clusters:
     - Northern Ireland
   administrative:
     GB: 3
-  focus_weights: False
+  focus_weights: false
   copperplate_regions: []
   build_bidding_zones:
     remove_islands: true
@@ -1129,6 +1145,6 @@ solving:
     atol: 1_000_000
     rtol: 0.01
 
-  mem_mb: 128000
+  mem_mb: 150000
   memory_logging_frequency: 5 # in seconds
   runtime: 48h #runtime in humanfriendly style https://humanfriendly.readthedocs.io/en/latest/

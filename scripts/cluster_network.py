@@ -230,7 +230,7 @@ def collect_small_regions(regions, neighbors_dct):
 
 def merge_small_regions(regions, regions_post, neighbors_dct):
 
-    logger.info(f"Regions after first merging step: {regions_post['admin1'].unique()}")
+    logger.info(f"Number of regions after merging step: {len(regions_post['admin1'].unique())}")
     
     for a1 in regions_post["admin1"].unique():
         regions_post_a1 = regions_post.query("admin1 == @a1")
@@ -258,7 +258,7 @@ def merge_small_regions(regions, regions_post, neighbors_dct):
 
     return regions_post
 
-def aggregate_small_admin_subregions(admin_shapes_all, country = "GB"):
+def aggregate_small_admin_subregions(admin_shapes_all, area_threshold, country = "GB"):
 
     admin_shapes_all = admin_shapes_all.to_crs(epsg=3035)
 
@@ -269,7 +269,6 @@ def aggregate_small_admin_subregions(admin_shapes_all, country = "GB"):
     admin_shapes_size = admin_shapes.geometry.area / 1e6 # km2
     admin_shapes["size"] = admin_shapes_size
 
-    area_threshold = 1000 # km2
     admin_shapes_size.loc[admin_shapes_size < area_threshold] = 1
     admin_shapes_size.loc[admin_shapes_size > area_threshold] = 0
 
@@ -284,22 +283,34 @@ def aggregate_small_admin_subregions(admin_shapes_all, country = "GB"):
 
         admin_shapes.loc[admin_key.index, "admin"] = key
 
-    # create neighbor matrix
-    neighbors_dct = create_neighbors_matrix(admin_shapes)
+    admin_shapes_update = admin_shapes.copy()
+    i = 0
+    while admin_shapes_update["colors"].sum() > 3 and i < 10:
+        # create neighbor matrix
+        neighbors_dct = create_neighbors_matrix(admin_shapes_update)
+        
+        # collect all adjacent small regions 
+        regions_uk_post = collect_small_regions(admin_shapes_update, neighbors_dct)
+        
+        # merge small neighboring regions
+        admin_shapes_update = merge_small_regions(admin_shapes_update, regions_uk_post, neighbors_dct)
+        
+        # update sizes 
+        admin_shapes_size = admin_shapes_update.geometry.area / 1e6 # km2
+        admin_shapes_size.loc[admin_shapes_size < area_threshold] = 1
+        admin_shapes_size.loc[admin_shapes_size > area_threshold] = 0
 
-    # collect all adjacent small regions 
-    regions_uk_post = collect_small_regions(admin_shapes, neighbors_dct)
+        admin_shapes_update["colors"] = admin_shapes_size
 
-    # merge small neighboring regions
-    regions_uk_post_merged = merge_small_regions(admin_shapes, regions_uk_post, neighbors_dct)
+        i += 1
 
-    regions_uk_post_merged.drop(columns=["size", "colors","admin", "admin1"], inplace=True)
+    admin_shapes_update.drop(columns=["size", "colors","admin", "admin1"], inplace=True)
 
     # drop indices for country
     admin_shapes_all.drop(admin_shapes_c_index, inplace=True)
 
     # add new admin regions for country
-    admin_shapes_all = pd.concat([admin_shapes_all, regions_uk_post_merged])
+    admin_shapes_all = pd.concat([admin_shapes_all, admin_shapes_update])
 
     return admin_shapes_all
 
@@ -742,6 +753,7 @@ def busmap_for_admin_regions(
     admin_shapes: str,
     countries: list,
     administrative: dict,
+    area_threshold = 0,
 ) -> pd.Series:
     """
     Create a busmap based on administrative regions using the NUTS3 shapefile.
@@ -760,7 +772,12 @@ def busmap_for_admin_regions(
 
     admin_regions = admin_regions.set_index("admin")
 
-    admin_regions = aggregate_small_admin_subregions(admin_regions, country = "GB")
+    if area_threshold > 0:
+        admin_regions = aggregate_small_admin_subregions(admin_regions, area_threshold, country = "GB")
+
+    # log info about how many regions are in GB
+    n_GB = len(admin_regions.query('country == "GB"'))
+    logger.info(f"Number of administrative regions in GB before merging small regions: {n_GB}")
 
     admin_regions = admin_regions.reset_index().rename(columns={"index": "admin"})
     
@@ -943,6 +960,7 @@ if __name__ == "__main__":
                                                 snakemake.input.admin_shapes,
                                                 admin_countries,
                                                 administrative,
+                                                area_threshold = params.area_threshold,
                                             )
 
             # print busmap_a

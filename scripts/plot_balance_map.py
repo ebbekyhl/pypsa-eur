@@ -147,8 +147,16 @@ if __name__ == "__main__":
     vmin, vmax = regions.price.min() - shift, regions.price.max() + shift
     if config["vmin"] is not None:
         vmin = config["vmin"]
+
     if config["vmax"] is not None:
         vmax = config["vmax"]
+    
+    if vmin == vmax:  # avoid vmin==vmax error in colorbar
+        vmin -= 1
+        vmax += 1
+    elif vmin > vmax:
+        vmin = 0
+        vmax = 1
 
     crs = load_projection(snakemake.params.plotting)
 

@@ -249,7 +249,18 @@ def plot_h2_map(n, regions):
 
     ax.set_facecolor("white")
 
-    fig.savefig(snakemake.output.map, bbox_inches="tight")
+    fig.savefig(snakemake.output.map1, bbox_inches="tight")
+
+    # Save UK focused map
+    lon_min, lon_max = -7, 2
+    lat_min, lat_max = 50, 60
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max])
+    fig.savefig(
+        snakemake.output.map2,
+        dpi=400,
+        bbox_inches="tight",
+    )
+
     plt.close(fig)
 
 

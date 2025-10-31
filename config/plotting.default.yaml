@@ -5,7 +5,7 @@
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#plotting
 plotting:
   map:
-    boundaries: [-10, 3, 49, 61]
+    boundaries: [-11, 30, 34, 71]
     color_geomap:
       ocean: white
       land: white
@@ -521,6 +521,7 @@ plotting:
     kerosene for aviation: '#a1ffe6'
     naphtha for industry: '#57ebc4'
     methanol for industry heat: '#8f8318'
+    methanol for industry heat CC: '#80740a'
     methanol-to-kerosene: '#C98468'
     methanol-to-olefins/aromatics: '#FFA07A'
     Methanol steam reforming: '#FFBF00'

@@ -742,14 +742,14 @@ sector:
   methanol:
     regional_methanol_demand: true
     transport: true
-    transport_cost: 0.027 # assumed price in "Minimal methanol paper" by P Glaum et al.
+    transport_cost: 0.027 # assumed price in "Minimal methanol paper" by P Glaum et al. €/MWh/km
     methanol_reforming: true 
     methanol_reforming_cc: true 
     methanol_to_kerosene: true # <------------------------------------------------------------------------------------ include or not?
     # methanol_to_olefins: true
     methanol_to_power: 
       ccgt: true # <------------------------------------------------------------------------------------ include or not?
-      ccgt_cc: false # <------------------------------------------------------------------------------------ include or not?
+      ccgt_cc: true # <------------------------------------------------------------------------------------ include or not?
       ocgt: true # <------------------------------------------------------------------------------------ include or not?
       allam: true # <------------------------------------------------------------------------------------ include or not?
     force_industry_heat: false

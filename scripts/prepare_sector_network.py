@@ -3790,7 +3790,7 @@ def add_biomass(
     biomass_potentials = pd.read_csv(biomass_potentials_file, index_col=0) * nyears
 
     # need to aggregate potentials if gas not nodally resolved
-    if options["gas_network"]:
+    if options["gas_network"] or options["gas_spatial"]:
         biogas_potentials_spatial = biomass_potentials["biogas"].rename(
             index=lambda x: x + " biogas"
         )
@@ -4308,7 +4308,7 @@ def add_biomass(
             lifetime=costs.at[key + " CC", "lifetime"],
         )
 
-    if options["biomass_boiler"]:
+    if options["biomass_boiler"] and options["boilers"]:
         # TODO: Add surcharge for pellets
         nodes = pop_layout.index
         for name in [

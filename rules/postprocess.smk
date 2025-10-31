@@ -77,8 +77,10 @@ if config["foresight"] != "perfect":
             + "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc",
             regions=resources("regions_onshore_base_s_{clusters}.geojson"),
         output:
-            map=RESULTS
+            map1=RESULTS
             + "maps/base_s_{clusters}_{opts}_{sector_opts}-h2_network_{planning_horizons}.pdf",
+            map2=RESULTS
+            + "maps/base_s_{clusters}_{opts}_{sector_opts}-h2_network_{planning_horizons}_UK.pdf",
         threads: 2
         resources:
             mem_mb=10000,
@@ -129,8 +131,10 @@ if config["foresight"] != "perfect":
             + "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc",
             regions=resources("regions_onshore_base_s_{clusters}.geojson"),
         output:
-            RESULTS
+            map1 = RESULTS
             + "maps/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}-balance_map_{carrier}.pdf",
+            map2 = RESULTS
+            + "maps/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}-balance_map_{carrier}_UK.pdf",
         threads: 1
         resources:
             mem_mb=8000,

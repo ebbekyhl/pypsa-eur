@@ -46,6 +46,15 @@ if __name__ == "__main__":
     update_config_from_wildcards(snakemake.config, snakemake.wildcards)
 
     n = pypsa.Network(snakemake.input.network)
+    
+    # only consider specified snapshots
+    snapshots = snakemake.config["snapshots"]
+    start_datetime = pd.to_datetime(snapshots["start"]) 
+    end_datetime = pd.to_datetime(snapshots["end"])
+    inclusive = snapshots["inclusive"]
+    snapshots_new = pd.date_range(start=start_datetime, end=end_datetime, freq="h", inclusive=inclusive)
+    n.snapshots = snapshots_new
+
     resolution = snakemake.params.time_resolution
 
     # Representative snapshots

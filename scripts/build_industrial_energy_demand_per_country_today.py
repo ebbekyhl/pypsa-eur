@@ -54,6 +54,7 @@ from functools import partial
 
 import country_converter as coco
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
 
 from scripts._helpers import configure_logging, set_scenario_config
@@ -230,6 +231,109 @@ def industrial_energy_demand(countries, year):
 
     return pd.concat(demand_l, keys=countries)
 
+def add_uk_demands(industrial_demand):
+    # filter UK data
+    uk_industry_demand_default = industrial_demand["GB"]
+
+    # read new data
+    DUKES_industry_demand = pd.read_csv("data/data_UK/DUKES_industry_energy_demand_2024.csv", names=['Sector', 'fuel', "unit", "value"], header=0)
+    DUKES_industry_demand["unit"] = DUKES_industry_demand["unit"].replace({"ktkt": "kt"})
+
+    # calorific values of fuels
+    cal_values = {
+                'Fuel oils': 11630, # MWh/kt (https://www.unitjuggler.com/convert-energy-from-ktoe-to-MWh.html)
+                'Steam coal': 8141, # MWh/kt (https://www.convertunits.com/from/kWh/to/tonne+of+coal+equivalent)
+                'White diesel':  43*277.78, # MWh/kt (https://cdn.cdp.net/cdp-production/cms/guidance_docs/pdfs/000/000/477/original/CDP-Conversion-of-fuel-data-to-MWh.pdf)
+                'Other kerosene': 12830, # MWh/kt (https://www.engineeringtoolbox.com/fuels-higher-calorific-values-d_169.html)
+                'Anthracite':  9060, # MWh/kt (https://www.engineeringtoolbox.com/fuels-higher-calorific-values-d_169.html)
+                'Propane': 13990, # MWh/kt (https://www.engineeringtoolbox.com/fuels-higher-calorific-values-d_169.html)
+                'Petroleum coke': 8690, # MWh/kt (https://www.engineeringtoolbox.com/fuels-higher-calorific-values-d_169.html)
+                'Condensate': np.nan, # no data
+                'Crude oil': 11630, # MWh/kt (https://www.unitjuggler.com/convert-energy-from-ktoe-to-MWh.html)
+                'Ethane': 14420, # MWh/kt (https://www.engineeringtoolbox.com/fuels-higher-calorific-values-d_169.html)
+                'Feedstock': np.nan, # no data
+                'Naphtha': 13360, # MWh/kt (https://www.engineeringtoolbox.com/fuels-higher-calorific-values-d_169.html)
+            }
+
+    DUKES_industry_demand_kt = DUKES_industry_demand.query("unit == 'kt'")[["fuel", "value"]]
+    DUKES_industry_demand_kt["conversion_kt_MWh"] = DUKES_industry_demand_kt["fuel"].map(cal_values)
+    DUKES_industry_demand_kt["value_GWh"] = DUKES_industry_demand_kt["value"] * DUKES_industry_demand_kt["conversion_kt_MWh"] / 1000
+    DUKES_industry_demand.loc[DUKES_industry_demand_kt.index, "value"] = DUKES_industry_demand_kt["value_GWh"]
+    DUKES_industry_demand.loc[DUKES_industry_demand_kt.index, "unit"] = "GWh"
+
+    DUKES_industry_sector_rename = {
+                                    'Chemicals':"HVC", 
+                                    'Construction':'Other industrial sectors',
+                                    'Electrical engineering etc.':'Other industrial sectors',
+                                    'Electrical engineering etc':'Other industrial sectors',
+                                    'Food, beverages etc':'Food, beverages and tobacco',
+                                    'Iron and steel':"Integrated steelworks",
+                                    'Mechanical engineering etc.':'Machinery equipment',
+                                    'Mechanical engineering etc':'Machinery equipment',
+                                    'Mineral products':"Cement",
+                                    'Non-ferrous metals':"Alumina production",
+                                    'Other industries':'Other industrial sectors',
+                                    'Paper, printing etc':"Paper production",
+                                    'Textiles, leather etc':'Textiles and leather',
+                                    'Unclassified':'Other industrial sectors',
+                                    'Vehicles':'Transport equipment'
+                                    }
+
+    rename_fuels = {'Anaerobic digestion': "biomass", 
+                    'Electricity': "electricity", 
+                    'Fuel oils': "liquid", 
+                    'Natural gas': "gas",
+                    'Non-renewable waste': "waste",
+                    'Plant biomass': "biomass", 
+                    'Renewable waste': "biomass",
+                    'Steam coal': "solid", 
+                    'White diesel': "liquid", 
+                    'Other kerosene': "liquid", 
+                    'Animal biomass': "biomass",
+                    'Anthracite': "solid", 
+                    'Propane': "gas", 
+                    'Waste wood': "biomass", 
+                    'Petroleum coke': "solid",
+                    'Sewage gas': "gas", 
+                    'Butane': "gas", 
+                    'Condensate': "other", 
+                    'Crude oil': "liquid", 
+                    'Ethane': "gas",
+                    'Feedstock': "other", 
+                    'Landfill gas': "gas", 
+                    'Naphtha': "liquid"}
+
+    DUKES_industry_demand["Sector"] = DUKES_industry_demand["Sector"].replace(DUKES_industry_sector_rename)
+    DUKES_industry_demand["fuel"] = DUKES_industry_demand["fuel"].replace(rename_fuels)
+
+    # get intersecting sectors beween DUKES and default uk industry demand
+    intersecting_sectors = [s for s in  DUKES_industry_demand["Sector"].unique().tolist() if s in uk_industry_demand_default.columns]
+    print("Number of default uk industry demand sectors:", len(uk_industry_demand_default.columns.unique()))
+    print("Number of DUKES sectors:", len(DUKES_industry_demand["Sector"].unique()))
+    print("Number of intersecting sectors:", len(intersecting_sectors))
+
+    # add new data to old data 
+    uk_industry_demand_new = uk_industry_demand_default.copy()
+
+    DUKES_fuels = DUKES_industry_demand["fuel"].unique().tolist()
+    DEFAULT_fuels = uk_industry_demand_new.index
+    intersecting_fuels = [f for f in DUKES_fuels if f in DEFAULT_fuels]
+    non_intersecting_fuels = [f for f in DEFAULT_fuels if f not in intersecting_fuels]
+    DUKES_data = DUKES_industry_demand.set_index(["fuel", "Sector"]).drop(columns=["unit"]).groupby(level=[0,1]).sum().unstack()["value"]
+
+    for col in uk_industry_demand_new.columns:
+
+        if col in intersecting_sectors:
+            print(col, " in intersecting sectors")
+            uk_industry_demand_new.loc[intersecting_fuels,col] = DUKES_data.loc[intersecting_fuels, col].fillna(0) / 1e3 # convert GWh to TWh
+            uk_industry_demand_new.loc[non_intersecting_fuels,col] = 0.0
+
+        elif col not in intersecting_fuels:
+            uk_industry_demand_new.loc[:,col] = 0.0
+
+    industrial_demand["GB"] = uk_industry_demand_new
+
+    return industrial_demand
 
 def add_coke_ovens(demand, fn, year, factor=0.75):
     """
@@ -308,6 +412,11 @@ if __name__ == "__main__":
     # style and annotation
     demand.index.name = "TWh/a"
     demand.sort_index(axis=1, inplace=True)
+
+    # get UK settings
+    uk_settings = snakemake.params["uk_settings"]
+    if uk_settings["uk_new_industry_data"]:
+        demand = add_uk_demands(demand)
 
     fn = snakemake.output.industrial_energy_demand_per_country_today
     demand.to_csv(fn)

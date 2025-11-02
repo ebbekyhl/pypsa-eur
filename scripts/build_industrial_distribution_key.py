@@ -209,6 +209,68 @@ def prepare_refineries_supplement(regions):
 
     return gdf
 
+def prepare_NAEI_UK(regions, rename_sectors=True):
+    """
+    Load UK industry distribution data from NAEI and map onto bus regions.
+    This is based on the National Atmospheric Emissions Inventory (NAEI) data for UK industrial sites.
+    """
+    sector_rename = {'Iron & steel industries': 'Iron and steel',
+                    'Oil & gas exploration and production': "Refineries",
+                    'Other fuel production': "Refineries",
+                    'Processing & distribution of petroleum products': "Refineries",
+                    'Processing & distribution of natural gas': "Refineries",
+                    'Paper, printing & publishing industries': 'Paper and printing',
+                    'Cement':"Cement",
+                    'Lime': "Cement",
+                    'Chemical industry': 'Chemical industry',
+                    'Other mineral industries': "Non-metallic mineral products",
+                    'Non-ferrous metal industries': "Non-ferrous metals",
+                    'Miscellaneous': "Other non-classified",
+                    'Other industries': "Other non-classified",
+                    "Food, drink & tobacco industry": "Other non-classified",
+                    'Waste collection, treatment & disposal': "Other non-classified",
+                    'Mechanical engineering': "Other non-classified",
+                    'Electrical engineering': "Other non-classified",
+                    'Commercial': "Other non-classified",
+                    'Textiles, clothing, leather & footwear': "Other non-classified",
+                    'Public administration': "Other non-classified",
+                    'Water & sewerage': "Other non-classified",
+                    'Agriculture, forestry & fishing': "Other non-classified",
+                    'Construction': "Other non-classified",
+                    'Vehicles': "Land transport",
+                    'Major power producers': "Energy production",
+                    'Minor power producers': "Energy production",
+                    }
+    
+    from pyproj import Transformer
+    transformer_easting = Transformer.from_crs("epsg:27700", "epsg:4326", always_xy=True)
+    df = pd.read_excel("data/data_UK/NAEIPointsSources_2022_3.xlsx", sheet_name = "GHGs")
+    x, y = transformer_easting.transform(df["Easting"], df["Northing"])
+    df["x"] = x
+    df["y"] = y
+    geometry = gpd.points_from_xy(df.x, df.y)
+    gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
+    gdf = gpd.sjoin(gdf, regions, how="inner", predicate="within")
+    gdf.rename(columns={"name": "bus"}, inplace=True)
+    gdf["country"] = gdf.bus.str[:2]
+
+    # drop entries without sector info
+    gdf = gdf.loc[gdf.Sector.dropna().index]
+
+    # rename sectors to match hotmaps
+    if rename_sectors:
+        gdf["Subsector"] = gdf["Sector"].map(sector_rename)
+    else:
+        gdf["Subsector"] = gdf["Sector"]
+
+    # create POINT from naei_uk["x"]
+    gdf["coordinates"] = gpd.points_from_xy(gdf["x"], gdf["y"])
+
+    # to match columns in hotmaps:
+    gdf['Emissions_ETS_2014'] = gdf["Emission"]
+    gdf['Emissions_EPRTR_2014'] = gdf["Emission"]
+
+    return gdf
 
 def build_nodal_distribution_key(
     hotmaps, gem, ammonia, cement, refineries, regions, countries
@@ -395,6 +457,28 @@ if __name__ == "__main__":
     cement = prepare_cement_supplement(regions)
 
     refineries = prepare_refineries_supplement(regions)
+
+    # get UK settings
+    uk_settings = snakemake.params["uk_settings"]
+    if uk_settings["uk_new_industry_data"]:
+        naei_uk = prepare_NAEI_UK(regions)
+
+        df_uk = gpd.GeoDataFrame(index = naei_uk.index, columns = hotmaps.columns, geometry="coordinates", crs="EPSG:4326")
+        
+        intersecting_cols = naei_uk.columns.intersection(hotmaps.columns)
+        df_uk[intersecting_cols] = naei_uk[intersecting_cols]
+
+        # get sectors of original hotmaps
+        hotmaps_sectors = hotmaps.Subsector.unique()
+
+        # drop UK entries from hotmaps
+        hotmaps = hotmaps.drop(hotmaps.query("country == 'GB'").index)
+
+        # add UK entries from NAEI
+        hotmaps = pd.concat([hotmaps, df_uk], ignore_index=True)
+
+        # only consider sectors present in hotmaps_sectors
+        hotmaps = hotmaps[hotmaps.Subsector.isin(hotmaps_sectors)]
 
     keys = build_nodal_distribution_key(
         hotmaps, gem, ammonia, cement, refineries, regions, countries

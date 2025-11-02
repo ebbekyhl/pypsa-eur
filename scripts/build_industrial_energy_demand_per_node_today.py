@@ -63,6 +63,11 @@ def build_nodal_industrial_energy_demand():
     for country, sector in product(countries, sectors):
         buses = keys.index[keys.country == country]
         mapping = sector_mapping.get(sector, "population")
+        # log whether a sector mapping was found or not (then population density used as distribution key)
+        if mapping == "population":
+            logger.info(
+                f"No specific distribution key found for sector '{sector}' in country '{country}'. Using population density as fallback."
+            )
 
         key = keys.loc[buses, mapping]
         demand = industrial_demand[country, sector]

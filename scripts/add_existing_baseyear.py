@@ -35,6 +35,47 @@ idx = pd.IndexSlice
 spatial = SimpleNamespace()
 
 
+def add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers):
+    df_agg_uk = df_agg.query("Country == 'GB'")
+    df_agg_uk_non_RE = df_agg_uk.Fueltype[~df_agg_uk.Fueltype.isin(renewable_carriers)].index
+    df_agg_uk_dropped = df_agg.loc[df_agg_uk_non_RE]
+    df_agg.drop(index = df_agg_uk_non_RE, inplace=True)
+
+    uk_pp_new = df_OIM_pp.loc[~df_OIM_pp.Technology.isin(renewable_carriers)]
+    uk_pp_new.set_index("Name", inplace=True)
+    uk_pp_new.loc[:, "Technology"] = uk_pp_new["Technology"].replace({"biomass CHP": 'urban central solid biomass CHP',
+                                                                    "biogas CHP": 'urban central biogas CHP',
+                                                                    "gas CHP": 'urban central gas CHP',
+                                                                    'Natural Gas': 'CCGT',
+                                                                    "biomass": "urban central solid biomass CHP",
+                                                                    "biogas": "urban central biogas CHP",
+                                                                    "waste": "urban central solid biomass CHP",
+                                                                    })
+
+    uk_pp_new = uk_pp_new.loc[~ uk_pp_new.Technology.isin(["other", 
+                                                        'other generators',
+                                                        ])]
+
+    uk_pp_new.loc[:, "Fueltype"] = uk_pp_new["Technology"].copy()
+
+    logger.info(f"Replacing {df_agg_uk_dropped.Capacity.sum()/1e3:<.1f} GW with {uk_pp_new.Capacity.sum()/1e3:<.1f} GW")
+
+    # get intersect between df_agg.columns and uk_pp_new.columns
+    intersecting_cols = df_agg.columns.intersection(uk_pp_new.columns)
+    uk_pp_new = uk_pp_new[intersecting_cols]
+
+    missing_cols = [col for col in df_agg.columns if col not in intersecting_cols]
+    uk_pp_new.loc[:, missing_cols] = np.nan
+    uk_pp_new.loc[:, "resource_class"] = 0
+
+    all_columns = df_agg.columns
+    uk_pp_new = uk_pp_new[all_columns]
+
+    # Collect data
+    df_agg = pd.concat([df_agg, uk_pp_new], ignore_index=False)
+
+    return df_agg
+
 def read_and_clean_OIM_UK_powerplants(uk_regions):
 
     # Data source 3: Open Street Map / Open Infrastructure Map
@@ -371,9 +412,9 @@ def add_existing_renewables(
         )
 
         # add more recent year based on OIM data (only available for UK)
+        # NB: year needs to be before base year of the scenario
         if "GB" in countries:
-            print("For carrier", carrier, "adding 2025 based on OIM data...")
-            df.loc["GB", "2025"] = df_OIM_pp.query("Technology == @carrier").Capacity.sum()
+            df.loc["GB", "2024"] = df_OIM_pp.query("Technology == @carrier").Capacity.sum()
 
         df.columns = df.columns.astype(int)
 
@@ -415,6 +456,10 @@ def add_existing_renewables(
                     )
                     df_agg.at[name, "bus"] = bus
                     df_agg.at[name, "resource_class"] = bin_id
+
+    if "GB" in countries:
+        df_agg.loc[df_agg[df_agg.bus.str.contains("GB")].index,
+                   "Country"] = "GB"
 
     df_agg["resource_class"] = df_agg["resource_class"].fillna(0)
 
@@ -530,6 +575,12 @@ def add_power_capacities_installed_before_baseyear(
         renewable_carriers=renewable_carriers,
         df_OIM_pp=df_OIM_pp,
     )
+
+    # replace powerplants UK
+    uk_settings = snakemake.params["uk_settings"]
+    if uk_settings["uk_new_powerplants_data"]:
+        df_agg = add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers)
+
     # drop assets which are already phased out / decommissioned
     phased_out = df_agg[df_agg["DateOut"] < baseyear].index
     df_agg.drop(phased_out, inplace=True)

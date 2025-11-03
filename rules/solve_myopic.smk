@@ -30,6 +30,8 @@ rule add_existing_baseyear:
             "existing_heating_distribution_base_s_{clusters}_{planning_horizons}.csv"
         ),
         heating_efficiencies=resources("heating_efficiencies.csv"),
+        onshore_regions = resources("regions_offshore_base_s_{clusters}.geojson"),
+        offshore_regions = resources("regions_offshore_base_s_{clusters}.geojson")
     output:
         resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}_brownfield.nc"

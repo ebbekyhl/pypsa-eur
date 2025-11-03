@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import country_converter as coco
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import powerplantmatching as pm
 import pypsa
 import xarray as xr
@@ -33,6 +34,266 @@ cc = coco.CountryConverter()
 idx = pd.IndexSlice
 spatial = SimpleNamespace()
 
+
+def read_and_clean_OIM_UK_powerplants(uk_regions):
+
+    # Data source 3: Open Street Map / Open Infrastructure Map
+    # Read OIM coordinates data
+    df_OIM_coords = pd.read_csv("data/data_UK/uk_powerplants_oim_with_coords.csv")
+    df_OIM_coords = df_OIM_coords.loc[df_OIM_coords["Output"].dropna().index]
+    df_OIM_coords_kW = df_OIM_coords.loc[df_OIM_coords["Output"].str.contains("kW", na=False)].copy()
+    df_OIM_coords_kW.loc[:, "Output"] = df_OIM_coords_kW["Output"].str.split("kW", expand=True)[0].str.strip().astype(float)/1e3
+    df_OIM_coords_MW = df_OIM_coords.loc[df_OIM_coords["Output"].str.contains("MW", na=False)].copy()
+    df_OIM_coords_MW[["thous", "hund"]] = df_OIM_coords_MW["Output"].str.split(",", expand=True)
+    df_OIM_coords_MW["thous"] = df_OIM_coords_MW["thous"].str.split("MW", expand=True)[0].str.strip()
+    df_OIM_coords_MW["thous"] = df_OIM_coords_MW["thous"].fillna("")
+    df_OIM_coords_MW["hund"] = df_OIM_coords_MW["hund"].str.split("MW", expand=True)[0].str.strip()
+    df_OIM_coords_MW["hund"] = df_OIM_coords_MW["hund"].fillna("")
+    df_OIM_coords.loc[df_OIM_coords_kW.index, "Output"] = df_OIM_coords_kW["Output"]
+    df_OIM_coords.loc[df_OIM_coords_MW.index, "Output"] = (df_OIM_coords_MW["thous"] + df_OIM_coords_MW["hund"]).str.strip().astype(float)
+
+    # Read OIM data
+    df_OIM = pd.read_csv("data/data_UK/uk_powerplants_oim_wiki.csv")
+    df_OIM.loc[:, "lat"] = df_OIM_coords["Latitude"]
+    df_OIM.loc[:, "lon"] = df_OIM_coords["Longitude"]
+    df_OIM.rename(columns = {"output_oim_mw": "Capacity"}, inplace=True)
+    df_OIM.loc[df_OIM_coords.index, "Capacity"] = df_OIM_coords["Output"].astype(float)
+    df_OIM.loc[df_OIM_coords.index, "source_oim"] = df_OIM_coords["Source"]
+    df_OIM = df_OIM.loc[df_OIM["Capacity"].dropna().index] # we cannot use them if no capacity is given
+    df_OIM_unnamed = df_OIM.query("name == '[unnamed]'").copy()
+    df_OIM_unnamed.loc[:, "name"] = df_OIM_unnamed["source_oim"] + " " + df_OIM_unnamed.index.astype(str)
+    df_OIM.loc[df_OIM_unnamed.index, "name"] = df_OIM_unnamed["name"]
+    df_OIM_powerplants = df_OIM.query("facility == 'power plant'").copy()
+    df_OIM_powerplants.drop(df_OIM_powerplants.query("type == 'water-storage'").index, inplace=True)
+    df_OIM_powerplants.drop(df_OIM_powerplants.query("source_oim == 'flywheel'").index, inplace=True)
+    df_OIM_powerplants.drop(index = df_OIM_powerplants.loc[df_OIM_powerplants.name.str.contains("Storage")].index, inplace=True)
+
+    # Add power plants under construction
+    df_OIM_coords_construction = pd.read_csv("data/data_UK/uk_powerplants_oim_with_coords_construction.csv")
+    df_OIM_coords_construction = df_OIM_coords_construction.loc[df_OIM_coords_construction["Output"].dropna().index]
+    df_OIM_coords_MW = df_OIM_coords_construction.loc[df_OIM_coords_construction["Output"].str.contains("MW", na=False)].copy()
+    df_OIM_coords_MW[["thous", "hund"]] = df_OIM_coords_MW["Output"].str.split(",", expand=True)
+    df_OIM_coords_MW["thous"] = df_OIM_coords_MW["thous"].str.split("MW", expand=True)[0].str.strip()
+    df_OIM_coords_MW["thous"] = df_OIM_coords_MW["thous"].fillna("")
+    df_OIM_coords_MW["hund"] = df_OIM_coords_MW["hund"].str.split("MW", expand=True)[0].str.strip()
+    df_OIM_coords_MW["hund"] = df_OIM_coords_MW["hund"].fillna("")
+    df_OIM_coords_construction.loc[df_OIM_coords_MW.index, "Output"] = (df_OIM_coords_MW["thous"] + df_OIM_coords_MW["hund"]).str.strip().astype(float)
+    df_OIM_coords_construction.rename(columns = {"Latitude": "lat", 
+                                                "Longitude": "lon",
+                                                "Name": "name",
+                                                "Output": "Capacity",
+                                                "Source": "source_oim",
+                                                }, inplace=True)
+    df_OIM_coords_construction.drop(index= df_OIM_coords_construction.query("source_oim == 'battery'").index, inplace=True)
+    df_OIM_coords_construction = df_OIM_coords_construction.loc[df_OIM_coords_construction["Capacity"].notna()]
+    df_OIM_coords_construction.loc[:, "Capacity"] = df_OIM_coords_construction["Capacity"].astype(float)
+    df_OIM_coords_construction.loc[:, "status"] = "under construction"
+    df_OIM_coords_construction.loc[:, "facility"] = "power plant"
+    df_OIM_powerplants = pd.concat([df_OIM_powerplants, df_OIM_coords_construction], ignore_index=True)
+    df_OIM_pp_uc = df_OIM_powerplants.query("status == 'under construction'")
+    df_OIM_pp_online = df_OIM_powerplants.query("status == 'online'")
+
+    earliest_decommission_year = 2030
+    lifetime = 40 # years
+    # Add missing commission years as 2020
+    df_OIM_pp_online_wo_cy = df_OIM_pp_online.loc[df_OIM_pp_online["commission_year"].isna()].copy()
+    year_in = 2020
+    df_OIM_pp_online_wo_cy.loc[:, "commission_year"] = year_in
+    df_OIM_pp_online = df_OIM_pp_online.drop(df_OIM_pp_online_wo_cy.index)
+    df_OIM_pp_online = pd.concat([df_OIM_pp_online, df_OIM_pp_online_wo_cy])
+    # Add missing decommission years based on commission year + lifetime
+    df_OIM_pp_online_wo_dy = df_OIM_pp_online.loc[df_OIM_pp_online["decommission_year"].isna()].copy()
+    df_OIM_pp_online_wo_dy.loc[:, "decommission_year"] = df_OIM_pp_online_wo_dy["commission_year"] + lifetime
+    df_OIM_pp_online = df_OIM_pp_online.drop(df_OIM_pp_online_wo_dy.index)
+    df_OIM_pp_online = pd.concat([df_OIM_pp_online, df_OIM_pp_online_wo_dy])
+    # For decommission years < earliest_decommission_year, set to earliest_decommission_year
+    old_pp = df_OIM_pp_online.loc[df_OIM_pp_online["decommission_year"] < earliest_decommission_year].copy()
+    old_pp.loc[:, "decommission_year"] = earliest_decommission_year
+    df_OIM_pp_online.loc[old_pp.index, :] = old_pp
+
+    tech_dict = {'Nuclear (AGR)': "nuclear", 
+                'Biomass': "biomass", 
+                'Gas (CCGT)': "CCGT", 
+                'Gas': "CCGT", 
+                'Solar': "solar", 
+                'Oil': "oil",
+                'Gas (OCGT)': "OCGT", 
+                'Gas (CHP)': "gas CHP", 
+                'Hydro': "hydro", 
+                'Waste-to-energy': "waste", 
+                'diesel': "other",
+                "Diesel": "other",
+                'tidal': "hydro", 
+                "Waste": "waste",
+                'fission': "nuclear", 
+                'photovoltaic': "solar", 
+                "Gas": "CCGT",
+                "gas": "CCGT",
+                'run-of-the-river': "hydro",
+                "stream": "hydro",
+                }
+
+    df_OIM_pp_online.loc[:, "type"] = df_OIM_pp_online["type"].replace(tech_dict)
+    chp_units = df_OIM_pp_online.loc[df_OIM_pp_online.name.str.contains("CHP")].copy()
+    chp_units.loc[:, "type"] = chp_units.source_oim + " CHP"
+    df_OIM_pp_online.drop(chp_units.index, inplace=True)
+    df_OIM_pp_online = pd.concat([df_OIM_pp_online, chp_units])
+    df_OIM_pp_online_combustion = df_OIM_pp_online.query("type == 'combustion'").copy()
+    df_OIM_pp_online_combustion["type"] = df_OIM_pp_online_combustion.source_oim
+    df_OIM_pp_online.drop(df_OIM_pp_online_combustion.index, inplace=True)
+    df_OIM_pp_online = pd.concat([df_OIM_pp_online, df_OIM_pp_online_combustion])
+    df_OIM_pp_online_anaerobic_digestion = df_OIM_pp_online.query("type == 'anaerobic_digestion'").copy()
+    df_OIM_pp_online_anaerobic_digestion["type"] = df_OIM_pp_online_anaerobic_digestion.source_oim
+    df_OIM_pp_online.drop(df_OIM_pp_online_anaerobic_digestion.index, inplace=True)
+    df_OIM_pp_online = pd.concat([df_OIM_pp_online, df_OIM_pp_online_anaerobic_digestion])
+    df_OIM_pp_online_thermal = df_OIM_pp_online.query("type == 'thermal'").copy()
+    df_OIM_pp_online_thermal["type"] = df_OIM_pp_online_thermal.source_oim
+    df_OIM_pp_online.drop(df_OIM_pp_online_thermal.index, inplace=True)
+    df_OIM_pp_online = pd.concat([df_OIM_pp_online, df_OIM_pp_online_thermal])
+    df_OIM_pp_online_nan = df_OIM_pp_online.loc[df_OIM_pp_online["type"][df_OIM_pp_online.type.astype(str) == "nan"].index].copy()
+    df_OIM_pp_online_nan.loc[:, "type"] = df_OIM_pp_online_nan.source_oim
+    df_OIM_pp_online.drop(df_OIM_pp_online_nan.index, inplace=True)
+    df_OIM_pp_online = pd.concat([df_OIM_pp_online, df_OIM_pp_online_nan])
+    df_OIM_pp_online_multifuel = df_OIM_pp_online.loc[df_OIM_pp_online.type.str.contains(";")].copy()
+    df_OIM_pp_online_multifuel["type"] = "other"
+    df_OIM_pp_online.drop(df_OIM_pp_online_multifuel.index, inplace=True)
+    df_OIM_pp_online = pd.concat([df_OIM_pp_online, df_OIM_pp_online_multifuel])
+    df_OIM_pp_online.loc["Sandy Lane Generation Plant", "type"] = "waste"
+    df_OIM_pp_online.loc[:, "type"] = df_OIM_pp_online["type"].replace(tech_dict)
+    pp_wo_coords = df_OIM_pp_online.loc[df_OIM_pp_online["lat"].isna()]
+    pp_wo_coords = pd.concat([pp_wo_coords, df_OIM_pp_online.loc[df_OIM_pp_online["lon"].loc[df_OIM_pp_online["lon"].isna()].index]])
+    pp_wo_coords = pp_wo_coords[~pp_wo_coords.index.duplicated(keep='first')]
+
+    df_OIM_pp_online = df_OIM_pp_online.drop(pp_wo_coords.index)
+    df_OIM_pp_uc.loc[:, "type"] = df_OIM_pp_uc["source_oim"] 
+    df_OIM_pp_uc_type_missing = df_OIM_pp_uc.loc[df_OIM_pp_uc.type.isna()]
+    index_name = df_OIM_pp_uc_type_missing.name.str.split(" ").values[0]
+    pp_type = "solar" if ("solar" in index_name or "Solar" in index_name) else None
+    pp_type = "wind" if ("wind" in index_name or "Wind" in index_name) else pp_type
+    df_OIM_pp_uc.loc[df_OIM_pp_uc_type_missing.index, "type"] = pp_type
+    df_OIM_pp_uc["type"] = df_OIM_pp_uc["type"].replace({"gas": "Natural Gas",
+                                                        "geothermal": "other generators"})
+    df_OIM_pp_all = pd.concat([df_OIM_pp_online, df_OIM_pp_uc], ignore_index=True)
+
+    df_OIM_pp_wind = df_OIM_pp_all.query("source_oim == 'wind'").copy()
+    uk_boundary = uk_regions.dissolve()
+    df_OIM_pp_wind.loc[:, "within_uk"] = df_OIM_pp_wind.apply(lambda row: uk_boundary.contains(Point(row["lon"], row["lat"])), axis=1)
+    df_OIM_pp_offshore_wind = df_OIM_pp_wind[df_OIM_pp_wind["within_uk"] == False].copy()
+    df_OIM_pp_onshore_wind = df_OIM_pp_wind[df_OIM_pp_wind["within_uk"] == True].copy()
+    df_OIM_pp_onshore_wind.loc[:, "type"] = "Onshore Wind"
+    df_OIM_pp_offshore_wind.loc[:, "type"] = "Offshore Wind"
+    df_OIM_pp_all.drop(df_OIM_pp_onshore_wind.index, inplace=True)
+    df_OIM_pp_all.drop(df_OIM_pp_offshore_wind.index, inplace=True)
+    df_OIM_pp_all = pd.concat([df_OIM_pp_all, df_OIM_pp_onshore_wind, df_OIM_pp_offshore_wind])
+    df_OIM_pp_all.drop(index = df_OIM_pp_all.query("type == 'landfill_gas'").index, inplace=True)
+
+    df_OIM_pp_all.rename(columns = {"commission_year": "DateIn",
+                                    "decommission_year": "DateOut",
+                                    "type": "Technology",
+                                    "source_oim": "Fueltype",
+                                    "name": "Name",
+                                    }, 
+                                    inplace=True
+                        )
+
+    df_OIM_pp_all.loc[:, "Country"] = "GB"
+
+    chp_units = df_OIM_pp_all[df_OIM_pp_all.Technology.str.endswith("CHP")]
+    pp_units = df_OIM_pp_all[~df_OIM_pp_all.Technology.str.endswith("CHP")]
+
+    df_OIM_pp_all.loc[chp_units.index, "Set"] = "CHP"
+    df_OIM_pp_all.loc[pp_units.index, "Set"] = "PP"
+
+    df_OIM_pp_all.loc[:, "Fueltype"] =df_OIM_pp_all["Fueltype"].astype(str).replace({"nuclear": "Nuclear",
+                                                                            "gas": "Natural Gas",
+                                                                            "biomass": "Bioenergy",
+                                                                            "biogas": "Bioenergy",
+                                                                            "hydro": "Hydro",
+                                                                            "waste": "Waste",
+                                                                            "unknown;gas": "Natural Gas",
+                                                                            "biogas;gas;sludge": "Natural Gas",
+                                                                            "diesel": "Other",
+                                                                            "tidal": "Hydro",
+                                                                            "methane": "Natural Gas",
+                                                                            "biomass;waste": "Bioenergy",
+                                                                            "waste;biomass": "Bioenergy",
+                                                                            "biomass;gas": "Bioenergy",
+                                                                            "wind;solar": "Wind", # only applies to "Chelveston Renewable Energy Park"
+                                                                            "nan": "Other",
+                                                                            "oil": "Oil",
+                                                                            "oil;gas": "Natural Gas",
+                                                                            "geothermal": "Geothermal",
+                                                                            "solar": "Solar",
+                                                                            "wind": "Wind",
+                                                                            })
+    
+    return df_OIM_pp_all
+
+def attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions):
+    oim_points = gpd.GeoDataFrame(
+        df_OIM_pp,
+        geometry=gpd.points_from_xy(df_OIM_pp['lon'], df_OIM_pp['lat']),
+        crs=uk_offshore_regions.crs        # use the same CRS as the polygons
+    )
+
+    plants_in_regions = gpd.sjoin(
+        oim_points,
+        uk_offshore_regions[['name','geometry']],
+        how='left',
+        predicate='within'                  # or 'intersects' if you prefer
+    ).rename(columns={'name':'offshore_region'}).drop(columns='index_right')
+
+    # 3) Assign each plant to the polygon it falls within for the onshore regions
+    plants_in_regions = gpd.sjoin(
+        plants_in_regions,
+        uk_regions.reset_index()[['name','geometry']],
+        how='left',
+        predicate='within'                  # or 'intersects' if you prefer
+    ).rename(columns={'name':'onshore_region'}).drop(columns='index_right')
+
+    plants_in_regions["offshore_region"] = plants_in_regions["offshore_region"].fillna("")
+    plants_in_regions["onshore_region"] = plants_in_regions["onshore_region"].fillna("")
+
+    # create a new column "region"
+    plants_in_regions["region"] = plants_in_regions["offshore_region"] + plants_in_regions["onshore_region"]
+    plants_in_regions.drop(columns=["geometry","lon","lat"], inplace=True)
+    plants_in_regions.drop(index = plants_in_regions.loc[plants_in_regions.region == ""].index , inplace=True)
+
+    df_OIM_pp.loc[:, "bus"] = plants_in_regions["region"]
+
+    df_OIM_pp.loc[:, "Technology"] = df_OIM_pp["Technology"].replace({"Onshore Wind": "onwind",
+                                                                    "Offshore Wind": "offwind-ac",
+                                                                    "Solar": "solar"})
+
+    return df_OIM_pp
+
+def calculate_uk_fraction(df_OIM_pp, carrier, group):
+    fraction_num = df_OIM_pp.query("Technology == @carrier").set_index("bus").sort_index().groupby("bus").Capacity.sum()
+    fraction_denom = fraction_num.sum()
+    fraction_new = fraction_num / fraction_denom
+
+    group_df = pd.DataFrame(group.p_nom_max)
+    group_df["bus"] = group.bus
+
+    p_num_max_per_bus = group_df["p_nom_max"].groupby(group_df.bus).sum()
+
+    group_df = group_df.reset_index().set_index("bus")
+
+    group_df.loc[p_num_max_per_bus.index, "p_nom_max_per_bus"] = p_num_max_per_bus
+
+    fractions_res_classes = (group_df["p_nom_max"] / group_df["p_nom_max_per_bus"]).values
+
+    group_df.loc[fraction_new.index, "fraction_UK_regions"] = fraction_new
+
+    group_df.set_index("Generator", inplace=True)
+
+    group_df.loc[:, "fraction_res_classes"] = fractions_res_classes
+
+    group_df.loc[:, "fraction"] = group_df["fraction_UK_regions"] * group_df["fraction_res_classes"]
+
+    fraction = group_df["fraction"]
+
+    return fraction
 
 def add_build_year_to_new_assets(n: pypsa.Network, baseyear: int) -> None:
     """
@@ -69,6 +330,7 @@ def add_existing_renewables(
     df_agg: pd.DataFrame,
     countries: list[str],
     renewable_carriers: list[str],
+    df_OIM_pp: pd.DataFrame,
 ) -> None:
     """
     Add existing renewable capacities to conventional power plant data.
@@ -107,6 +369,12 @@ def add_existing_renewables(
             .drop(columns=["Technology"])
             .set_index("Country")
         )
+
+        # add more recent year based on OIM data (only available for UK)
+        if "GB" in countries:
+            print("For carrier", carrier, "adding 2025 based on OIM data...")
+            df.loc["GB", "2025"] = df_OIM_pp.query("Technology == @carrier").Capacity.sum()
+
         df.columns = df.columns.astype(int)
 
         # calculate yearly differences
@@ -117,10 +385,14 @@ def add_existing_renewables(
         gen_i = n.generators.query("carrier == @carrier").index
         carrier_gens = n.generators.loc[gen_i]
         res_capacities = []
-        for country, group in carrier_gens.groupby(
-            carrier_gens.bus.map(n.buses.country)
-        ):
-            fraction = group.p_nom_max / group.p_nom_max.sum()
+        for country, group in carrier_gens.groupby(carrier_gens.bus.map(n.buses.country)):
+            if country != "GB":
+                fraction = group.p_nom_max / group.p_nom_max.sum()
+            else:
+                fraction = calculate_uk_fraction(df_OIM_pp, 
+                                                carrier, 
+                                                group)
+            
             res_capacities.append(cartesian(df.loc[country], fraction))
         res_capacities = pd.concat(res_capacities, axis=1).T
 
@@ -133,6 +405,8 @@ def add_existing_renewables(
                 if capacity > 0.0:
                     cost_key = carrier.split("-", maxsplit=1)[0]
                     df_agg.at[name, "Fueltype"] = carrier
+                    df_agg.at[name, "Technology"] = carrier
+                    df_agg.at[name, "Set"] = "PP"
                     df_agg.at[name, "Capacity"] = capacity
                     df_agg.at[name, "DateIn"] = year
                     df_agg.at[name, "lifetime"] = costs.at[cost_key, "lifetime"]
@@ -226,12 +500,35 @@ def add_power_capacities_installed_before_baseyear(
     df_agg.loc[biomass_i, "DateOut"] = df_agg.loc[biomass_i, "DateOut"].fillna(dateout)
 
     # include renewables in df_agg
+    regions = gpd.read_file(snakemake.input.onshore_regions)
+    offshore_regions = gpd.read_file(snakemake.input.offshore_regions)
+
+    uk_regions = regions[regions.index.str.contains("GB")]
+    uk_offshore_regions = offshore_regions.loc[offshore_regions["name"].str[0:2] == "GB"]
+    
+    df_OIM_pp_all = read_and_clean_OIM_UK_powerplants(uk_regions)
+
+    # get intersecting columns of df_OIM_pp_all and powerplants
+    intersecting_cols = df_OIM_pp_all.columns.intersection(df_agg.columns)
+    # order intersecting columns as in powerplants
+    intersecting_cols = [col for col in df_agg.columns if col in intersecting_cols]
+    df_OIM_pp = df_OIM_pp_all[intersecting_cols]
+
+    # missing columns in df_OIM_pp_all that are in powerplants
+    missing_cols = [col for col in df_agg.columns if col not in intersecting_cols]
+    df_OIM_pp.loc[:, missing_cols] = np.nan
+    df_OIM_pp.loc[:, missing_cols] = df_OIM_pp[missing_cols].astype(df_agg[missing_cols].dtypes)
+
+    # attach to buses
+    df_OIM_pp = attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions)
+
     add_existing_renewables(
         df_agg=df_agg,
         costs=costs,
         n=n,
         countries=countries,
         renewable_carriers=renewable_carriers,
+        df_OIM_pp=df_OIM_pp,
     )
     # drop assets which are already phased out / decommissioned
     phased_out = df_agg[df_agg["DateOut"] < baseyear].index

@@ -372,6 +372,7 @@ def add_existing_renewables(
     countries: list[str],
     renewable_carriers: list[str],
     df_OIM_pp: pd.DataFrame,
+    uk_settings: dict[str, bool],
 ) -> None:
     """
     Add existing renewable capacities to conventional power plant data.
@@ -413,7 +414,7 @@ def add_existing_renewables(
 
         # add more recent year based on OIM data (only available for UK)
         # NB: year needs to be before base year of the scenario
-        if "GB" in countries:
+        if "GB" in countries and uk_settings["uk_new_powerplants_data"]:
             df.loc["GB", "2024"] = df_OIM_pp.query("Technology == @carrier").Capacity.sum()
 
         df.columns = df.columns.astype(int)
@@ -427,7 +428,7 @@ def add_existing_renewables(
         carrier_gens = n.generators.loc[gen_i]
         res_capacities = []
         for country, group in carrier_gens.groupby(carrier_gens.bus.map(n.buses.country)):
-            if country != "GB":
+            if country != "GB" or not uk_settings["uk_new_powerplants_data"]:
                 fraction = group.p_nom_max / group.p_nom_max.sum()
             else:
                 fraction = calculate_uk_fraction(df_OIM_pp, 
@@ -457,7 +458,7 @@ def add_existing_renewables(
                     df_agg.at[name, "bus"] = bus
                     df_agg.at[name, "resource_class"] = bin_id
 
-    if "GB" in countries:
+    if "GB" in countries and uk_settings["uk_new_powerplants_data"]:
         df_agg.loc[df_agg[df_agg.bus.str.contains("GB")].index,
                    "Country"] = "GB"
 
@@ -567,6 +568,8 @@ def add_power_capacities_installed_before_baseyear(
     # attach to buses
     df_OIM_pp = attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions)
 
+    uk_settings = snakemake.params["uk_settings"]
+
     add_existing_renewables(
         df_agg=df_agg,
         costs=costs,
@@ -574,10 +577,10 @@ def add_power_capacities_installed_before_baseyear(
         countries=countries,
         renewable_carriers=renewable_carriers,
         df_OIM_pp=df_OIM_pp,
+        uk_settings=uk_settings,
     )
 
     # replace powerplants UK
-    uk_settings = snakemake.params["uk_settings"]
     if uk_settings["uk_new_powerplants_data"]:
         df_agg = add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers)
 

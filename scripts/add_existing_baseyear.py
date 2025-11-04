@@ -17,6 +17,7 @@ import geopandas as gpd
 import powerplantmatching as pm
 import pypsa
 import xarray as xr
+from shapely import Point
 
 from scripts._helpers import (
     configure_logging,
@@ -287,7 +288,7 @@ def attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions):
     # 3) Assign each plant to the polygon it falls within for the onshore regions
     plants_in_regions = gpd.sjoin(
         plants_in_regions,
-        uk_regions.reset_index()[['name','geometry']],
+        uk_regions[['name','geometry']],
         how='left',
         predicate='within'                  # or 'intersects' if you prefer
     ).rename(columns={'name':'onshore_region'}).drop(columns='index_right')
@@ -319,17 +320,13 @@ def calculate_uk_fraction(df_OIM_pp, carrier, group):
     p_num_max_per_bus = group_df["p_nom_max"].groupby(group_df.bus).sum()
 
     group_df = group_df.reset_index().set_index("bus")
-
     group_df.loc[p_num_max_per_bus.index, "p_nom_max_per_bus"] = p_num_max_per_bus
 
     fractions_res_classes = (group_df["p_nom_max"] / group_df["p_nom_max_per_bus"]).values
 
     group_df.loc[fraction_new.index, "fraction_UK_regions"] = fraction_new
-
     group_df.set_index("Generator", inplace=True)
-
     group_df.loc[:, "fraction_res_classes"] = fractions_res_classes
-
     group_df.loc[:, "fraction"] = group_df["fraction_UK_regions"] * group_df["fraction_res_classes"]
 
     fraction = group_df["fraction"]
@@ -546,7 +543,7 @@ def add_power_capacities_installed_before_baseyear(
     df_agg.loc[biomass_i, "DateOut"] = df_agg.loc[biomass_i, "DateOut"].fillna(dateout)
 
     # include renewables in df_agg
-    regions = gpd.read_file(snakemake.input.onshore_regions)
+    regions = gpd.read_file(snakemake.input.onshore_regions).set_index("name")
     offshore_regions = gpd.read_file(snakemake.input.offshore_regions)
 
     uk_regions = regions[regions.index.str.contains("GB")]
@@ -566,7 +563,7 @@ def add_power_capacities_installed_before_baseyear(
     df_OIM_pp.loc[:, missing_cols] = df_OIM_pp[missing_cols].astype(df_agg[missing_cols].dtypes)
 
     # attach to buses
-    df_OIM_pp = attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions)
+    df_OIM_pp = attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions.reset_index())
 
     uk_settings = snakemake.params["uk_settings"]
 
@@ -587,6 +584,8 @@ def add_power_capacities_installed_before_baseyear(
     # drop assets which are already phased out / decommissioned
     phased_out = df_agg[df_agg["DateOut"] < baseyear].index
     df_agg.drop(phased_out, inplace=True)
+
+    df_agg["DateIn"] = df_agg.DateIn.fillna(max(grouping_years))
 
     newer_assets = (df_agg.DateIn > max(grouping_years)).sum()
     if newer_assets:
@@ -629,6 +628,8 @@ def add_power_capacities_installed_before_baseyear(
         "lignite": "lignite",
         "nuclear": "uranium",
         "urban central solid biomass CHP": "biomass",
+        "urban central gas CHP": "gas",
+        "urban central biogas CHP": "gas",
     }
 
     for grouping_year, generator, resource_class in df.index:
@@ -701,9 +702,13 @@ def add_power_capacities_installed_before_baseyear(
 
             already_build = n.links.index.intersection(asset_i)
             new_build = asset_i.difference(n.links.index)
-            lifetime_assets = lifetime.loc[
-                grouping_year, generator, resource_class
-            ].dropna()
+            try:
+                lifetime_assets = lifetime.loc[
+                    grouping_year, generator, resource_class
+                ].dropna()
+            except:
+                print(f"Missing lifetime for {grouping_year}, {generator}, {resource_class}")
+                continue
 
             # this is for the year 2020
             if not already_build.empty:
@@ -714,7 +719,25 @@ def add_power_capacities_installed_before_baseyear(
             if not new_build.empty:
                 new_capacity = capacity.loc[new_build.str.replace(name_suffix, "")]
 
-                if generator != "urban central solid biomass CHP":
+                # get indices of new_capacity that is in lifetime_assets.index
+                matching_capacity_index = new_capacity.index.intersection(lifetime_assets.index)
+                missing_lifetime = new_capacity.index.difference(matching_capacity_index)
+                lifetime_assets_new_capacity = lifetime_assets.loc[matching_capacity_index]
+
+                if not missing_lifetime.empty:
+                    # add default lifetime if missing
+                    default_lifetime = 30
+                    lifetime_assets_new_capacity = pd.concat([
+                        lifetime_assets_new_capacity,
+                        pd.Series(default_lifetime, index=missing_lifetime)
+                    ])
+
+                # align indices of lifetime_assets_new_capacity with new_capacity
+                lifetime_assets_new_capacity = lifetime_assets_new_capacity.loc[new_capacity.index]
+
+                if generator not in ["urban central solid biomass CHP", 
+                                      "urban central biogas CHP",
+                                      "urban central gas CHP"]:
                     n.add(
                         "Link",
                         new_capacity.index,
@@ -733,7 +756,7 @@ def add_power_capacities_installed_before_baseyear(
                         efficiency=costs.at[generator, "efficiency"],
                         efficiency2=costs.at[carrier[generator], "CO2 intensity"],
                         build_year=grouping_year,
-                        lifetime=lifetime_assets.loc[new_capacity.index],
+                        lifetime=lifetime_assets_new_capacity,
                     )
                 else:
                     key = "central solid biomass CHP"
@@ -759,7 +782,7 @@ def add_power_capacities_installed_before_baseyear(
                         efficiency=costs.at[key, "efficiency"],
                         build_year=grouping_year,
                         efficiency2=costs.at[key, "efficiency-heat"],
-                        lifetime=lifetime_assets.loc[new_capacity.index],
+                        lifetime=lifetime_assets_new_capacity,
                     )
         # check if existing capacities are larger than technical potential
         existing_large = n.generators[

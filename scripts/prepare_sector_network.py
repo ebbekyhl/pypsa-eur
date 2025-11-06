@@ -4878,7 +4878,7 @@ def add_industry(
         efficiency3=-options["MWh_MeOH_per_MWh_H2"] / options["MWh_MeOH_per_tCO2"],
     )
 
-    if options["oil_boilers"]:
+    if options["oil_boilers"] and options["boilers"]:
         nodes = pop_layout.index
 
         for heat_system in HeatSystem:

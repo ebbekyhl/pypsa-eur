@@ -137,9 +137,10 @@ def read_and_clean_OIM_UK_powerplants(uk_regions):
 
     earliest_decommission_year = 2030
     lifetime = 40 # years
+    
     # Add missing commission years as 2020
-    df_OIM_pp_online_wo_cy = df_OIM_pp_online.loc[df_OIM_pp_online["commission_year"].isna()].copy()
     year_in = 2020
+    df_OIM_pp_online_wo_cy = df_OIM_pp_online.loc[df_OIM_pp_online["commission_year"].isna()].copy()
     df_OIM_pp_online_wo_cy.loc[:, "commission_year"] = year_in
     df_OIM_pp_online = df_OIM_pp_online.drop(df_OIM_pp_online_wo_cy.index)
     df_OIM_pp_online = pd.concat([df_OIM_pp_online, df_OIM_pp_online_wo_cy])
@@ -217,6 +218,17 @@ def read_and_clean_OIM_UK_powerplants(uk_regions):
                                                         "geothermal": "other generators"})
     df_OIM_pp_all = pd.concat([df_OIM_pp_online, df_OIM_pp_uc], ignore_index=True)
 
+    # Add missing commission years
+    df_OIM_pp_all_wo_cy = df_OIM_pp_all.loc[df_OIM_pp_all["commission_year"].isna()].copy()
+    df_OIM_pp_all_wo_cy.loc[:, "commission_year"] = year_in
+    df_OIM_pp_all = df_OIM_pp_all.drop(df_OIM_pp_all_wo_cy.index)
+    df_OIM_pp_all = pd.concat([df_OIM_pp_all, df_OIM_pp_all_wo_cy])
+    # Add missing decommission years based on commission year + lifetime
+    df_OIM_pp_all_wo_dy = df_OIM_pp_all.loc[df_OIM_pp_all["decommission_year"].isna()].copy()
+    df_OIM_pp_all_wo_dy.loc[:, "decommission_year"] = df_OIM_pp_all_wo_dy["commission_year"] + lifetime
+    df_OIM_pp_all = df_OIM_pp_all.drop(df_OIM_pp_all_wo_dy.index)
+    df_OIM_pp_all = pd.concat([df_OIM_pp_all, df_OIM_pp_all_wo_dy])
+
     df_OIM_pp_wind = df_OIM_pp_all.query("source_oim == 'wind'").copy()
     uk_boundary = uk_regions.dissolve()
     df_OIM_pp_wind.loc[:, "within_uk"] = df_OIM_pp_wind.apply(lambda row: uk_boundary.contains(Point(row["lon"], row["lat"])), axis=1)
@@ -268,6 +280,10 @@ def read_and_clean_OIM_UK_powerplants(uk_regions):
                                                                             "solar": "Solar",
                                                                             "wind": "Wind",
                                                                             })
+    
+    # pp_uc = df_OIM_pp_all.query("status == 'under construction'").index
+    # df_OIM_pp_all.loc[pp_uc, "DateIn"] = 2030 # assume all under construction plants come online in 2030
+    # df_OIM_pp_all.loc[pp_uc, "DateOut"] = 2060 # assume lifetime of 30 years
     
     return df_OIM_pp_all
 

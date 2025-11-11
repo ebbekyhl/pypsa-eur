@@ -331,6 +331,8 @@ def add_uk_demands(industrial_demand):
         elif col not in intersecting_fuels:
             uk_industry_demand_new.loc[:,col] = 0.0
 
+    # liquid in "Other industrial sectors" is set to zero as it is highly overestimated in DUKES data
+    uk_industry_demand_new.loc["liquid", "Other industrial sectors"] = 0.0
     industrial_demand["GB"] = uk_industry_demand_new
 
     return industrial_demand

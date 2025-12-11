@@ -302,6 +302,104 @@ def algebra_bio_gas(n, index):
 
     return bg_sum
 
+def update_UK_gas_price(n):
+    """
+    Use specific gas price  
+
+    Parameters
+    ----------
+    n : pypsa.Network
+        The PyPSA network instance
+    Returns
+    -------
+    pypsa.Network
+        Modified PyPSA network with updated marginal costs
+    """
+
+    # Set UK gas price
+    uk_gas_price = 24.5 # in Eur/MWh
+
+    # UK gas fuel subsidy for existing gas power plants (CCGT)
+    uk_gas_fuel_subsidy = 1.0 # fraction of gas price subsidised
+
+    # Set marginal cost of UK gas turbines
+    marginal_cost_CCGT = 2.6 # Eur/MWh
+
+    # Set marginal cost of UK gas CCGT for pre-built plants
+    links = n.links.copy()
+    gas_CCGT = links.query("carrier == 'CCGT'")
+    uk_gas_CCGT = gas_CCGT.loc[gas_CCGT.index.str.contains("GB")]
+    uk_gas_CCGT_prebuilt = uk_gas_CCGT.loc[uk_gas_CCGT.build_year < 2025]
+    links.loc[uk_gas_CCGT_prebuilt.index, "marginal_cost"] = marginal_cost_CCGT - uk_gas_fuel_subsidy*uk_gas_price # assuming gas fuel expenditures are covered by subsidies for existing gas power plants
+    n.links = links
+
+    # Set marginal cost of UK gas production and extraction
+    generators = n.generators.copy()
+    uk_generators = generators.loc[generators.index.str.contains("GB")]
+    uk_gas_generators = uk_generators.loc[uk_generators.carrier == "gas"]   
+    generators.loc[uk_gas_generators.index, "marginal_cost"] = uk_gas_price
+    n.generators = generators 
+
+    return n
+
+def add_UK_minimum_capacity_factors(n, capacity_factors):
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    base_year = 2025
+    if investment_year > base_year:
+        logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
+        return
+    T = len(n.snapshots)
+    for tech in ["nuclear", "CCGT"]:
+        minimum_capacity_factor = capacity_factors[tech] # fraction, from 0 to 1
+
+        # Select UK links of that tech
+        tech_uk = n.links[
+            n.links.index.str.contains("GB") & (n.links.carrier == tech)
+        ]
+
+        # Prebuilt only
+        tech_uk_prebuilt = tech_uk[tech_uk.build_year < base_year]
+
+        # If no prebuilt capacity, skip constraint
+        if tech_uk_prebuilt.empty:
+            continue
+
+        # Total prebuilt capacity (check for zero or NaN)
+        tech_uk_cap = tech_uk_prebuilt.p_nom.sum()
+
+        if (tech_uk_cap is None) or (tech_uk_cap == 0) or (pd.isna(tech_uk_cap)):
+            # log about zero capacity
+            logger.info(f"No pre-built {tech} capacity in UK, skipping constraint.")
+            continue
+
+        # Total production of those links over all snapshots
+        tech_uk_prod = n.model["Link-p"].loc[:, tech_uk_prebuilt.index].sum()
+
+        # Minimum energy requirement: CF * capacity * time
+        min_energy = minimum_capacity_factor * tech_uk_cap * T
+
+        lhs = -tech_uk_prod + min_energy
+
+        # enforce: tech_uk_prod >= min_energy
+        n.model.add_constraints(lhs <= 0, name=f"capacity_factor_{tech}")
+
+        # log
+        logger.info(f"Added minimum capacity factor constraint for UK {tech}: {minimum_capacity_factor}")
+
+def add_UK_build_out_rates(n, build_out_rates):
+    uk_generators = n.generators.loc[n.generators.index.str.contains("GB")]
+
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    for tech in build_out_rates.keys():
+        uk_generators_vre = uk_generators.query("carrier == @tech")
+        uk_generators_vre_extend = uk_generators_vre.query("p_nom_extendable == True")
+        lhs = n.model["Generator-p_nom"].loc[uk_generators_vre_extend.index].sum()
+        rhs = build_out_rates[tech] 
+
+        n.model.add_constraints(lhs <= rhs, name=f"build_out_limit_{tech}_{investment_year}")
+
+        logger.info(f"Added build out rate constraint for UK {tech}: {rhs} MW / year")
+
 def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     """
     This function adds a collective CO2 emissions constraints for all countries that
@@ -1440,6 +1538,16 @@ def extra_functionality(
     if isinstance(config["local_co2"], dict):
         logger.info("Adding local CO2 constraint.")
         add_local_co2_constraint(n, config["local_co2"])
+
+    uk_settings = snakemake.params.uk_settings
+    if isinstance(uk_settings["uk_brownfield_minimum_capacity_factors"], dict):
+        logger.info("Adding UK brownfield minimum capacity factors.")
+        capacity_factors = uk_settings["uk_brownfield_minimum_capacity_factors"]
+        add_UK_minimum_capacity_factors(n, capacity_factors)
+
+    if isinstance(uk_settings["uk_build_out_rates"], dict):
+        logger.info("Adding UK build out rates.")
+        add_UK_build_out_rates(n, uk_settings["uk_build_out_rates"])
 
     countries = snakemake.params.countries
     local_co2_countries = config["local_co2"].keys() if config["local_co2"] is not False else False

@@ -86,11 +86,19 @@ countries:
 - XK
 
 uk_settings:
-  uk_new_industry_data: false 
-  uk_new_powerplants_data: false
-  uk_new_electricity_demand: false
-  uk_new_heat_demand: false
-  uk_only: false # whether study is for UK only or for Europe including UK. If true, for data flow structure, IE needs to be listed in the countries above.
+  uk_only: false # whether study is for UK only. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
+  uk_new_gas_storage_data: true # whether to use new UK gas storage data
+  uk_new_powerplants_data: true # whether to use new UK powerplant data from OpenStreetMap  
+  uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov
+  uk_brownfield_minimum_capacity_factors: # minimum capacity factors for a selection of brownfield capacities in the UK
+    CCGT: 0.5
+    nuclear: 0.5
+  uk_build_out_rates: # in MW
+    onwind: 20000
+    solar: 20000
+    solar-rooftop: 20000
+    offshore-ac: 20000
+    offshore-dc: 20000
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:

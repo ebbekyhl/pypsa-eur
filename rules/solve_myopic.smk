@@ -132,6 +132,7 @@ rule solve_sector_network_myopic:
             "sector", "co2_sequestration_potential", default=200
         ),
         custom_extra_functionality=input_custom_extra_functionality,
+        uk_settings=config_provider("uk_settings"),
     input:
         eurostat="data/eurostat/Balances-April2023",
         co2_totals = resources("co2_totals.csv"),

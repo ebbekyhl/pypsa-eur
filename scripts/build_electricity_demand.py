@@ -227,6 +227,20 @@ def manual_adjustment(load, fn_load, countries):
 
     return load
 
+def read_UK_load(years, year_ref):
+    df_UK = pd.read_csv("data/UK_electricity_demand_NESO_2013_2024.csv",
+                    index_col=0, 
+                    parse_dates=True).loc[years]["0"]
+    
+    # drop leap day if present
+    df_UK = df_UK[~((df_UK.index.month == 2) & (df_UK.index.day == 29))]
+
+    # change index to match other time series 
+    df_UK.index = pd.date_range(start=f"{year_ref}-01-01 00:00:00", 
+                                end=f"{year_ref}-12-31 23:00:00", 
+                                freq="h")
+    
+    return df_UK
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -300,5 +314,19 @@ if __name__ == "__main__":
     # need to reindex load time series to target year
     if fixed_year:
         load.index = load.index.map(lambda t: t.replace(year=snapshots.year[0]))
+
+    # add UK electricity demand
+    uk_demand_year = snakemake.config["uk_settings"].get("uk_demand_year", False)
+    
+    if uk_demand_year:
+        years_UK = slice(pd.to_datetime(f"{uk_demand_year}-01-01 00:00:00"), 
+                      pd.to_datetime(f"{uk_demand_year}-12-31 23:00:00"))
+    else:
+        years_UK = years
+    
+    year_ref = years[0].year
+    UK_loads = read_UK_load(years_UK, year_ref)
+
+    load.loc[UK_loads.index, "GB"] = UK_loads.values
 
     load.to_csv(snakemake.output[0])

@@ -1570,6 +1570,117 @@ def build_heating_efficiencies(
 
     return heating_efficiencies
 
+def update_UK_energy_balance(energy: pd.DataFrame) -> None:
+    
+    # read new energy balance data from ECUK
+    energy_balance_new_UK_all = pd.read_excel("data/data_UK/ECUK_2025_End_Use_tables.xlsx", sheet_name="Table U2", header=2)
+    energy_balance_years = energy_balance_new_UK_all.Year.unique()
+
+    for energy_balance_year in energy_balance_years:
+        energy = energy.swaplevel(0,1)
+        energy_balance_new_UK = energy_balance_new_UK_all.query("Year == @energy_balance_year") 
+        data_columns = energy_balance_new_UK.drop(columns=["Year", "Sector", "End use"]).columns
+        energy_balance_new_UK.loc[:, data_columns] = energy_balance_new_UK.loc[:, data_columns] * 0.01163 # convert from ktoe to TWh
+
+        # check if energy_balance_year is present
+        if energy_balance_year not in energy.swaplevel(0,1).loc["GB"].index:
+            energy_new_year = energy.loc[2021] # pick the latest available year for all countries
+            
+            try:
+                countries_contained = energy.loc[energy_balance_year].index # countries already contained for the new year
+            except:
+                countries_contained = []
+
+            if len(countries_contained) > 0:
+                print(countries_contained, " already is contained")
+                energy_new_year.loc[countries_contained] = energy.loc[energy_balance_year].loc[countries_contained]   
+            
+            energy_new_year.loc["GB"] = energy.loc[2019].loc["GB"] # specifically pick 2019 for UK (as 2020 and 2021 are 0s due to Brexit)
+            energy_new_year.loc[:, "year"] = energy_balance_year
+            energy_new_year = energy_new_year.set_index([energy_new_year.year, energy_new_year.index])
+
+            energy = pd.concat([energy, energy_new_year.drop(columns = ["year"])]).sort_index()
+        
+        energy = energy.reset_index()
+        energy_balance_default_UK = energy.query("country == 'GB'").query("year == @energy_balance_year").iloc[0].iloc[2:]
+        
+        energy_balance_default_UK_updated = energy_balance_default_UK.copy()
+
+        # sectors that will be updated
+        pypsa_sectors = [
+                        "residential", 
+                        "services",
+                        "road"
+                        ]
+
+        # subsectors
+        pypsa_subsectors = ["space", "water", "cooking"]
+
+        # translate energy balance categories between data sources
+        sector_dic = {"residential": "Domestic",
+                      "services": "Services",
+                      "road": "Transport"}
+
+        subsector_dic = {"space": "Space heating",
+                          "water": "Water heating",
+                          "cooking": "Cooking/catering"} 
+
+        variables = ["Electricity", "Total"]
+        
+        variables_pypsa = {"Electricity": "electricity",
+                            "Total": "total"}
+
+        for pypsa_sector_i in pypsa_sectors:
+            EB_sector_old = energy_balance_default_UK.loc[energy_balance_default_UK.index.str.contains(pypsa_sector_i)]
+            sector_i = sector_dic[pypsa_sector_i]
+            EB_sector_new = energy_balance_new_UK.query(f"Sector == @sector_i")
+            EB_sector_new.loc[:, "End use"] = EB_sector_new["End use"].str.strip()
+
+            matching_index_total = "total " + pypsa_sector_i
+            print("(old) Total for sector", pypsa_sector_i, round(EB_sector_old.loc[matching_index_total], 1), "TWh")
+            
+            if pypsa_sector_i == "road":
+                EB_sector_new_total = EB_sector_new["Total"]
+                print("(new) Total for sector", pypsa_sector_i, round(EB_sector_new_total.item(), 1), "TWh")
+
+                for variable_i in variables:
+                    print(variable_i, round(EB_sector_new[variable_i].item(),1))
+                    
+                    matching_index = variables_pypsa[variable_i] + " " + pypsa_sector_i
+                    print("matching index: ", matching_index)
+                    energy_balance_default_UK_updated.loc[matching_index] = EB_sector_new_subsector_values.sum()
+                continue
+
+            print("(new) Total for sector", pypsa_sector_i, round(EB_sector_new.loc[EB_sector_new["End use"] == "Overall total"]["Total"].item(), 1), "TWh")
+
+            energy_balance_default_UK_updated.loc[matching_index_total] = EB_sector_new.loc[EB_sector_new["End use"] == "Overall total"]["Total"].item()
+
+            print("")
+            for pypsa_subsector_i in pypsa_subsectors:
+                subsector_i = subsector_dic[pypsa_subsector_i]
+                EB_sector_new_subsector = EB_sector_new.loc[EB_sector_new["End use"] == subsector_i]
+
+                for variable_i in variables:
+                    EB_sector_new_subsector_values = EB_sector_new_subsector[variable_i]
+
+                    matching_index = variables_pypsa[variable_i] + " " + pypsa_sector_i +  " " + pypsa_subsector_i
+                    print("(old)", matching_index, round(EB_sector_old.loc[matching_index], 1), "TWh")
+                    print("(new)", matching_index, round(EB_sector_new_subsector_values.sum(), 1), "TWh")
+
+                    print(" ")
+                    try:
+                        energy_balance_default_UK_updated.loc[matching_index] = EB_sector_new_subsector_values.sum()
+                    except:
+                        print(f"Index {matching_index} not found in energy balance default UK.")
+                        continue
+
+        # update energy dataframe
+        energy = energy.set_index(["country", "year"])
+        energy.loc[("GB", energy_balance_year), :] = energy_balance_default_UK_updated.values
+    
+    logger.info(
+        "Updated energy balances for UK using ECUK energy balance data"
+    )
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -1606,6 +1717,8 @@ if __name__ == "__main__":
     energy = build_energy_totals(countries, eurostat, swiss, idees)
 
     update_residential_from_eurostat(energy)
+
+    update_UK_energy_balance(energy)
 
     energy.to_csv(snakemake.output.energy_name)
 

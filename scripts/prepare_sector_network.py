@@ -683,6 +683,7 @@ def add_carrier_buses(
     # Calculate carrier-specific storage costs
     if carrier == "gas":
         capital_cost = costs.at["gas storage", "capital_cost"]
+        lifetime = costs.at["gas storage", "lifetime"]
     elif carrier == "oil":
         # based on https://www.engineeringtoolbox.com/fuels-higher-calorific-values-d_169.html
         mwh_per_m3 = 44.9 * 724 * 0.278 * 1e-3  # MJ/kg * kg/m3 * kWh/MJ * MWh/kWh
@@ -690,6 +691,7 @@ def add_carrier_buses(
             costs.at["General liquid hydrocarbon storage (product)", "capital_cost"]
             / mwh_per_m3
         )
+        lifetime = costs.at["General liquid hydrocarbon storage (product)", "lifetime"]
     elif carrier == "methanol":
         # based on https://www.engineeringtoolbox.com/fossil-fuels-energy-content-d_1298.html
         mwh_per_m3 = 5.54 * 791 * 1e-3  # kWh/kg * kg/m3 * MWh/kWh
@@ -697,8 +699,10 @@ def add_carrier_buses(
             costs.at["General liquid hydrocarbon storage (product)", "capital_cost"]
             / mwh_per_m3
         )
+        lifetime = costs.at["General liquid hydrocarbon storage (product)", "lifetime"]
     else:
         capital_cost = 0.1
+        lifetime = np.inf  # infinite lifetime for non-specified carriers
 
     n.add("Bus", nodes, location=location, carrier=carrier, unit=unit)
 
@@ -710,7 +714,8 @@ def add_carrier_buses(
         e_cyclic=True,
         carrier=carrier,
         capital_cost=capital_cost,
-    )
+        lifetime = lifetime,
+        )
 
     fossils = ["coal", "gas", "oil", "lignite"]
     if options["fossil_fuels"] and carrier in fossils:

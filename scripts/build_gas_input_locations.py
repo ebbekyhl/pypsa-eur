@@ -11,6 +11,7 @@ import logging
 
 import geopandas as gpd
 import pandas as pd
+import numpy as np
 
 from scripts._helpers import configure_logging, set_scenario_config
 from scripts.cluster_gas_network import load_bus_regions
@@ -71,26 +72,68 @@ def build_gem_prod_data(fn):
     ).copy()
 
     p = pd.read_excel(fn, sheet_name="Gas extraction - production")
+    p = p.loc[p["Fuel description"].dropna().index]
     p = p.set_index("GEM Unit ID")
-    p = p[p["Fuel description"].str.contains("gas", case=False)]
+
+    p = p[p["Fuel description"] == "gas"]
 
     capacities = pd.DataFrame(index=df.index)
     for key in ["production", "production design capacity", "reserves"]:
         cap = (
-            p.loc[p["Production/reserves"] == key, "Quantity (converted)"]
-            .groupby("GEM Unit ID")
-            .sum()
-            .reindex(df.index)
+            p.loc[p["Production/reserves"] == key, ["Quantity (converted)", "Data year"]]
+            .groupby(["GEM Unit ID","Data year"])
+            .sum().reset_index()
         )
+        cap["Data year"] = cap["Data year"][cap["Data year"] != '[not stated]'].astype(int)
+        cap = cap[~cap["Data year"].isna()]
+        cap.set_index("GEM Unit ID", inplace=True)
+
+        # for duplicate indices, keep the latest year
+        cap_index = pd.DataFrame(cap["Data year"])
+        cap_index["ind"] = cap_index.index
+        cap_index = cap_index.sort_values(by=["ind", "Data year"])
+
+        # drop duplicate indicies keeping latest year
+        cap_index_reduced = pd.DataFrame(cap_index.loc[~cap_index.index.duplicated(keep='last')]).drop(columns=["ind"])
+
+        cap_index_reduced = cap_index_reduced.set_index([cap_index_reduced.index, 
+                                                        cap_index_reduced["Data year"]]).index
+        
+        cap = cap.set_index([cap.index, cap["Data year"]]).drop(columns=["Data year"])
+
+        cap = cap.loc[cap_index_reduced].droplevel(1)
+        
         # assume capacity such that 3% of reserves can be extracted per year (25% quantile)
         annualization_factor = 0.03 if key == "reserves" else 1.0
-        capacities[key] = cap * annualization_factor
+
+        index_intersect = cap.index.intersection(capacities.index)
+        capacities.loc[index_intersect, key] = cap.loc[index_intersect, "Quantity (converted)"] * annualization_factor
 
     df["mcm_per_year"] = (
         capacities["production"]
         .combine_first(capacities["production design capacity"])
         .combine_first(capacities["reserves"])
     )
+    historical_annual_production = {"United Kingdom": 22200,  # mcm per year
+                                    "Romania": 9300, 
+                                    "Netherlands": 8000,
+                                    "Germany": 4000,
+                                    "Italy": 2700,
+                                    "Denmark": 1600,
+                                    "Hungary": 1500,
+                                    "Ireland": 1200,
+                                    "Croatia": 670,
+                                    "Austria": 530,
+                                    }
+    # Data is from
+    # https://ec.europa.eu/eurostat/statistics-explained/index.php?title=Natural_gas_supply_statistics
+    # https://www.sunsave.energy/blog/uk-gas-sources      
+    for c, v in historical_annual_production.items():
+        cap_c = df.query("Country == @c")["mcm_per_year"].sum() 
+        scaling_factor = v / cap_c
+        if scaling_factor != np.inf:
+            print(f"Scaling factor for {c}: {scaling_factor:.2f}")
+            df.loc[df["Country"] == c, "mcm_per_year"] *= scaling_factor
 
     geometry = gpd.points_from_xy(df["Longitude"], df["Latitude"])
     gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")

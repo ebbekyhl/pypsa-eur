@@ -295,6 +295,18 @@ def algebra_carboncapture(n, index, sign = "negative"):
 
     return cc_sum
 
+def algebra_imports(n, index, sign = "positive"):
+    # bus0 is the co2 atmosphere
+    # bus1 is the imported commodity  
+    # sign convention: when power is being discharged from bus0, then p0 (or "p" in the constraint) is positive
+    # no conversion efficiency, since it already is in units of CO2 emissions
+    
+    im = n.model["Link-p"].loc[:, index]*n.snapshot_weightings["generators"]
+    
+    im_sum = im.sum() if sign == "positive" else -im.sum()
+
+    return im_sum
+
 def algebra_bio_gas(n, index):
 
     bg = n.model["Link-p"].loc[:, index]*n.links.loc[index].efficiency3*n.snapshot_weightings["generators"]
@@ -387,17 +399,34 @@ def add_UK_minimum_capacity_factors(n, capacity_factors):
         logger.info(f"Added minimum capacity factor constraint for UK {tech}: {minimum_capacity_factor}")
 
 def add_UK_build_out_rates(n, build_out_rates):
-    uk_generators = n.generators.loc[n.generators.index.str.contains("GB")]
-
+    
     investment_year = int(snakemake.wildcards.planning_horizons)
+
+    uk_generators = n.generators.loc[n.generators.index.str.contains("GB")]
+    uk_links = n.links.loc[n.links.index.str.contains("GB")]
+
     for tech in build_out_rates.keys():
-        uk_generators_vre = uk_generators.query("carrier == @tech")
-        uk_generators_vre_extend = uk_generators_vre.query("p_nom_extendable == True")
-        lhs = n.model["Generator-p_nom"].loc[uk_generators_vre_extend.index].sum()
+        if tech in ["heat pump"]:
+            # by 2025, UK has 250,000 heat pumps installed (https://www.edie.net/uk-passes-250000-heat-pump-milestone/)            
+            if investment_year > 2025: # we only limit HP build out rates for the base year
+                continue
+
+            uk_links_hp = uk_links.loc[uk_links.index.str.contains(tech)]   
+            uk_links_hp_extend = uk_links_hp.query("p_nom_extendable == True")
+            COP_avg = 3 # assumed average COP of heat pumps
+            lhs = n.model["Link-p_nom"].loc[uk_links_hp_extend.index].sum() * COP_avg
+
+        else:
+            if tech in ["offwind"]:
+                uk_generators_vre = uk_generators.loc[uk_generators.index.str.contains(tech)]   
+            else:
+                uk_generators_vre = uk_generators.query("carrier == @tech")
+    
+            uk_generators_vre_extend = uk_generators_vre.query("p_nom_extendable == True")
+            lhs = n.model["Generator-p_nom"].loc[uk_generators_vre_extend.index].sum()
+        
         rhs = build_out_rates[tech] 
-
         n.model.add_constraints(lhs <= rhs, name=f"build_out_limit_{tech}_{investment_year}")
-
         logger.info(f"Added build out rate constraint for UK {tech}: {rhs} MW / year")
 
 def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
@@ -417,7 +446,6 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     else: 
         collective = countries
         local_co2_countries = False
-
 
     logger.info("Collective = %s", collective)
 
@@ -467,8 +495,13 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
     CarbRem = bg[bg.efficiency3 < 0]
     CarbRem_algebra = algebra_carboncapture(n, CarbRem.index, sign = "negative")
 
+    # 7. Imports of fuels with embedded carbon emissions
+    imports = n.links.query('bus0 == "co2 atmosphere"') 
+    imports = imports if not local_co2_countries else imports[~imports.index.str[0:2].isin(local_co2_countries)]
+    CarbImp_algrebra = algebra_imports(n, imports.index)
+
     # Net CO2 Emissions Constraint
-    emissions = ProcEmissions_algebra + GenEmissions_algebra + BioGas_algebra + ProcEmissions_2_sum
+    emissions = ProcEmissions_algebra + GenEmissions_algebra + BioGas_algebra + ProcEmissions_2_sum + CarbImp_algrebra
     removal = CarbCapt_algebra + CarbRem_algebra
 
     lhs = emissions 
@@ -517,7 +550,7 @@ def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
         ProcEmissions_2 = pe_2[pe_2.str.contains(country)]
         ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*nhours).sum()
 
-        # 4. Generation emissions
+        # 4. Generation emissions, Aviation etc. (all links which emits CO2 through bus2)
         ge = n.links.query('bus2 == "co2 atmosphere"').copy() # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
         ge.drop(ge.query("carrier == 'DAC'").index, inplace=True) # excluding DAC
         GenEmissions = ge[ge.index.str.contains(country)]
@@ -533,8 +566,13 @@ def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
         CarbRem = bg[bg.efficiency3 < 0]
         CarbRem_algebra = algebra_carboncapture(n, CarbRem.index, sign = "negative")
 
+        # 7. Imports of fuels with embedded carbon emissions
+        imports = n.links.query('bus0 == "co2 atmosphere"') 
+        imports = imports[imports.index.str.contains(country)]
+        CarbImp_algrebra = algebra_imports(n, imports.index)
+
         # Net CO2 Emissions Constraint
-        emissions = ProcEmissions_algebra + GenEmissions_algebra + BioGas_algebra + ProcEmissions_2_sum
+        emissions = ProcEmissions_algebra + GenEmissions_algebra + BioGas_algebra + ProcEmissions_2_sum + CarbImp_algrebra
         removal = CarbCapt_algebra + CarbRem_algebra
 
         lhs = emissions 
@@ -1417,6 +1455,7 @@ def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex):
     """
 
     nyears = n.snapshot_weightings.generators.sum() / 8760
+    weightings = n.snapshot_weightings.loc[sns, "generators"]
 
     import_links = n.links.loc[n.links.carrier.str.contains("import")].index
     import_gens = n.generators.loc[n.generators.carrier.str.contains("import")].index
@@ -1424,22 +1463,28 @@ def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex):
     limit = n.config["sector"]["imports"]["limit"]
     limit_sense = n.config["sector"]["imports"]["limit_sense"]
 
-    if (import_links.empty and import_gens.empty) or not np.isfinite(limit):
+    if (import_links.empty and import_gens.empty):
         return
 
-    weightings = n.snapshot_weightings.loc[sns, "generators"]
+    if isinstance(limit, dict):
 
-    # everything needs to be in MWh_fuel
-    eff = n.links.loc[import_links, "efficiency"]
+        for c, lim in limit.items():
 
-    p_gens = n.model["Generator-p"].loc[sns, import_gens]
-    p_links = n.model["Link-p"].loc[sns, import_links]
+            import_gens_c = import_gens[import_gens.str.contains(c)]
+            import_links_c = import_links[import_links.str.contains(c)]
 
-    lhs = (p_gens * weightings).sum() + (p_links * eff * weightings).sum()
+            # everything needs to be in MWh_fuel
+            eff = n.links.loc[import_links_c, "efficiency"]
 
-    rhs = limit * 1e6 * nyears
+            p_gens = n.model["Generator-p"].loc[sns, import_gens_c]
+            p_links = n.model["Link-p"].loc[sns, import_links_c]
 
-    n.model.add_constraints(lhs, limit_sense, rhs, name="import_limit")
+            lhs = (p_gens * weightings).sum() + (p_links * eff * weightings).sum()
+
+            rhs = lim * 1e6 * nyears
+
+            n.model.add_constraints(lhs, limit_sense, rhs, name=f"import_limit_{c}")
+            logger.info(f"Added import limit constraint for {c} with {limit_sense} {lim} TWh_fuel/year")
 
 
 def add_co2_atmosphere_constraint(n, snapshots):

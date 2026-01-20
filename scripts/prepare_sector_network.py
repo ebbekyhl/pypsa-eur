@@ -2030,7 +2030,7 @@ def add_storage_and_grids(
             gas_pipes["capital_cost"] = (
                 gas_pipes.length * costs.at["CH4 (g) pipeline", "capital_cost"]
             )
-            gas_pipes["p_nom_extendable"] = True # False
+            gas_pipes["p_nom_extendable"] = False
 
         n.add(
             "Link",
@@ -2059,10 +2059,10 @@ def add_storage_and_grids(
         remove_i = n.generators[gas_i & internal_i].index
         n.generators.drop(remove_i, inplace=True)
 
-        input_types = ["lng", "pipeline", "production"]
+        input_types = ["production"] #"lng", "pipeline", "production"]
         p_nom = gas_input_nodes[input_types].sum(axis=1).rename(lambda x: x + " gas")
-        n.generators.loc[gas_i, "p_nom_extendable"] = True ############################## NB: THIS WAS CHANGED!
-        n.generators.loc[gas_i, "p_nom_min"] = p_nom ############################## NB: THIS WAS CHANGED!
+        n.generators.loc[gas_i, "p_nom_extendable"] = False 
+        n.generators.loc[gas_i, "p_nom"] = p_nom
 
         # add existing gas storage capacity
         gas_i = n.stores.carrier == "gas"
@@ -4672,10 +4672,188 @@ def add_industry(
     # 1e6 to convert TWh to MWh
     industrial_demand = pd.read_csv(industrial_demand_file, index_col=0) * 1e6 * nyears
 
-    # endogenous_sectors = []
-    # sectors_b = ~industrial_demand.index.get_level_values("sector").isin(
-    #     endogenous_sectors
-    # )
+    industrial_production = (
+        pd.read_csv(snakemake.input.industrial_production, index_col=0)
+        * 1e3
+        * nyears  # kt/a -> t/a
+    )
+
+    if options["endogenous_steel"]:
+
+        logger.info("Adding endogenous primary steel demand in tonnes.")
+
+        sectors = ["DRI + Electric arc", 
+                   "Integrated steelworks"]
+
+        no_relocation = not options["relocation_steel"]
+
+        s = " not" if no_relocation else ""
+        logger.info(f"Steel industry relocation{s} activated.")
+
+        n.add(
+            "Bus",
+            "EU steel",
+            location="EU",
+            carrier="steel",
+            unit="t",
+        )
+
+        n.add(
+            "Bus",
+            "EU HBI",
+            location="EU",
+            carrier="HBI",
+            unit="t",
+        )
+
+        if options.get("steel_import", False):
+            n.add(
+                "Generator",
+                "steel import",
+                bus="EU steel",
+                carrier="steel import",
+                p_nom_extendable=True,
+                marginal_cost=options["steel_import"],
+            )
+
+        # set demand for primary steel production
+        n.add(
+            "Load",
+            "EU steel",
+            bus="EU steel",
+            carrier="steel",
+            p_set=industrial_production[sectors].sum().sum() / nhours,
+        )
+
+        if not no_relocation:
+            n.add(
+                "Store",
+                "EU steel Store",
+                bus="EU steel",
+                e_nom_extendable=True,
+                e_cyclic=True,
+                carrier="steel",
+            )
+
+            n.add(
+                "Store",
+                "EU HBI Store",
+                bus="EU HBI",
+                e_nom_extendable=True,
+                e_cyclic=True,
+                carrier="HBI",
+            )
+
+        dri_electricity_input = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "electricity-input"], 
+                                 "natural gas": costs.at["hydrogen direct iron reduction furnace", "electricity-input"]}
+        
+        fuel_input = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "hydrogen-input"], 
+                      "natural gas": costs.at["natural gas direct iron reduction furnace", "gas-input"]}
+        
+        EAF_hbi_input = costs.at["electric arc furnace", "hbi-input"]
+        DRI_commodity = costs.at["iron ore DRI-ready", "commodity"]
+        DRI_ore_input = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "ore-input"], 
+                         "natural gas": costs.at["natural gas direct iron reduction furnace", "ore-input"]}
+        DRI_fixed_cost = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "capital_cost"],
+                          "natural gas": costs.at["natural gas direct iron reduction furnace", "capital_cost"]}# costs.at["direct iron reduction furnace", "fixed"]
+        DRI_lifetimes = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "lifetime"],
+                         "natural gas": costs.at["natural gas direct iron reduction furnace", "lifetime"]}   
+        DRI_CO2_intensities = {"hydrogen": 0.05, # https://steelwatch.org/steelwatch-explainers/climate/
+                               "natural gas": 1.37} # https://steelwatch.org/steelwatch-explainers/climate/ 
+        EAF_electricity_input = costs.at["electric arc furnace", "electricity-input"]
+
+        for fuel in ["hydrogen", "natural gas"]:
+            p_nom = (
+                    industrial_production[sectors].sum()
+                    * EAF_hbi_input
+                    * dri_electricity_input[fuel]
+                    / nhours
+                    )
+
+            marginal_cost = (
+                            DRI_commodity
+                            * DRI_ore_input[fuel]
+                            / dri_electricity_input[fuel]
+                            )
+
+            n.madd(
+                "Link",
+                nodes,
+                suffix=" " + fuel + " DRI",
+                carrier=fuel + " DRI",
+                capital_cost=DRI_fixed_cost[fuel]
+                / dri_electricity_input[fuel],
+                marginal_cost=marginal_cost,
+                p_nom=p_nom if no_relocation else 0,
+                p_nom_extendable=False if no_relocation else True,
+                bus0=nodes,
+                bus1="EU HBI",
+                bus2=nodes + " H2",
+                bus3="co2 atmosphere",
+                efficiency=1 / dri_electricity_input[fuel],
+                efficiency2=-fuel_input[fuel] / dri_electricity_input[fuel],
+                efficiency3 = DRI_CO2_intensities[fuel] / dri_electricity_input[fuel],
+                lifetime = DRI_lifetimes[fuel],
+            )
+
+        BF_BOF_fixed_cost = costs.at["blast furnace basic oxygen furnace", "capital_cost"]
+        BF_BOF_electricity_input = costs.at["blast furnace basic oxygen furnace", "electricity-input"]
+        BF_BOF_ore_input = costs.at["blast furnace basic oxygen furnace", "ore-input"]
+        BF_BOF_coal_input = costs.at["blast furnace basic oxygen furnace", "coal-input"]
+        BF_BOF_lifetime = costs.at["blast furnace basic oxygen furnace", "lifetime"]
+
+        marginal_cost = (
+                        DRI_commodity # iron ore price is only given for DRI-ready ore
+                        * BF_BOF_ore_input
+                        / BF_BOF_electricity_input
+                        )
+
+        p_nom = (
+                    industrial_production[sectors].sum()
+                    * BF_BOF_electricity_input
+                    / nhours
+                    )
+
+        n.madd(
+                "Link",
+                nodes,
+                suffix=" " + fuel + " BF-BOF",
+                carrier=fuel + " BF-BOF",
+                capital_cost=BF_BOF_fixed_cost
+                / BF_BOF_electricity_input,
+                marginal_cost=marginal_cost,
+                p_nom=p_nom if no_relocation else 0,
+                p_nom_extendable=False if no_relocation else True,
+                bus0=nodes,
+                bus1="EU steel",
+                bus2=nodes + " coal",
+                bus3= "co2 atmosphere",
+                efficiency= 1 / BF_BOF_electricity_input,
+                efficiency2=-BF_BOF_coal_input / BF_BOF_electricity_input,
+                efficiency3 = -2.33 / BF_BOF_electricity_input, # 2.33 tCO2 / t steel
+                lifetime = BF_BOF_lifetime,
+            )
+
+        # Secondary steel production via electric arc furnace
+        p_nom = (industrial_production["Electric arc"] 
+                 * EAF_electricity_input / nhours)
+
+        n.madd(
+            "Link",
+            nodes,
+            suffix=" EAF",
+            carrier="EAF",
+            capital_cost=costs.at["electric arc furnace", "capital_cost"] / EAF_electricity_input,
+            p_nom=p_nom if no_relocation else 0,
+            p_nom_extendable=False if no_relocation else True,
+            bus0=nodes,
+            bus1="EU steel",
+            bus2="EU HBI",
+            efficiency=1 / EAF_electricity_input,
+            efficiency2=-costs.at["electric arc furnace", "hbi-input"]
+            / EAF_electricity_input,
+        )
+
 
     # medium heat for industry
     n.add(
@@ -6488,6 +6666,34 @@ def add_import_options(
         )
 
 
+def scale_UK_gas_network(n):
+    # The data for gas network in UK has some deficiencies, as some interconnections 
+    # with countries are underestimated. One prominent example is the gas import from Norway to UK.
+    # To account for this, we scale the gas pipelines from Norway to UK to match the
+    # actual size of the gas interconnection.
+
+    links = n.links.copy()
+    uk_gas_pipelines = links.query("carrier =='gas pipeline'").loc[links.query("carrier =='gas pipeline'").index.str.contains("GB")]
+    uk_gas_pipelines_NO = uk_gas_pipelines.loc[uk_gas_pipelines.index.str.contains("NO")]
+    uk_gas_pipelines_NO_rev = uk_gas_pipelines_NO[uk_gas_pipelines_NO.index.str.contains("reversed")]
+    uk_gas_pipelines_NO = uk_gas_pipelines_NO.drop(uk_gas_pipelines_NO_rev.index)
+
+    # log about uk_gas_pipelines_NO
+    logger.info(f"UK gas pipelines from Norway before scaling:\n{uk_gas_pipelines_NO[['p_nom']]}")
+
+    # UK gets 50% of its gas from Norway, based 2024 numbers (https://www.sunsave.energy/blog/uk-gas-sources)
+    # This is equivalent to 345 TWh. With the current layout of gas pipelines, this is not sufficient to cover this. 
+    # As a solution, we expand the gas pipelines of UK to allow this:
+    UK_NO_gas_network = (uk_gas_pipelines_NO[["p_nom"]].sum()*8760 / 1e6).item()
+    scaling = 345.9 / UK_NO_gas_network
+
+    links.loc[uk_gas_pipelines_NO.index, "p_nom"] = uk_gas_pipelines_NO["p_nom"] * scaling
+    links.loc[uk_gas_pipelines_NO_rev.index, "p_nom"] = uk_gas_pipelines_NO_rev["p_nom"] * scaling
+
+    logger.info(f"UK gas pipelines from Norway after scaling:\n{links.loc[uk_gas_pipelines_NO.index, 'p_nom']}")
+
+    n.links = links
+
 if __name__ == "__main__":
     if "snakemake" not in globals():
         from scripts._helpers import mock_snakemake
@@ -6821,5 +7027,6 @@ if __name__ == "__main__":
 
     sanitize_carriers(n, snakemake.config)
     sanitize_locations(n)
+    scale_UK_gas_network(n)
 
     n.export_to_netcdf(snakemake.output[0])

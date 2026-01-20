@@ -155,6 +155,116 @@ def add_brownfield(
             n.links.loc[gas_pipes_i, "p_nom"] = remaining_capacity
             n.links.loc[gas_pipes_i, "p_nom_max"] = remaining_capacity
 
+def add_planned_generation_capacities(n, year):
+    # Read data with planned power plants under construction
+    df_OIM_pp_uc = pd.read_csv("data/data_UK/uk_powerplants_cleaned_under_construction.csv")
+    df_OIM_pp_uc.Technology = df_OIM_pp_uc.Technology.replace({"Natural Gas": "CCGT",
+                                                            "biomass": "urban central solid biomass CHP",
+                                                            "offwind-ac": "offwind-dc"}) # assumption: new offshore wind farms are DC-connected
+
+    # Add planned capacities to network
+    planning_horizon = snakemake.config["planning_horizon"]
+    previous_year = planning_horizon[planning_horizon.index(year) - 1]
+    for tech in df_OIM_pp_uc.Technology.unique():
+        df_tech = df_OIM_pp_uc.query("Technology == @tech")[["DateIn", "DateOut", "Capacity", "bus"]]
+        
+        # check if DateIn is both > previous_year and <= year
+        df_tech_in = df_tech.loc[(df_tech["DateIn"] > previous_year) & (df_tech["DateIn"] <= year)]
+
+        # group by bus 
+        df_tech_in_grouped = df_tech_in.groupby("bus").agg({"Capacity": "sum"})
+
+        if tech in ["onwind", "offwind-dc", "solar"]:    
+            # We need to treat renewables separately, as they are included at different resource classes, representing 
+            # different resource quality and thus different capacity factors. Each level has its own p_nom_max. We will 
+            # thus need to distribute the planned capacity over the different resource levels.
+
+            res_level = 0
+            df_tech_in_grouped_index = df_tech_in_grouped.index
+            df_tech_in_grouped.index = df_tech_in_grouped_index + f" {res_level} " + tech + "-" + str(year)
+
+            while (df_tech_in_grouped["Capacity"] > n.generators.loc[df_tech_in_grouped.index].p_nom_max).any() and res_level <= 3:
+
+                p_nom_max = n.generators.loc[df_tech_in_grouped.index, "p_nom_max"].values
+
+                if res_level != 3:
+                    n.generators.loc[df_tech_in_grouped.index, "p_nom_min"] = p_nom_max
+                    df_tech_in_grouped["Capacity"] = df_tech_in_grouped["Capacity"] - p_nom_max
+                    df_tech_in_grouped.loc[df_tech_in_grouped["Capacity"] < 0, "Capacity"] = 0
+
+                    res_level += 1
+                    df_tech_in_grouped.index = df_tech_in_grouped_index + f" {res_level} " + tech + "-" + str(year)
+                    print("increased res level to ", res_level, " for technology ", tech)
+
+                elif res_level == 3:
+                    for idx in df_tech_in_grouped["Capacity"].index:
+
+                        p_nom_max_n = n.generators.loc[idx, "p_nom_max"]
+
+                        if df_tech_in_grouped.loc[idx, "Capacity"] > p_nom_max_n:
+                        
+                            p_nom_max_df = df_tech_in_grouped.loc[idx, "Capacity"]
+                            print("Increased p_nom_max from ", p_nom_max_n, " to ", p_nom_max_df, " for ", idx)
+
+                            n.generators.loc[idx, "p_nom_max"] = p_nom_max_df
+                        
+                        n.generators.loc[idx, "p_nom_min"] = p_nom_max_df
+
+                    res_level += 1
+
+        elif tech in ["CCGT", 
+                      "nuclear", 
+                      # "urban central solid biomass CHP"
+                     ]:
+            df_tech_in_grouped.index = df_tech_in_grouped.index + " " + tech + "-" + str(year)
+            n.links.loc[df_tech_in_grouped.index, "p_nom_min"] = df_tech_in_grouped["Capacity"].values
+
+def add_planned_storage_capacities(n, year):
+    # Read cleaned data set with storage power plants 
+    df_OIM_storage = pd.read_csv("data/data_UK/uk_powerplants_cleaned_storage.csv")
+
+    # only consider storage planned and not yet in operation
+    df_OIM_storage_uc = df_OIM_storage.query("status == 'under construction'")
+
+    planning_horizon = snakemake.config["planning_horizon"]
+    previous_year = planning_horizon[planning_horizon.index(year) - 1]
+
+    # rename technologies to match pypsa-eur naming
+    tech_rename = {"battery": "battery discharger",
+                   "water-storage": "PHS"}
+    for tech in df_OIM_storage_uc.Technology.unique():
+        df_tech = df_OIM_storage_uc.query("Technology == @tech")
+        df_tech_in = df_tech.loc[(df_tech["DateIn"] > previous_year) & (df_tech["DateIn"] <= year)].groupby("bus").agg({"Capacity": "sum"})
+
+        df_tech_in_index = df_tech_in.index + " " + tech_rename[tech] + "-" + str(year)
+
+        if tech in ["battery"]:
+            n.links.loc[df_tech_in_index, "p_nom_min"] = df_tech_in["Capacity"].values
+            print("planned battery storage capacity added")
+
+        elif tech in ["water-storage"]:
+            df_tech_in_reservoir = df_tech.loc[(df_tech["DateIn"] > previous_year) & (df_tech["DateIn"] <= year)].groupby("bus").agg({"storage_capacity_mwh": "sum"})
+
+            max_hours = df_tech_in_reservoir["storage_capacity_mwh"] / df_tech_in["Capacity"]
+
+            storage_units = n.storage_units.copy()
+            n_phs = storage_units.query("carrier == 'PHS'")
+            
+            # add new pumped hydro storage units
+            n_UK_phs = n_phs.loc[n_phs.index.str.contains("GB")].iloc[0]
+            
+            uk_phs_df = pd.DataFrame(columns = n_UK_phs.index,
+                                    index = df_tech_in_index)
+            
+            uk_phs_df.loc[:, :] = n_UK_phs.values
+            uk_phs_df.loc[:, "bus"] = df_tech_in.index
+            uk_phs_df.loc[:, "p_nom"] = df_tech_in["Capacity"].values
+            uk_phs_df.loc[:, "max_hours"] = max_hours.values
+
+            storage_units = pd.concat([storage_units, uk_phs_df], ignore_index=False).sort_index()
+            n.storage_units = storage_units
+
+            print("planned PHS capacity added")
 
 def disable_grid_expansion_if_limit_hit(n):
     """
@@ -369,6 +479,9 @@ if __name__ == "__main__":
         h2_retrofit_capacity_per_ch4=snakemake.params.H2_retrofit_capacity_per_CH4,
         capacity_threshold=snakemake.params.threshold_capacity,
     )
+
+    add_planned_generation_capacities(n)
+    add_planned_storage_capacities(n)
 
     disable_grid_expansion_if_limit_hit(n)
 

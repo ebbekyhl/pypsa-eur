@@ -1571,7 +1571,9 @@ def build_heating_efficiencies(
     return heating_efficiencies
 
 def update_UK_energy_balance(energy: pd.DataFrame) -> None:
-    
+
+    road_rail_fraction = 0.95 # based on EUROSTAT transport sector split for UK between 2017 - 2019
+
     # read new energy balance data from ECUK
     energy_balance_new_UK_all = pd.read_excel("data/data_UK/ECUK_2025_End_Use_tables.xlsx", sheet_name="Table U2", header=2)
     energy_balance_years = energy_balance_new_UK_all.Year.unique()
@@ -1597,7 +1599,8 @@ def update_UK_energy_balance(energy: pd.DataFrame) -> None:
             
             energy_new_year.loc["GB"] = energy.loc[2019].loc["GB"] # specifically pick 2019 for UK (as 2020 and 2021 are 0s due to Brexit)
             energy_new_year.loc[:, "year"] = energy_balance_year
-            energy_new_year = energy_new_year.set_index([energy_new_year.year, energy_new_year.index])
+            energy_new_year = energy_new_year.set_index([energy_new_year.year, 
+                                                         energy_new_year.index])
 
             energy = pd.concat([energy, energy_new_year.drop(columns = ["year"])]).sort_index()
         
@@ -1606,14 +1609,8 @@ def update_UK_energy_balance(energy: pd.DataFrame) -> None:
         
         energy_balance_default_UK_updated = energy_balance_default_UK.copy()
 
-        # sectors that will be updated
-        pypsa_sectors = [
-                        "residential", 
-                        "services",
-                        "road"
-                        ]
-
         # subsectors
+        pypsa_sectors = ["residential", "services", "road"]
         pypsa_subsectors = ["space", "water", "cooking"]
 
         # translate energy balance categories between data sources
@@ -1637,25 +1634,26 @@ def update_UK_energy_balance(energy: pd.DataFrame) -> None:
             EB_sector_new.loc[:, "End use"] = EB_sector_new["End use"].str.strip()
 
             matching_index_total = "total " + pypsa_sector_i
-            print("(old) Total for sector", pypsa_sector_i, round(EB_sector_old.loc[matching_index_total], 1), "TWh")
+            # replace printing with logging
+            logger.info("(old) Total for sector %s %s TWh", pypsa_sector_i, round(EB_sector_old.loc[matching_index_total], 1))
             
             if pypsa_sector_i == "road":
                 EB_sector_new_total = EB_sector_new["Total"]
-                print("(new) Total for sector", pypsa_sector_i, round(EB_sector_new_total.item(), 1), "TWh")
+                logger.info("(new) Total for sector %s %s TWh", pypsa_sector_i, round(EB_sector_new_total.item(), 1))
 
                 for variable_i in variables:
-                    print(variable_i, round(EB_sector_new[variable_i].item(),1))
+                    logger.info("%s %s", variable_i, round(EB_sector_new[variable_i].item(),1))
                     
                     matching_index = variables_pypsa[variable_i] + " " + pypsa_sector_i
                     print("matching index: ", matching_index)
-                    energy_balance_default_UK_updated.loc[matching_index] = EB_sector_new_subsector_values.sum()
+                    if matching_index == "total road":
+                        energy_balance_default_UK_updated.loc[matching_index] = EB_sector_new_total.sum() * road_rail_fraction
                 continue
 
-            print("(new) Total for sector", pypsa_sector_i, round(EB_sector_new.loc[EB_sector_new["End use"] == "Overall total"]["Total"].item(), 1), "TWh")
+            logger.info("(new) Total for sector %s %s TWh", pypsa_sector_i, round(EB_sector_new.loc[EB_sector_new["End use"] == "Overall total"]["Total"].item(), 1))
 
             energy_balance_default_UK_updated.loc[matching_index_total] = EB_sector_new.loc[EB_sector_new["End use"] == "Overall total"]["Total"].item()
 
-            print("")
             for pypsa_subsector_i in pypsa_subsectors:
                 subsector_i = subsector_dic[pypsa_subsector_i]
                 EB_sector_new_subsector = EB_sector_new.loc[EB_sector_new["End use"] == subsector_i]
@@ -1664,14 +1662,14 @@ def update_UK_energy_balance(energy: pd.DataFrame) -> None:
                     EB_sector_new_subsector_values = EB_sector_new_subsector[variable_i]
 
                     matching_index = variables_pypsa[variable_i] + " " + pypsa_sector_i +  " " + pypsa_subsector_i
-                    print("(old)", matching_index, round(EB_sector_old.loc[matching_index], 1), "TWh")
-                    print("(new)", matching_index, round(EB_sector_new_subsector_values.sum(), 1), "TWh")
 
-                    print(" ")
+                    logger.info("(old) %s %s TWh", matching_index, round(EB_sector_old.loc[matching_index], 1))
+                    logger.info("(new) %s %s TWh", matching_index, round(EB_sector_new_subsector_values.sum(), 1))
+
                     try:
                         energy_balance_default_UK_updated.loc[matching_index] = EB_sector_new_subsector_values.sum()
                     except:
-                        print(f"Index {matching_index} not found in energy balance default UK.")
+                        logger.warning("Index %s not found in energy balance default UK.", matching_index)
                         continue
 
         # update energy dataframe
@@ -1681,6 +1679,8 @@ def update_UK_energy_balance(energy: pd.DataFrame) -> None:
     logger.info(
         "Updated energy balances for UK using ECUK energy balance data"
     )
+
+    return energy.sort_index()
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -1718,7 +1718,7 @@ if __name__ == "__main__":
 
     update_residential_from_eurostat(energy)
 
-    update_UK_energy_balance(energy)
+    energy = update_UK_energy_balance(energy)
 
     energy.to_csv(snakemake.output.energy_name)
 

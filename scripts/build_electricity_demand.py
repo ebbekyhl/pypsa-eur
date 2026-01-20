@@ -228,7 +228,7 @@ def manual_adjustment(load, fn_load, countries):
     return load
 
 def read_UK_load(years, year_ref):
-    df_UK = pd.read_csv("data/UK_electricity_demand_NESO_2013_2024.csv",
+    df_UK = pd.read_csv("data/data_UK/UK_electricity_demand_NESO_2013_2024.csv",
                     index_col=0, 
                     parse_dates=True).loc[years]["0"]
     
@@ -324,7 +324,7 @@ if __name__ == "__main__":
     else:
         years_UK = years
     
-    year_ref = years[0].year
+    year_ref = years.start.year
     UK_loads = read_UK_load(years_UK, year_ref)
 
     load.loc[UK_loads.index, "GB"] = UK_loads.values

@@ -985,9 +985,17 @@ def add_storage_capacities_installed_before_baseyear(n, baseyear):
 
     # update p_nom_min for existing battery storage units (if they exist)
     existing_batteries = n.links.index.intersection(battery.index)
+    battery_duration = 6 # assume 6 hours discharge time for battery storage units
     if not existing_batteries.empty:
+        
+        # Update power capacity
         n.links.loc[battery.index, 
                     "p_nom_min"] = battery["Capacity"].values
+        
+        # Update energy capacity
+        n.stores.loc[existing_batteries.str.replace(" discharger", ""), 
+                     "e_nom_min"] = battery["Capacity"].values * battery_duration
+
         logger.info(f"Updated existing battery storage units: {existing_batteries.tolist()}")
 
     else:

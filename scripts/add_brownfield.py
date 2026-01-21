@@ -255,7 +255,7 @@ def add_planned_storage_capacities(n, year):
     # only consider storage planned and not yet in operation
     df_OIM_storage_uc = df_OIM_storage.query("status == 'under construction'")
 
-    planning_horizon = snakemake.config["planning_horizon"]
+    planning_horizon = snakemake.config["scenario"]["planning_horizons"]
     previous_year = planning_horizon[planning_horizon.index(year) - 1]
 
     # rename technologies to match pypsa-eur naming
@@ -268,7 +268,16 @@ def add_planned_storage_capacities(n, year):
         df_tech_in_index = df_tech_in.index + " " + tech_rename[tech] + "-" + str(year)
 
         if tech in ["battery"]:
-            n.links.loc[df_tech_in_index, "p_nom_min"] = df_tech_in["Capacity"].values
+            battery_duration = 6 # assume 6 hours discharge time for battery storage units
+
+            # Update power capacity
+            n.links.loc[df_tech_in_index, 
+                        "p_nom_min"] = df_tech_in["Capacity"].values
+            
+            # Update energy capacity
+            n.stores.loc[df_tech_in_index.str.replace(" discharger", ""), 
+                        "e_nom_min"] = df_tech_in["Capacity"].values * battery_duration
+            
             logger.info("planned battery storage capacity added")
 
         elif tech in ["water-storage"]:

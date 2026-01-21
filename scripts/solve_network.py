@@ -354,9 +354,8 @@ def update_UK_gas_price(n):
 
     return n
 
-def add_UK_minimum_capacity_factors(n, capacity_factors):
+def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
     investment_year = int(snakemake.wildcards.planning_horizons)
-    base_year = 2025
     if investment_year > base_year:
         logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
         return
@@ -369,7 +368,7 @@ def add_UK_minimum_capacity_factors(n, capacity_factors):
             n.links.index.str.contains("GB") & (n.links.carrier == tech)
         ]
 
-        # Prebuilt only
+        # Prebuilt (brownfield) capacities only
         tech_uk_prebuilt = tech_uk[tech_uk.build_year < base_year]
 
         # If no prebuilt capacity, skip constraint
@@ -1584,11 +1583,12 @@ def extra_functionality(
         logger.info("Adding local CO2 constraint.")
         add_local_co2_constraint(n, config["local_co2"])
 
+    base_year = snakemake.config["scenario"]["planning_horizons"][0]
     uk_settings = snakemake.params.uk_settings
     if isinstance(uk_settings["uk_brownfield_minimum_capacity_factors"], dict):
         logger.info("Adding UK brownfield minimum capacity factors.")
         capacity_factors = uk_settings["uk_brownfield_minimum_capacity_factors"]
-        add_UK_minimum_capacity_factors(n, capacity_factors)
+        add_UK_minimum_capacity_factors(n, capacity_factors, base_year)
 
     if isinstance(uk_settings["uk_build_out_rates"], dict):
         logger.info("Adding UK build out rates.")

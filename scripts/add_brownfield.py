@@ -156,6 +156,20 @@ def add_brownfield(
             n.links.loc[gas_pipes_i, "p_nom_max"] = remaining_capacity
 
 def add_planned_generation_capacities(n, year):
+    """
+    Adding planned generation capacities under construction to the network.
+    This includes both renewable and conventional power plants.
+    Parameters
+    ----------
+    n : pypsa.Network
+        The network to which planned capacities will be added.
+    year : int
+        The planning year for which the capacities are being added.
+    Returns
+    -------
+    None
+        This function modifies the network in place and does not return a value.
+    """
     # Read data with planned power plants under construction
     df_OIM_pp_uc = pd.read_csv("data/data_UK/uk_powerplants_cleaned_under_construction.csv")
     df_OIM_pp_uc.Technology = df_OIM_pp_uc.Technology.replace({"Natural Gas": "CCGT",
@@ -163,7 +177,7 @@ def add_planned_generation_capacities(n, year):
                                                             "offwind-ac": "offwind-dc"}) # assumption: new offshore wind farms are DC-connected
 
     # Add planned capacities to network
-    planning_horizon = snakemake.config["planning_horizon"]
+    planning_horizon = snakemake.config["scenario"]["planning_horizons"]
     previous_year = planning_horizon[planning_horizon.index(year) - 1]
     for tech in df_OIM_pp_uc.Technology.unique():
         df_tech = df_OIM_pp_uc.query("Technology == @tech")[["DateIn", "DateOut", "Capacity", "bus"]]
@@ -214,12 +228,27 @@ def add_planned_generation_capacities(n, year):
 
         elif tech in ["CCGT", 
                       "nuclear", 
-                      # "urban central solid biomass CHP"
+                      "urban central solid biomass CHP"
                      ]:
             df_tech_in_grouped.index = df_tech_in_grouped.index + " " + tech + "-" + str(year)
             n.links.loc[df_tech_in_grouped.index, "p_nom_min"] = df_tech_in_grouped["Capacity"].values
 
 def add_planned_storage_capacities(n, year):
+    """
+    Adding planned electricity storage capacities under construction to the network.
+    This includes battery storage and pumped hydro storage (PHS) power plants.
+    Parameters
+    ----------
+    n : pypsa.Network
+        The network to which planned storage capacities will be added.
+    year : int
+        The planning year for which the capacities are being added.
+    Returns
+    -------
+    None
+        This function modifies the network in place and does not return a value.
+    """
+
     # Read cleaned data set with storage power plants 
     df_OIM_storage = pd.read_csv("data/data_UK/uk_powerplants_cleaned_storage.csv")
 
@@ -240,7 +269,7 @@ def add_planned_storage_capacities(n, year):
 
         if tech in ["battery"]:
             n.links.loc[df_tech_in_index, "p_nom_min"] = df_tech_in["Capacity"].values
-            print("planned battery storage capacity added")
+            logger.info("planned battery storage capacity added")
 
         elif tech in ["water-storage"]:
             df_tech_in_reservoir = df_tech.loc[(df_tech["DateIn"] > previous_year) & (df_tech["DateIn"] <= year)].groupby("bus").agg({"storage_capacity_mwh": "sum"})
@@ -264,7 +293,7 @@ def add_planned_storage_capacities(n, year):
             storage_units = pd.concat([storage_units, uk_phs_df], ignore_index=False).sort_index()
             n.storage_units = storage_units
 
-            print("planned PHS capacity added")
+            logger.info("planned PHS capacity added")
 
 def disable_grid_expansion_if_limit_hit(n):
     """
@@ -480,8 +509,8 @@ if __name__ == "__main__":
         capacity_threshold=snakemake.params.threshold_capacity,
     )
 
-    add_planned_generation_capacities(n)
-    add_planned_storage_capacities(n)
+    add_planned_generation_capacities(n, year)
+    add_planned_storage_capacities(n, year)
 
     disable_grid_expansion_if_limit_hit(n)
 

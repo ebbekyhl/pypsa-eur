@@ -37,34 +37,70 @@ spatial = SimpleNamespace()
 
 
 def add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers):
+    """
+    This function adds conventional power plants from the Open Infrastructure Map (OIM) dataset for the
+    United Kingdom (UK) to the existing conventional power plant dataset (df_agg) in the PyPSA-Eur workflow.
+    Parameters
+    ----------
+    df_agg : pd.DataFrame
+        DataFrame containing existing conventional power plant data 
+    df_OIM_pp : pd.DataFrame
+        DataFrame containing cleaned UK power plants data from OIM
+    renewable_carriers: list
+        List of renewable carriers in the network
+    Returns
+    -------
+    df_agg : pd.DataFrame
+        Updated DataFrame with UK conventional power plants added
+    """
+
+    # filter UK power plants from df_agg
     df_agg_uk = df_agg.query("Country == 'GB'")
+
+    # non-renewable UK power plants, e.g., conventional power plants
     df_agg_uk_non_RE = df_agg_uk.Fueltype[~df_agg_uk.Fueltype.isin(renewable_carriers)].index
-    df_agg_uk_dropped = df_agg.loc[df_agg_uk_non_RE]
+
+    # drop conventional UK power plants from df_agg to replace with OIM data
+    df_agg_uk_dropped = df_agg.loc[df_agg_uk_non_RE] # save for later comparison between old and new data
     df_agg.drop(index = df_agg_uk_non_RE, inplace=True)
 
+    # get data from OIM data for UK conventional power plants only
     uk_pp_new = df_OIM_pp.loc[~df_OIM_pp.Technology.isin(renewable_carriers)]
     uk_pp_new.set_index("Name", inplace=True)
+
+    # rename technologies 
     uk_pp_new.loc[:, "Technology"] = uk_pp_new["Technology"].replace({"biomass CHP": 'urban central solid biomass CHP',
                                                                     "biogas CHP": 'urban central biogas CHP',
                                                                     "gas CHP": 'urban central gas CHP',
                                                                     'Natural Gas': 'CCGT',
                                                                     "biomass": "urban central solid biomass CHP",
                                                                     "biogas": "urban central biogas CHP",
-                                                                    "waste": "urban central solid biomass CHP",
+                                                                    "waste": "waste CHP",
+                                                                    "combustion": "CCGT",
+                                                                    "anaerobic_digestion": "urban central biogas CHP",
+                                                                    'diesel': "other",
+                                                                    "Diesel": "other",
+                                                                    'tidal': "hydro", 
+                                                                    "Waste": "waste CHP",
+                                                                    "thermal": "waste CHP" # in dataset, only waste is categorized as thermal
                                                                     })
-
+ 
+    # drop miscategorized power plants as they do not have a defined technology
     uk_pp_new = uk_pp_new.loc[~ uk_pp_new.Technology.isin(["other", 
-                                                        'other generators',
-                                                        ])]
+                                                            'other generators',
+                                                            ])]
 
+    # for later use, copy Technology to Fueltype
     uk_pp_new.loc[:, "Fueltype"] = uk_pp_new["Technology"].copy()
 
+    # info on how much capacity has changed from old to new data source 
     logger.info(f"Replacing {df_agg_uk_dropped.Capacity.sum()/1e3:<.1f} GW with {uk_pp_new.Capacity.sum()/1e3:<.1f} GW")
 
     # get intersect between df_agg.columns and uk_pp_new.columns
     intersecting_cols = df_agg.columns.intersection(uk_pp_new.columns)
     uk_pp_new = uk_pp_new[intersecting_cols]
 
+    # manually add missing columns with NaN values
     missing_cols = [col for col in df_agg.columns if col not in intersecting_cols]
     uk_pp_new.loc[:, missing_cols] = np.nan
     uk_pp_new.loc[:, "resource_class"] = 0
@@ -72,7 +108,7 @@ def add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers):
     all_columns = df_agg.columns
     uk_pp_new = uk_pp_new[all_columns]
 
-    # Collect data
+    # add updated UK power plants to df_agg
     df_agg = pd.concat([df_agg, uk_pp_new], ignore_index=False)
 
     return df_agg
@@ -273,7 +309,7 @@ def read_and_clean_OIM_UK_powerplants(uk_regions, baseyear):
                                         "name": "Name",
                                         }, 
                                         inplace=True
-                        )
+                                        )
 
     # add new column "Country" with "GB" for all entries
     df_OIM_powerplants.loc[:, "Country"] = "GB"
@@ -315,6 +351,7 @@ def read_and_clean_OIM_UK_powerplants(uk_regions, baseyear):
 
     # clean-up hydro storage technology data
     df_OIM_powerplants.loc[:, "Technology"] =df_OIM_powerplants["Technology"].astype(str).replace({"Hydro (pumped-storage)": "water-storage"})
+    
     df_OIM_powerplants_pumped_hydro = df_OIM_powerplants.query("Technology == 'water-storage'")
     df_OIM_powerplants_pumped_hydro_missing_storage = df_OIM_powerplants_pumped_hydro.loc[df_OIM_powerplants_pumped_hydro["storage_capacity_mwh"].isna()]
     df_OIM_powerplants.loc[df_OIM_powerplants_pumped_hydro_missing_storage.index, "storage_capacity_mwh"] = df_OIM_powerplants_pumped_hydro_missing_storage["Capacity"] * 4 # assume 4 hours duration if no data is given
@@ -643,27 +680,27 @@ def add_power_capacities_installed_before_baseyear(
     
     df_OIM_pp_all = read_and_clean_OIM_UK_powerplants(uk_regions, baseyear)
 
-    # get intersecting columns of df_OIM_pp_all and powerplants
-    intersecting_cols = df_OIM_pp_all.columns.intersection(df_agg.columns)
+    # attach power plants to buses
+    df_OIM_pp_all_w_buses = attach_to_buses(df_OIM_pp_all, uk_offshore_regions, uk_regions.reset_index())
+
+    # reading power plants already constructed
+    df_OIM_pp_online = df_OIM_pp_all_w_buses.query("facility == 'power plant'").query("status == 'online'")
+    df_OIM_pp_uc = df_OIM_pp_all_w_buses.query("facility == 'power plant'").query("status == 'under construction'")
+    df_OIM_storage = df_OIM_pp_all_w_buses.query("facility == 'storage'")
+
+    df_OIM_pp_uc.to_csv("data/data_UK/uk_powerplants_cleaned_under_construction.csv", index=False)
+    df_OIM_storage.to_csv("data/data_UK/uk_powerplants_cleaned_storage.csv", index=False)
+
+    # get intersecting columns of df_OIM_pp_all_w_buses and powerplants
+    intersecting_cols = df_OIM_pp_online.columns.intersection(df_agg.columns)
     # order intersecting columns as in powerplants
     intersecting_cols = [col for col in df_agg.columns if col in intersecting_cols]
-    df_OIM_pp = df_OIM_pp_all[intersecting_cols]
+    df_OIM_pp = df_OIM_pp_online[intersecting_cols]
 
     # missing columns in df_OIM_pp_all that are in powerplants
     missing_cols = [col for col in df_agg.columns if col not in intersecting_cols]
     df_OIM_pp.loc[:, missing_cols] = np.nan
     df_OIM_pp.loc[:, missing_cols] = df_OIM_pp[missing_cols].astype(df_agg[missing_cols].dtypes)
-
-    # attach power plants to buses
-    df_OIM_pp = attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions.reset_index())
-
-    # reading power plants already constructed
-    df_OIM_pp_online = df_OIM_pp.query("facility == 'power plant'").query("status == 'online'")
-    df_OIM_pp_uc = df_OIM_pp.query("facility == 'power plant'").query("status == 'under construction'")
-    df_OIM_storage = df_OIM_pp.query("facility == 'storage'")
-
-    df_OIM_pp_uc.to_csv("data/data_UK/uk_powerplants_cleaned_under_construction.csv", index=False)
-    df_OIM_storage.to_csv("data/data_UK/uk_powerplants_cleaned_storage.csv", index=False)
 
     uk_settings = snakemake.params["uk_settings"]
 
@@ -673,13 +710,13 @@ def add_power_capacities_installed_before_baseyear(
         n=n,
         countries=countries,
         renewable_carriers=renewable_carriers,
-        df_OIM_pp=df_OIM_pp_online,
+        df_OIM_pp=df_OIM_pp,
         uk_settings=uk_settings,
     )
 
     # replace powerplants UK
     if uk_settings["uk_new_powerplants_data"]:
-        df_agg = add_UK_conventional_powerplants(df_agg,df_OIM_pp_online,renewable_carriers)
+        df_agg = add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers)
 
     # drop assets which are already phased out / decommissioned
     phased_out = df_agg[df_agg["DateOut"] < baseyear].index
@@ -730,6 +767,7 @@ def add_power_capacities_installed_before_baseyear(
         "urban central solid biomass CHP": "biomass",
         "urban central gas CHP": "gas",
         "urban central biogas CHP": "gas",
+        "waste CHP": "msw",
     }
 
     for grouping_year, generator, resource_class in df.index:
@@ -898,23 +936,40 @@ def add_power_capacities_installed_before_baseyear(
                 existing_large, "p_nom_min"
             ]
 
-def add_storage_capacities_installed_before_baseyear(n):
+def add_storage_capacities_installed_before_baseyear(n, baseyear):
+    """
+    This function adds exosting electricity storage capacities for UK.
+    It currently includes pumped hydro storage and battery storage.
+    Parameters
+    ----------
+    n : pypsa.Network
+        Network to modify
+    baseyear : int
+        Base year for analysis
+    Returns
+    -------
+    n : pypsa.Network
+        Modified network with existing storage capacities added 
+    """
     # read existing storage power plants from cleaned OIM data
     df_OIM_storage = pd.read_csv("data/data_UK/uk_powerplants_cleaned_storage.csv")
 
     # only consider storage already constructed and online
     df_OIM_storage_online = df_OIM_storage.query("status == 'online'")
-    battery = df_OIM_storage_online.query("Technology == 'battery'")[["Capacity", "bus"]].groupby("bus").sum()
-    battery.index = battery.index + " battery discharger"
+    battery = df_OIM_storage_online.query("Technology == 'battery'")
+
+    battery = battery.groupby("bus").agg({"Capacity": "sum",
+                                "DateIn": "mean",
+                                "DateOut": "mean"})
+
+    battery.index = battery.index + " battery discharger-" + str(baseyear)
     phs_power = df_OIM_storage_online.query("Technology == 'water-storage'")[["Capacity", "bus"]].groupby("bus").sum()
     phs_reservoir = df_OIM_storage_online.query("Technology == 'water-storage'")[["storage_capacity_mwh", "bus"]].groupby("bus").sum()
     max_hours = phs_reservoir["storage_capacity_mwh"] / phs_power["Capacity"]
 
     # read pumped hydro storage in PyPSA-Eur network
-    storage_units = n.storage_units.copy()
-    n_phs = storage_units.query("carrier == 'PHS'")
+    n_phs = n.storage_units.query("carrier == 'PHS'")
     n_UK_phs = n_phs.loc[n_phs.index.str.contains("GB")]
-    storage_units = storage_units.drop(index = n_UK_phs.index)
 
     # overwrite PHS capacities with existing ones from OIM data
     phs_power_df = pd.DataFrame(columns = n_UK_phs.columns, index = phs_power.index + " PHS")
@@ -922,15 +977,22 @@ def add_storage_capacities_installed_before_baseyear(n):
     phs_power_df.loc[:, "bus"] = phs_power.index
     phs_power_df.loc[:, "p_nom"] = phs_power["Capacity"].values
     phs_power_df.loc[:, "max_hours"] = max_hours.values
+    phs_power_df.index.name = "StorageUnit"
 
     # attach to network
-    storage_units = pd.concat([storage_units, phs_power_df], ignore_index=False).sort_index()
-    n.storage_units = storage_units
+    n.remove("StorageUnit", n_UK_phs.index)
+    n.add("StorageUnit", phs_power_df.index, **phs_power_df.T.to_dict(orient="index"))
 
-    # add existing battery storage units
-    links = n.links.copy()
-    links.loc[battery.index, "p_nom_min"] = battery["Capacity"].values
-    n.links = links
+    # update p_nom_min for existing battery storage units (if they exist)
+    existing_batteries = n.links.index.intersection(battery.index)
+    if not existing_batteries.empty:
+        n.links.loc[battery.index, 
+                    "p_nom_min"] = battery["Capacity"].values
+        logger.info(f"Updated existing battery storage units: {existing_batteries.tolist()}")
+
+    else:
+        logger.info("No existing battery storage units found in the network to update.")
+    return n
 
 def get_efficiency(
     heat_system: HeatSystem,
@@ -1274,7 +1336,7 @@ if __name__ == "__main__":
         renewable_carriers=renewable_carriers,
     )
 
-    add_storage_capacities_installed_before_baseyear(n)
+    n = add_storage_capacities_installed_before_baseyear(n, baseyear)
 
     if options["heating"]:
         # one could use baseyear here instead (but dangerous if no data)
@@ -1305,8 +1367,6 @@ if __name__ == "__main__":
             ],
             use_electricity_distribution_grid=options["electricity_distribution_grid"],
         )
-
-    # Set defaults for missing missing values
 
     if options.get("cluster_heat_buses", False):
         cluster_heat_buses(n)

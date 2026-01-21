@@ -4375,6 +4375,11 @@ def add_biomass(
             * costs.at["biomass CHP capture", "capture_rate"],
             lifetime=costs.at[key + " CC", "lifetime"],
         )
+    else:
+        logger.info(
+            "No urban central heat buses found for biomass CHP. "
+            "Skipping addition of biomass CHP."
+        )
 
     if options["biomass_boiler"] and options["boilers"]:
         # TODO: Add surcharge for pellets
@@ -4678,14 +4683,14 @@ def add_industry(
         * nyears  # kt/a -> t/a
     )
 
-    if options["endogenous_steel"]:
+    if cf_industry["endogenous_steel"]:
 
         logger.info("Adding endogenous primary steel demand in tonnes.")
 
         sectors = ["DRI + Electric arc", 
                    "Integrated steelworks"]
 
-        no_relocation = not options["relocation_steel"]
+        no_relocation = not cf_industry["relocation_steel"]
 
         s = " not" if no_relocation else ""
         logger.info(f"Steel industry relocation{s} activated.")
@@ -4706,14 +4711,14 @@ def add_industry(
             unit="t",
         )
 
-        if options.get("steel_import", False):
+        if cf_industry.get("steel_import", False):
             n.add(
                 "Generator",
                 "steel import",
                 bus="EU steel",
                 carrier="steel import",
                 p_nom_extendable=True,
-                marginal_cost=options["steel_import"],
+                marginal_cost=cf_industry["steel_import"],
             )
 
         # set demand for primary steel production
@@ -6827,25 +6832,6 @@ if __name__ == "__main__":
             nodes=spatial.nodes,
         )
 
-    if options["biomass"]:
-        add_biomass(
-            n=n,
-            costs=costs,
-            options=options,
-            spatial=spatial,
-            cf_industry=cf_industry,
-            pop_layout=pop_layout,
-            biomass_potentials_file=snakemake.input.biomass_potentials,
-            biomass_transport_costs_file=snakemake.input.biomass_transport_costs,
-            nyears=nyears,
-        )
-
-    if options["ammonia"]:
-        add_ammonia(n, costs, pop_layout, spatial, cf_industry)
-
-    if options["methanol"]:
-        add_methanol(n, costs, options=options, spatial=spatial, pop_layout=pop_layout)
-
     if options["heating"]:
         add_heat(
             n=n,
@@ -6883,6 +6869,26 @@ if __name__ == "__main__":
             options=options,
             investment_year=investment_year,
         )
+
+    if options["biomass"]:
+        add_biomass(
+            n=n,
+            costs=costs,
+            options=options,
+            spatial=spatial,
+            cf_industry=cf_industry,
+            pop_layout=pop_layout,
+            biomass_potentials_file=snakemake.input.biomass_potentials,
+            biomass_transport_costs_file=snakemake.input.biomass_transport_costs,
+            nyears=nyears,
+        )
+
+    if options["ammonia"]:
+        add_ammonia(n, costs, pop_layout, spatial, cf_industry)
+
+    if options["methanol"]:
+        add_methanol(n, costs, options=options, spatial=spatial, pop_layout=pop_layout)
+
 
     if options["industry"]:
         add_industry(

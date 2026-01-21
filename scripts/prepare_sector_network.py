@@ -329,6 +329,19 @@ def define_spatial(nodes, options):
     spatial.geothermal_heat.nodes = ["EU enhanced geothermal systems"]
     spatial.geothermal_heat.locations = ["EU"]
 
+    # HBI
+    spatial.hbi = SimpleNamespace()
+    spatial.hbi.nodes = nodes + " HBI"
+    spatial.hbi.location = nodes
+
+    # steel
+    spatial.steel = SimpleNamespace()
+    spatial.steel.nodes = nodes + " steel"
+    spatial.steel.location = nodes
+
+
+
+
     return spatial
 
 
@@ -4697,17 +4710,17 @@ def add_industry(
 
         n.add(
             "Bus",
-            "EU steel",
-            location="EU",
+            spatial.steel.nodes,
+            location=spatial.steel.location,
             carrier="steel",
             unit="t",
         )
 
         n.add(
             "Bus",
-            "EU HBI",
-            location="EU",
-            carrier="HBI",
+            spatial.hbi.nodes,
+            location=spatial.hbi.location,
+            carrier="hbi",
             unit="t",
         )
 
@@ -4715,59 +4728,59 @@ def add_industry(
             n.add(
                 "Generator",
                 "steel import",
-                bus="EU steel",
+                bus=spatial.steel.nodes,
                 carrier="steel import",
                 p_nom_extendable=True,
                 marginal_cost=cf_industry["steel_import"],
             )
 
         # set demand for primary steel production
+        steel = industrial_production[sectors].sum(axis=1) / 8760 # t/h
+        steel.index = steel.index + " steel"
         n.add(
             "Load",
-            "EU steel",
-            bus="EU steel",
+            spatial.steel.nodes,
+            bus=spatial.steel.nodes,
             carrier="steel",
-            p_set=industrial_production[sectors].sum().sum() / nhours,
+            p_set=steel,
         )
 
-        if not no_relocation:
-            n.add(
-                "Store",
-                "EU steel Store",
-                bus="EU steel",
-                e_nom_extendable=True,
-                e_cyclic=True,
-                carrier="steel",
-            )
+        n.add(
+            "Store",
+            nodes + " steel Store",
+            bus=spatial.steel.nodes,
+            e_nom_extendable=True,
+            e_cyclic=True,
+            carrier="steel",
+        )
 
-            n.add(
-                "Store",
-                "EU HBI Store",
-                bus="EU HBI",
-                e_nom_extendable=True,
-                e_cyclic=True,
-                carrier="HBI",
-            )
+        n.add(
+            "Store",
+            nodes + " HBI Store",
+            bus=spatial.hbi.nodes,
+            e_nom_extendable=True,
+            e_cyclic=True,
+            carrier="HBI",
+        )
 
-        dri_electricity_input = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "electricity-input"], 
-                                 "natural gas": costs.at["hydrogen direct iron reduction furnace", "electricity-input"]}
+        # Adding DRI-EAF routes
+        dri_electricity_input = {"H2": costs.at["hydrogen direct iron reduction furnace", "electricity-input"], 
+                                 "gas": costs.at["hydrogen direct iron reduction furnace", "electricity-input"]}
         
-        fuel_input = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "hydrogen-input"], 
-                      "natural gas": costs.at["natural gas direct iron reduction furnace", "gas-input"]}
+        fuel_input = {"H2": costs.at["hydrogen direct iron reduction furnace", "hydrogen-input"], 
+                      "gas": costs.at["natural gas direct iron reduction furnace", "gas-input"]}
         
         EAF_hbi_input = costs.at["electric arc furnace", "hbi-input"]
         DRI_commodity = costs.at["iron ore DRI-ready", "commodity"]
-        DRI_ore_input = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "ore-input"], 
-                         "natural gas": costs.at["natural gas direct iron reduction furnace", "ore-input"]}
-        DRI_fixed_cost = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "capital_cost"],
-                          "natural gas": costs.at["natural gas direct iron reduction furnace", "capital_cost"]}# costs.at["direct iron reduction furnace", "fixed"]
-        DRI_lifetimes = {"hydrogen": costs.at["hydrogen direct iron reduction furnace", "lifetime"],
-                         "natural gas": costs.at["natural gas direct iron reduction furnace", "lifetime"]}   
-        DRI_CO2_intensities = {"hydrogen": 0.05, # https://steelwatch.org/steelwatch-explainers/climate/
-                               "natural gas": 1.37} # https://steelwatch.org/steelwatch-explainers/climate/ 
+        DRI_ore_input = {"H2": costs.at["hydrogen direct iron reduction furnace", "ore-input"], 
+                         "gas": costs.at["natural gas direct iron reduction furnace", "ore-input"]}
+        DRI_fixed_cost = {"H2": costs.at["hydrogen direct iron reduction furnace", "capital_cost"],
+                          "gas": costs.at["natural gas direct iron reduction furnace", "capital_cost"]}# costs.at["direct iron reduction furnace", "fixed"]
+        DRI_lifetimes = {"H2": costs.at["hydrogen direct iron reduction furnace", "lifetime"],
+                         "gas": costs.at["natural gas direct iron reduction furnace", "lifetime"]}   
         EAF_electricity_input = costs.at["electric arc furnace", "electricity-input"]
 
-        for fuel in ["hydrogen", "natural gas"]:
+        for fuel in ["H2", "gas"]:
             p_nom = (
                     industrial_production[sectors].sum()
                     * EAF_hbi_input
@@ -4775,71 +4788,68 @@ def add_industry(
                     / nhours
                     )
 
-            marginal_cost = (
-                            DRI_commodity
-                            * DRI_ore_input[fuel]
-                            / dri_electricity_input[fuel]
-                            )
+            if fuel == "H2":
+                marginal_cost = DRI_commodity * DRI_ore_input["H2"] / dri_electricity_input["H2"]
+                n.madd(
+                    "Link",
+                    nodes,
+                    suffix=" H2 DRI",
+                    carrier="H2 DRI",
+                    capital_cost=DRI_fixed_cost["H2"]
+                    / dri_electricity_input["H2"],
+                    marginal_cost=marginal_cost,
+                    p_nom=p_nom if no_relocation else 0,
+                    p_nom_extendable=False if no_relocation else True,
+                    p_min_pu=0,
+                    bus0=nodes,
+                    bus1="EU HBI",
+                    bus2=nodes + " H2",
+                    efficiency=1 / dri_electricity_input["H2"],
+                    efficiency2=-fuel_input["H2"] / dri_electricity_input["H2"],
+                    lifetime = DRI_lifetimes["H2"],
+                )
 
-            n.madd(
-                "Link",
-                nodes,
-                suffix=" " + fuel + " DRI",
-                carrier=fuel + " DRI",
-                capital_cost=DRI_fixed_cost[fuel]
-                / dri_electricity_input[fuel],
-                marginal_cost=marginal_cost,
-                p_nom=p_nom if no_relocation else 0,
-                p_nom_extendable=False if no_relocation else True,
-                bus0=nodes,
-                bus1="EU HBI",
-                bus2=nodes + " H2",
-                bus3="co2 atmosphere",
-                efficiency=1 / dri_electricity_input[fuel],
-                efficiency2=-fuel_input[fuel] / dri_electricity_input[fuel],
-                efficiency3 = DRI_CO2_intensities[fuel] / dri_electricity_input[fuel],
-                lifetime = DRI_lifetimes[fuel],
-            )
-
-        BF_BOF_fixed_cost = costs.at["blast furnace basic oxygen furnace", "capital_cost"]
-        BF_BOF_electricity_input = costs.at["blast furnace basic oxygen furnace", "electricity-input"]
-        BF_BOF_ore_input = costs.at["blast furnace basic oxygen furnace", "ore-input"]
-        BF_BOF_coal_input = costs.at["blast furnace basic oxygen furnace", "coal-input"]
-        BF_BOF_lifetime = costs.at["blast furnace basic oxygen furnace", "lifetime"]
-
-        marginal_cost = (
-                        DRI_commodity # iron ore price is only given for DRI-ready ore
-                        * BF_BOF_ore_input
-                        / BF_BOF_electricity_input
-                        )
-
-        p_nom = (
-                    industrial_production[sectors].sum()
-                    * BF_BOF_electricity_input
-                    / nhours
+            elif fuel == "gas":
+                marginal_cost = DRI_commodity * DRI_ore_input["gas"] / fuel_input["gas"]
+                n.add(
+                    "Link",
+                    nodes,
+                    suffix=" gas DRI",
+                    carrier="gas DRI",
+                    capital_cost=DRI_fixed_cost["gas"] / fuel_input["gas"],
+                    marginal_cost=marginal_cost,
+                    p_nom=p_nom if no_relocation else 0,
+                    p_nom_extendable=False if no_relocation else True,
+                    p_min_pu=0,
+                    bus0=spatial.gas.nodes,
+                    bus1="EU HBI",
+                    bus2="co2 atmosphere",
+                    efficiency = 1 / fuel_input["gas"],
+                    efficiency2 = costs.at["gas", "CO2 intensity"],
+                    lifetime=DRI_lifetimes["gas"],
                     )
 
-        n.madd(
-                "Link",
-                nodes,
-                suffix=" " + fuel + " BF-BOF",
-                carrier=fuel + " BF-BOF",
-                capital_cost=BF_BOF_fixed_cost
-                / BF_BOF_electricity_input,
-                marginal_cost=marginal_cost,
-                p_nom=p_nom if no_relocation else 0,
-                p_nom_extendable=False if no_relocation else True,
-                bus0=nodes,
-                bus1="EU steel",
-                bus2=nodes + " coal",
-                bus3= "co2 atmosphere",
-                efficiency= 1 / BF_BOF_electricity_input,
-                efficiency2=-BF_BOF_coal_input / BF_BOF_electricity_input,
-                efficiency3 = -2.33 / BF_BOF_electricity_input, # 2.33 tCO2 / t steel
-                lifetime = BF_BOF_lifetime,
-            )
-
-        # Secondary steel production via electric arc furnace
+                if cf_industry["steel_cc"]:
+                    capture_rate = costs.at["cement capture", "capture_rate"]
+                    n.add(
+                        "Link",
+                        nodes,
+                        suffix=" gas DRI CC",
+                        carrier="gas DRI CC",
+                        capital_cost=DRI_fixed_cost["gas"] / fuel_input["gas"] + costs.at["cement capture", "capital_cost"],
+                        marginal_cost=marginal_cost,
+                        p_nom=0,
+                        p_nom_extendable=True,
+                        p_min_pu=0,
+                        bus0=spatial.gas.nodes,
+                        bus1="EU HBI",
+                        bus2="co2 atmosphere",
+                        efficiency = 1 / fuel_input["gas"],
+                        efficiency2 = costs.at["gas", "CO2 intensity"] * (1 - capture_rate),
+                        lifetime=DRI_lifetimes["gas"],
+                        )
+                    
+        # Adding steel produced from HBI via electric arc furnace
         p_nom = (industrial_production["Electric arc"] 
                  * EAF_electricity_input / nhours)
 
@@ -4850,15 +4860,51 @@ def add_industry(
             carrier="EAF",
             capital_cost=costs.at["electric arc furnace", "capital_cost"] / EAF_electricity_input,
             p_nom=p_nom if no_relocation else 0,
-            p_nom_extendable=False if no_relocation else True,
+            p_nom_extendable=True,
+            p_min_pu=0,
             bus0=nodes,
             bus1="EU steel",
             bus2="EU HBI",
             efficiency=1 / EAF_electricity_input,
             efficiency2=-costs.at["electric arc furnace", "hbi-input"]
             / EAF_electricity_input,
+            lifetime =costs.at["electric arc furnace", "lifetime"],
         )
 
+        # Adding blast furnace basic oxygen furnace route
+        BF_BOF_fixed_cost = costs.at["blast furnace basic oxygen furnace", "capital_cost"]
+        BF_BOF_ore_input = costs.at["blast furnace basic oxygen furnace", "ore-input"]
+        BF_BOF_coal_input = costs.at["blast furnace basic oxygen furnace", "coal-input"]
+        BF_BOF_lifetime = costs.at["blast furnace basic oxygen furnace", "lifetime"]
+
+        marginal_cost = (
+                        DRI_commodity # iron ore price is only given for DRI-ready ore
+                        * BF_BOF_ore_input
+                        / BF_BOF_coal_input
+                        )
+
+        p_nom = (
+                industrial_production[sectors].sum()
+                * BF_BOF_coal_input
+                / nhours
+                )
+
+        n.madd(
+                "Link",
+                nodes,
+                suffix=" BF-BOF",
+                carrier="BF-BOF",
+                capital_cost = BF_BOF_fixed_cost / BF_BOF_coal_input,
+                marginal_cost=marginal_cost,
+                p_nom=p_nom if no_relocation else 0,
+                p_nom_extendable=False if no_relocation else True,
+                bus0="EU coal",
+                bus1="EU steel",
+                bus2= "co2 atmosphere",
+                efficiency= 1 / BF_BOF_coal_input,
+                efficiency2=costs.at["coal", "CO2 intensity"],
+                lifetime = BF_BOF_lifetime,
+            )
 
     # medium heat for industry
     n.add(

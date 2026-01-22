@@ -398,17 +398,19 @@ def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
         logger.info(f"Added minimum capacity factor constraint for UK {tech}: {minimum_capacity_factor}")
 
 def add_UK_build_out_rates(n, build_out_rates):
-    
+
     investment_year = int(snakemake.wildcards.planning_horizons)
 
     uk_generators = n.generators.loc[n.generators.index.str.contains("GB")]
     uk_links = n.links.loc[n.links.index.str.contains("GB")]
 
     for tech in build_out_rates.keys():
+        
+        if investment_year > 2025: # we only limit build out rates for the base year
+            continue
+
         if tech in ["heat pump"]:
             # by 2025, UK has 250,000 heat pumps installed (https://www.edie.net/uk-passes-250000-heat-pump-milestone/)            
-            if investment_year > 2025: # we only limit HP build out rates for the base year
-                continue
 
             uk_links_hp = uk_links.loc[uk_links.index.str.contains(tech)]   
             uk_links_hp_extend = uk_links_hp.query("p_nom_extendable == True")
@@ -1310,7 +1312,7 @@ def add_TES_charger_ratio_constraints(n: pypsa.Network) -> None:
     n.model.add_constraints(lhs == 0, name="TES_charger_ratio")
 
 
-def add_battery_constraints(n):
+def add_battery_constraints(n, battery_techs):
     """
     Add constraint ensuring that charger = discharger, i.e.
     1 * charger_size - efficiency * discharger_size = 0
@@ -1318,8 +1320,8 @@ def add_battery_constraints(n):
     if not n.links.p_nom_extendable.any():
         return
 
-    discharger_bool = n.links.index.str.contains("battery discharger")
-    charger_bool = n.links.index.str.contains("battery charger")
+    discharger_bool = n.links.index.str.contains("|".join([f"{tech} discharger" for tech in battery_techs]))
+    charger_bool = n.links.index.str.contains("|".join([f"{tech} charger" for tech in battery_techs]))
 
     dischargers_ext = n.links[discharger_bool].query("p_nom_extendable").index
     chargers_ext = n.links[charger_bool].query("p_nom_extendable").index
@@ -1563,7 +1565,8 @@ def extra_functionality(
             add_TES_energy_to_power_ratio_constraints(n)
             add_TES_charger_ratio_constraints(n)
 
-    add_battery_constraints(n)
+    battery_techs = ["battery", "redox flow battery"] 
+    add_battery_constraints(n, battery_techs)
     add_lossy_bidirectional_link_constraints(n)
     add_pipe_retrofit_constraint(n)
     if n._multi_invest:

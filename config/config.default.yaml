@@ -117,6 +117,11 @@ uk_settings:
 # - demand response / price elasticity
 # - storage portfolio
 
+# Long-duration energy storage technologies
+LDES:
+  technologies:
+  - redox flow battery
+
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:
   start: "2013-01-01"

@@ -1849,6 +1849,51 @@ def add_electricity_grid_connection(n, costs):
         "electricity grid connection", "capital_cost"
     ]
 
+def add_ldes_storage(n, tech):
+
+    techs_stores_dict = {"redox flow battery":"Vanadium-Redox-Flow-store"}
+    techs_links_dict = {"redox flow battery":"Vanadium-Redox-Flow-bicharger"} 
+
+    nodes = pop_layout.index
+
+    # Add carrier
+    n.add("Carrier", tech)
+
+    # Add bus
+    n.add("Bus",
+            nodes + " " + tech,
+            location=nodes,
+            carrier=tech)
+
+    # Add charging and discharging links (we assume capital cost is per unit of electricity output)
+    n.add("Link",
+                nodes + f" {tech} charger",
+                bus0 = nodes,
+                bus1 = nodes + f" {tech}",
+                p_nom_extendable = True,
+                carrier = f"{tech} charger",
+                efficiency = costs.at[techs_links_dict[tech],"efficiency"],
+                lifetime = costs.at[techs_links_dict[tech],'lifetime'])
+
+    n.add("Link",
+                nodes + f" {tech} discharger",
+                bus0 = nodes + f" {tech}",
+                bus1 = nodes,
+                p_nom_extendable = True,
+                carrier = f"{tech} discharger",
+                efficiency = costs.at[techs_links_dict[tech],"efficiency"],
+                capital_cost = costs.at[techs_links_dict[tech],"capital_cost"] * costs.at[techs_links_dict[tech],"efficiency"],
+                lifetime = costs.at[techs_links_dict[tech],'lifetime'])
+
+    # Add storage tank
+    n.add("Store",
+                nodes + f" {tech} store",
+                bus=nodes + f" {tech}",
+                e_nom_extendable=True,
+                e_cyclic=True,
+                carrier=tech,
+                capital_cost=costs.at[f"{tech} store","fixed"], 
+                lifetime = costs.at[techs_stores_dict[tech],'lifetime']) 
 
 def add_storage_and_grids(
     n,
@@ -7107,5 +7152,9 @@ if __name__ == "__main__":
     sanitize_carriers(n, snakemake.config)
     sanitize_locations(n)
     scale_UK_gas_network(n)
+
+    LDES_settings = snakemake.params.ldes_settings
+    for storage_tech in LDES_settings["technologies"]:
+        add_ldes_storage(n, storage_tech)
 
     n.export_to_netcdf(snakemake.output[0])

@@ -107,6 +107,8 @@ plotting:
     - methanol
     - co2 stored
     - urban central heat
+    - steel
+    - hbi
     AC:
       unit: TWh
       unit_conversion: 1_000_000
@@ -406,6 +408,9 @@ plotting:
     battery storage: '#ace37f'
     battery charger: '#88a75b'
     battery discharger: '#5d4e29'
+    redox flow battery: '#80c944'
+    redox flow battery charger: '#5e8032'
+    redox flow battery discharger: '#3c5221'
     home battery: '#80c944'
     home battery storage: '#80c944'
     home battery charger: '#5e8032'

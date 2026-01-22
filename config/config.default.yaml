@@ -25,7 +25,7 @@ run:
   shared_resources:
     policy: false
     exclude: []
-  shared_cutouts: true
+  shared_cutouts: true # <------- true, unless weather years are different between runs
   use_shadow_directory: true
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#foresight
@@ -39,14 +39,14 @@ scenario:
   opts:
   - ''
   sector_opts:
-  - '3h'
+  - '168h'
   planning_horizons:
   - 2025
   - 2030
   - 2035
-  - 2040
-  - 2045
-  - 2050
+  # - 2040
+  # - 2045
+  # - 2050
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#countries
 countries:
@@ -83,22 +83,39 @@ countries:
 - SE
 - SI
 - SK
-- XK
+
+# alternative_fuels:
+# - hydrogen (yes - it is included)
+# - methanol (yes - it is included)
+# - e-methane (yes - it is included)
+# - ammonia (yes - it is included)
+# - DME (no - not yet included)
 
 uk_settings:
   uk_only: false # whether study is for UK only. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
+  uk_energy_balance_year: 2019 # year for UK energy balance data (from ECUK)
+  uk_demand_year: 2019 # whether to use specific year for UK electricity demand data
   uk_new_gas_storage_data: true # whether to use new UK gas storage data
   uk_new_powerplants_data: true # whether to use new UK powerplant data from OpenStreetMap  
   uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov
   uk_brownfield_minimum_capacity_factors: # minimum capacity factors for a selection of brownfield capacities in the UK
-    CCGT: 0.5
+    CCGT: 0.5 # https://wattdirection.substack.com/p/uk-combined-cycle-gas-power-stations-748
     nuclear: 0.5
-  uk_build_out_rates: # in MW
-    onwind: 20000
-    solar: 20000
-    solar-rooftop: 20000
-    offshore-ac: 20000
-    offshore-dc: 20000
+  uk_build_out_rates: false # in MW
+    # heatpump: 1000 # heat pumps in MW_th (only applies to 2025 base year for calibration purpose)
+    # onwind: 20000 # onshore wind
+    # offwind: 20000 # offshore wind (including AC, DC, floating)
+    # solar: 20000 # utility scale PV
+    # solar-rooftop: 20000 # rooftop PV
+
+    # Further UK settings not listed here but are included further down: 
+    # - Limit on fuel imports (see L. )
+    # - CO2 emissions targets (see L. )
+    # - District heating potential (see L. )
+ 
+# other settings relevant
+# - demand response / price elasticity
+# - storage portfolio
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:
@@ -111,8 +128,8 @@ enable:
   retrieve: auto
   retrieve_databundle: true
   retrieve_cost_data: true
-  build_cutout: false
-  retrieve_cutout: true
+  build_cutout: false ######### notice that if you do not want new cutouts to be built, set this to false
+  retrieve_cutout: false ######### notice that if you want retrieve the default cutout from Zenodo, set this to true
   drop_leap_day: true
 
 # Add national CO2 emissions reduction targets
@@ -160,7 +177,7 @@ electricity:
     Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, OCGT, CCGT, nuclear, coal, lignite, oil, uranium]
     StorageUnit: [] # battery, H2
     Store: [battery, H2]
-    Link: [] # H2 pipeline
+    Link: [nuclear] # H2 pipeline
 
   powerplants_filter: (DateOut >= 2024 or DateOut != DateOut) and not (Country == 'Germany' and Fueltype == 'Nuclear')
   custom_powerplants: false
@@ -183,7 +200,7 @@ electricity:
     enable: false
     by_country: false
 
-  transmission_limit: vopt # v2.0
+  transmission_limit: v2.0
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#atlite
 atlite:
@@ -515,7 +532,9 @@ sector:
   agriculture: true
   fossil_fuels: true
   district_heating:
-    potential: 0.6
+    potential: 
+      default: 0.6
+      GB: 0.1
     progress:
       2020: 0.0
       2025: 0.1
@@ -596,13 +615,13 @@ sector:
   EV_lower_degree_factor: 0.98
   EV_upper_degree_factor: 0.63
   bev_dsm: true
-  bev_dsm_availability: 0.5
+  bev_dsm_availability: 0.1
   bev_energy: 0.05
   bev_charge_efficiency: 0.9
   bev_charge_rate: 0.011
   bev_avail_max: 0.95
   bev_avail_mean: 0.8
-  v2g: true
+  v2g: false
   land_transport_fuel_cell_share:
     2020: 0
     2025: 0
@@ -614,18 +633,18 @@ sector:
   land_transport_electric_share:
     2020: 0
     2025: 0.05
-    2030: 0.2
-    2035: 0.45
-    2040: 0.7
-    2045: 0.85
+    2030: 0.20
+    2035: 0.52
+    2040: 0.83
+    2045: 0.95
     2050: 1
-  land_transport_ice_share:
+  land_transport_ice_share: # based on logistic fit of Norway and Denmark EV adoption curves
     2020: 1
     2025: 0.95
     2030: 0.8
-    2035: 0.55
-    2040: 0.3
-    2045: 0.15
+    2035: 0.48
+    2040: 0.17
+    2045: 0.05
     2050: 0
   transport_electric_efficiency: 53.19 # 1 MWh_el = 53.19*100 km
   transport_fuel_cell_efficiency: 30.003 # 1 MWh_H2 = 30.003*100 km
@@ -739,7 +758,7 @@ sector:
   co2_sequestration_cost: 30
   co2_sequestration_lifetime: 50
   co2_spatial: true
-  co2_network: true # <------------------------------------------------------------------------------------ include or not? relevant for A6 in PA
+  co2_network: true # relevant for A6 in PA
   co2_network_cost_factor: 1
   cc_fraction: 0.9
   hydrogen_underground_storage: true
@@ -753,17 +772,17 @@ sector:
     transport_cost: 0.027 # assumed price in "Minimal methanol paper" by P Glaum et al. €/MWh/km
     methanol_reforming: true 
     methanol_reforming_cc: true 
-    methanol_to_kerosene: true # <------------------------------------------------------------------------------------ include or not?
+    methanol_to_kerosene: true
     # methanol_to_olefins: true
     methanol_to_power: 
-      ccgt: true # <------------------------------------------------------------------------------------ include or not?
-      ccgt_cc: true # <------------------------------------------------------------------------------------ include or not?
-      ocgt: true # <------------------------------------------------------------------------------------ include or not?
-      allam: true # <------------------------------------------------------------------------------------ include or not?
+      ccgt: true 
+      ccgt_cc: true 
+      ocgt: true 
+      allam: true 
     force_industry_heat: false
-    biomass_to_methanol: true # <------------------------------------------------------------------------------------ include or not?
-    biomass_to_methanol_cc: true # <------------------------------------------------------------------------------------ include or not?
-    biogas_to_methanol: true # <------------------------------------------------------------------------------------ include or not?
+    biomass_to_methanol: true 
+    biomass_to_methanol_cc: true 
+    biogas_to_methanol: true 
   replace_medium_heat: false
   ammonia: true
   min_part_load_fischer_tropsch: 0.5
@@ -815,9 +834,10 @@ sector:
   conventional_generation:
     OCGT: gas
     CCGT: gas
+    nuclear: uranium
   biomass_to_liquid: true
-  biomass_to_liquid_cc: false
-  electrobiofuels: true # <------------------------------------------------------------------------------------ include or not?
+  biomass_to_liquid_cc: true
+  electrobiofuels: false 
   biosng: false
   biosng_cc: false
   bioH2: false
@@ -849,18 +869,25 @@ sector:
     max_amount: 1390 # TWh
     upstream_emissions_factor: .1 #share of solid biomass CO2 emissions at full combustion
   imports:
-    enable: false # <------------------------------------------------------------------------------------ include or not?
-    limit: 500 # TWh (if no limit wanted: .inf) 
+    enable: true 
+    limit: false
+      # EU: 1000
+      # GB: 500 # TWh (if no limit wanted: .inf) 
     limit_sense: <=
     price:
-      H2: 74
-      NH3: 97
-      methanol: 121
-      gas: 122
-      oil: 125
+      # H2: 74
+      # NH3: 97
+      # methanol: 121
+      gas: 50 # 122 # Adding a more recent value for gas import price from LNG 
+      # oil: 125
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#industry
 industry:
+  endogenous_steel: true
+  relocation_steel: false
+  steel_cc: true
+  steel_import: 531 # in €/t (https://www.nature.com/articles/s41467-025-60652-1)
+  steel_transport_cost: 0.1151 # [€/t/km] from https://della.eu/prices/local/ read on the 22st of January 2026
   St_primary_fraction:
     2020: 0.6
     2025: 0.55
@@ -1153,6 +1180,6 @@ solving:
     atol: 1_000_000
     rtol: 0.01
 
-  mem_mb: 150000
+  mem_mb: 200000 # 110000 for 3-hourly fully sector-coupled
   memory_logging_frequency: 5 # in seconds
   runtime: 48h #runtime in humanfriendly style https://humanfriendly.readthedocs.io/en/latest/

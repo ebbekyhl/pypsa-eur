@@ -351,6 +351,15 @@ plotting:
     Lignite: '#826837'
     lignite: '#826837'
     Lignite marginal: '#826837'
+    # steel
+    HBI: '#545454'
+    steel: '#545454'
+    BF-BOF: '#545454'
+    H2 DRI: '#bf13a0'
+    gas DRI: '#e05b09'
+    gas DRI CC: '#a85522'
+    EAF: '#ff8c00'
+    steel transport: '#777777'
     # biomass
     biogas: '#e3d37d'
     biomass: '#baa741'

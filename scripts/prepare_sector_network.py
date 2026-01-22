@@ -4699,6 +4699,7 @@ def add_industry(
     if cf_industry["endogenous_steel"]:
 
         logger.info("Adding endogenous primary steel demand in tonnes.")
+        logger.info("Node that secondary steel is represented by electricity demands.")
 
         sectors = ["DRI + Electric arc", 
                    "Integrated steelworks"]
@@ -4716,6 +4717,23 @@ def add_industry(
             unit="t",
         )
 
+        # add transport of steel between nodes
+        steel_transport = create_network_topology(
+            n, "steel transport ", bidirectional=True
+        )
+        
+        n.add(
+            "Link",
+            steel_transport.index,
+            bus0=steel_transport.bus0 + " steel",
+            bus1=steel_transport.bus1 + " steel",
+            p_nom_extendable=True,
+            capital_cost = 0,
+            length=steel_transport.length,
+            marginal_cost=cf_industry["steel_transport_cost"] * steel_transport.length,
+            carrier="steel transport",
+        )
+
         n.add(
             "Bus",
             spatial.hbi.nodes,
@@ -4724,10 +4742,11 @@ def add_industry(
             unit="t",
         )
 
+        logger.info("Adding steel imports.")
         if cf_industry.get("steel_import", False):
             n.add(
                 "Generator",
-                "steel import",
+                spatial.steel.nodes,
                 bus=spatial.steel.nodes,
                 carrier="steel import",
                 p_nom_extendable=True,
@@ -4735,8 +4754,10 @@ def add_industry(
             )
 
         # set demand for primary steel production
-        steel = industrial_production[sectors].sum(axis=1) / 8760 # t/h
+        logger.info("Defining nodal steel demand in tonnes.")
+        steel = industrial_production[sectors].sum(axis=1) / nhours # t/h
         steel.index = steel.index + " steel"
+        logger.info("Adding nodal steel demand in tonnes.")
         n.add(
             "Load",
             spatial.steel.nodes,
@@ -4744,6 +4765,8 @@ def add_industry(
             carrier="steel",
             p_set=steel,
         )
+
+        logger.info("Nodal steel demand in tonnes was added.")
 
         n.add(
             "Store",
@@ -4782,18 +4805,21 @@ def add_industry(
 
         for fuel in ["H2", "gas"]:
             p_nom = (
-                    industrial_production[sectors].sum()
+                    steel
                     * EAF_hbi_input
                     * dri_electricity_input[fuel]
-                    / nhours
                     )
+
+            p_nom.index += f" {fuel} DRI"
+
+            logger.info(f"For {fuel}, adding {p_nom} of capacities.")
 
             if fuel == "H2":
                 marginal_cost = DRI_commodity * DRI_ore_input["H2"] / dri_electricity_input["H2"]
                 n.madd(
                     "Link",
                     nodes,
-                    suffix=" H2 DRI",
+                    suffix=" steel H2 DRI",
                     carrier="H2 DRI",
                     capital_cost=DRI_fixed_cost["H2"]
                     / dri_electricity_input["H2"],
@@ -4802,7 +4828,7 @@ def add_industry(
                     p_nom_extendable=False if no_relocation else True,
                     p_min_pu=0,
                     bus0=nodes,
-                    bus1="EU HBI",
+                    bus1=spatial.hbi.nodes,
                     bus2=nodes + " H2",
                     efficiency=1 / dri_electricity_input["H2"],
                     efficiency2=-fuel_input["H2"] / dri_electricity_input["H2"],
@@ -4814,7 +4840,7 @@ def add_industry(
                 n.add(
                     "Link",
                     nodes,
-                    suffix=" gas DRI",
+                    suffix=" steel gas DRI",
                     carrier="gas DRI",
                     capital_cost=DRI_fixed_cost["gas"] / fuel_input["gas"],
                     marginal_cost=marginal_cost,
@@ -4822,7 +4848,7 @@ def add_industry(
                     p_nom_extendable=False if no_relocation else True,
                     p_min_pu=0,
                     bus0=spatial.gas.nodes,
-                    bus1="EU HBI",
+                    bus1=spatial.hbi.nodes,
                     bus2="co2 atmosphere",
                     efficiency = 1 / fuel_input["gas"],
                     efficiency2 = costs.at["gas", "CO2 intensity"],
@@ -4834,7 +4860,7 @@ def add_industry(
                     n.add(
                         "Link",
                         nodes,
-                        suffix=" gas DRI CC",
+                        suffix=" steel gas DRI CC",
                         carrier="gas DRI CC",
                         capital_cost=DRI_fixed_cost["gas"] / fuel_input["gas"] + costs.at["cement capture", "capital_cost"],
                         marginal_cost=marginal_cost,
@@ -4842,7 +4868,7 @@ def add_industry(
                         p_nom_extendable=True,
                         p_min_pu=0,
                         bus0=spatial.gas.nodes,
-                        bus1="EU HBI",
+                        bus1=spatial.hbi.nodes,
                         bus2="co2 atmosphere",
                         efficiency = 1 / fuel_input["gas"],
                         efficiency2 = costs.at["gas", "CO2 intensity"] * (1 - capture_rate),
@@ -4850,21 +4876,24 @@ def add_industry(
                         )
                     
         # Adding steel produced from HBI via electric arc furnace
-        p_nom = (industrial_production["Electric arc"] 
-                 * EAF_electricity_input / nhours)
+        p_nom = industrial_production["Electric arc"] * EAF_electricity_input / nhours
+
+        p_nom.index += " steel EAF"
+
+        logger.info(f"For EAF, adding {p_nom} of capacity.")
 
         n.madd(
             "Link",
             nodes,
-            suffix=" EAF",
+            suffix=" steel EAF",
             carrier="EAF",
             capital_cost=costs.at["electric arc furnace", "capital_cost"] / EAF_electricity_input,
             p_nom=p_nom if no_relocation else 0,
-            p_nom_extendable=True,
+            p_nom_extendable=True, # to account for increasing DRI, expansion of EAF is enabled (but only where steel industry is already located)
             p_min_pu=0,
             bus0=nodes,
-            bus1="EU steel",
-            bus2="EU HBI",
+            bus1=spatial.steel.nodes,
+            bus2=spatial.hbi.nodes,
             efficiency=1 / EAF_electricity_input,
             efficiency2=-costs.at["electric arc furnace", "hbi-input"]
             / EAF_electricity_input,
@@ -4872,10 +4901,10 @@ def add_industry(
         )
 
         # Adding blast furnace basic oxygen furnace route
-        BF_BOF_fixed_cost = costs.at["blast furnace basic oxygen furnace", "capital_cost"]
-        BF_BOF_ore_input = costs.at["blast furnace basic oxygen furnace", "ore-input"]
-        BF_BOF_coal_input = costs.at["blast furnace basic oxygen furnace", "coal-input"]
-        BF_BOF_lifetime = costs.at["blast furnace basic oxygen furnace", "lifetime"]
+        BF_BOF_fixed_cost = costs.at["blast furnace-basic oxygen furnace", "capital_cost"]
+        BF_BOF_ore_input = costs.at["blast furnace-basic oxygen furnace", "ore-input"]
+        BF_BOF_coal_input = costs.at["blast furnace-basic oxygen furnace", "coal-input"]
+        BF_BOF_lifetime = costs.at["blast furnace-basic oxygen furnace", "lifetime"]
 
         marginal_cost = (
                         DRI_commodity # iron ore price is only given for DRI-ready ore
@@ -4883,23 +4912,23 @@ def add_industry(
                         / BF_BOF_coal_input
                         )
 
-        p_nom = (
-                industrial_production[sectors].sum()
-                * BF_BOF_coal_input
-                / nhours
-                )
+        p_nom = steel * BF_BOF_coal_input
+
+        p_nom.index += " BF-BOF"
+
+        logger.info(f"For BF-BOF, adding {p_nom} of capacity.")
 
         n.madd(
                 "Link",
                 nodes,
-                suffix=" BF-BOF",
+                suffix=" steel BF-BOF",
                 carrier="BF-BOF",
                 capital_cost = BF_BOF_fixed_cost / BF_BOF_coal_input,
                 marginal_cost=marginal_cost,
                 p_nom=p_nom if no_relocation else 0,
                 p_nom_extendable=False if no_relocation else True,
-                bus0="EU coal",
-                bus1="EU steel",
+                bus0=spatial.coal.nodes,
+                bus1=spatial.steel.nodes,
                 bus2= "co2 atmosphere",
                 efficiency= 1 / BF_BOF_coal_input,
                 efficiency2=costs.at["coal", "CO2 intensity"],
@@ -4934,8 +4963,6 @@ def add_industry(
             replace_fraction = replace_demand * 1e6 / (p_set.sum() * nhours)
             replace_medium_heat = p_set * replace_fraction
             p_set *= 1 - replace_fraction
-
-    # p_set = p_set.rename(index=lambda x: x + " medium heat for industry")
 
     # log about p_set.index
     logger.info(

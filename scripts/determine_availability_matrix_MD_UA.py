@@ -16,7 +16,7 @@ import fiona
 import geopandas as gpd
 import numpy as np
 
-from scripts._helpers import configure_logging, load_cutout, set_scenario_config
+from scripts._helpers import configure_logging, get_snapshots, load_cutout, set_scenario_config
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,10 @@ if __name__ == "__main__":
     noprogress = not snakemake.config["atlite"].get("show_progress", True)
     config = snakemake.params["renewable"][snakemake.wildcards.technology]
 
-    cutout = load_cutout(snakemake.input.cutout)
+    time = get_snapshots(snakemake.params.snapshots, snakemake.params.drop_leap_day)
+    
+    cutout = load_cutout(snakemake.input.cutout, time=time)
+
     regions = (
         gpd.read_file(snakemake.input.regions).set_index("name").rename_axis("bus")
     )

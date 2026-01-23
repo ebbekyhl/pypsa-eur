@@ -63,7 +63,7 @@ import geopandas as gpd
 import numpy as np
 import xarray as xr
 
-from scripts._helpers import configure_logging, load_cutout, set_scenario_config
+from scripts._helpers import configure_logging, get_snapshots, load_cutout, set_scenario_config
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,10 @@ if __name__ == "__main__":
     technology = snakemake.wildcards.technology
     params = snakemake.params.renewable[technology]
 
-    cutout = load_cutout(snakemake.input.cutout)
+    sns = get_snapshots(snakemake.params.snapshots, snakemake.params.drop_leap_day)
+
+    cutout = load_cutout(snakemake.input.cutout, time=sns)
+    
     regions = gpd.read_file(snakemake.input.regions)
     assert not regions.empty, (
         f"List of regions in {snakemake.input.regions} is empty, please "

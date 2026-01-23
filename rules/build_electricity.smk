@@ -231,6 +231,8 @@ rule build_ship_raster:
 rule determine_availability_matrix_MD_UA:
     params:
         renewable=config_provider("renewable"),
+        snapshots=config_provider("snapshots"),
+        drop_leap_day=config_provider("enable", "drop_leap_day"),
     input:
         copernicus="data/Copernicus_LC100_global_v3.0.1_2019-nrt_Discrete-Classification-map_EPSG-4326.tif",
         wdpa="data/WDPA.gpkg",
@@ -286,6 +288,8 @@ def input_ua_md_availability_matrix(w):
 
 rule determine_availability_matrix:
     params:
+        snapshots=config_provider("snapshots"),
+        drop_leap_day=config_provider("enable", "drop_leap_day"),
         renewable=config_provider("renewable"),
     input:
         unpack(input_ua_md_availability_matrix),

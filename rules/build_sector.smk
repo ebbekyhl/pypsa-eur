@@ -4,6 +4,9 @@
 
 
 rule build_population_layouts:
+    params:
+        snapshots=config_provider("snapshots"),
+        drop_leap_day=config_provider("enable", "drop_leap_day"),
     input:
         nuts3_shapes=resources("nuts3_shapes.geojson"),
         urban_percent="data/worldbank/API_SP.URB.TOTL.IN.ZS_DS2_en_csv_v2.csv",
@@ -26,6 +29,9 @@ rule build_population_layouts:
 
 
 rule build_clustered_population_layouts:
+    params:
+        snapshots=config_provider("snapshots"),
+        drop_leap_day=config_provider("enable", "drop_leap_day"),
     input:
         pop_layout_total=resources("pop_layout_total.nc"),
         pop_layout_urban=resources("pop_layout_urban.nc"),
@@ -47,6 +53,9 @@ rule build_clustered_population_layouts:
 
 
 rule build_clustered_solar_rooftop_potentials:
+    params:
+        snapshots=config_provider("snapshots"),
+        drop_leap_day=config_provider("enable", "drop_leap_day"),
     input:
         pop_layout=resources("pop_layout_total.nc"),
         class_regions=resources("regions_by_class_{clusters}_solar.geojson"),

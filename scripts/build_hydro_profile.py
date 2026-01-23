@@ -155,7 +155,7 @@ if __name__ == "__main__":
 
     time = get_snapshots(snakemake.params.snapshots, snakemake.params.drop_leap_day)
 
-    cutout = load_cutout(snakemake.input.cutout)
+    cutout = load_cutout(snakemake.input.cutout, time=time)
 
     years_in_time = pd.DatetimeIndex(time).year.unique()
     cutout_time = pd.DatetimeIndex(cutout.coords["time"].values)

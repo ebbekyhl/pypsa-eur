@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from scripts._helpers import configure_logging, load_cutout, set_scenario_config
+from scripts._helpers import configure_logging, get_snapshots, load_cutout, set_scenario_config
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,8 @@ if __name__ == "__main__":
     set_scenario_config(snakemake)
     logging.getLogger("country_converter").setLevel(logging.CRITICAL)
 
-    cutout = load_cutout(snakemake.input.cutout)
+    time = get_snapshots(snakemake.params.snapshots, snakemake.params.drop_leap_day)
+    cutout = load_cutout(snakemake.input.cutout, time=time)
 
     grid_cells = cutout.grid.geometry
 

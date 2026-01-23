@@ -9,7 +9,7 @@ import geopandas as gpd
 import pandas as pd
 import xarray as xr
 
-from scripts._helpers import load_cutout, set_scenario_config
+from scripts._helpers import get_snapshots, load_cutout, set_scenario_config
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -23,7 +23,8 @@ if __name__ == "__main__":
 
     set_scenario_config(snakemake)
 
-    cutout = load_cutout(snakemake.input.cutout)
+    time = get_snapshots(snakemake.params.snapshots, snakemake.params.drop_leap_day)
+    cutout = load_cutout(snakemake.input.cutout, time=time)
 
     class_regions = gpd.read_file(snakemake.input.class_regions).set_index(
         ["bus", "bin"]

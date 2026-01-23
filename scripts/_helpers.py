@@ -1064,6 +1064,7 @@ def load_cutout(
     atlite.Cutout
         Merged cutout with optional time selection applied.
     """
+
     if isinstance(cutout_files, str):
         cutout = atlite.Cutout(cutout_files)
     elif isinstance(cutout_files, list):
@@ -1071,7 +1072,18 @@ def load_cutout(
         combined_data = xr.concat(cutout_da, dim="time", data_vars="minimal")
         cutout = atlite.Cutout(NamedTemporaryFile().name, data=combined_data)
 
+    # Initializing the actual snapshots of the cutout 
+    year_actual = pd.to_datetime(cutout.coords["time"].data[0]).year
+    snapshots_actual = {"start": f"{year_actual}-01-01",
+                        "end": f"{year_actual + 1}-01-01",
+                        "inclusive": "left"}    
+    drop_leap_day = True # This only works if leap day is omitted
+    sns_actual = get_snapshots(snapshots_actual, drop_leap_day)
+
+    cutout.data = cutout.data.sel(time=sns_actual)
+
     if time is not None:
-        cutout.data = cutout.data.sel(time=time)
+        # To match the index of the network file, we replace the year in the snapshot, while hours of the year remain the same
+        cutout.coords["time"] = time
 
     return cutout

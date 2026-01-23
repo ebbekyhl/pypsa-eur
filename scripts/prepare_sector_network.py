@@ -1892,7 +1892,7 @@ def add_ldes_storage(n, tech):
                 e_nom_extendable=True,
                 e_cyclic=True,
                 carrier=tech,
-                capital_cost=costs.at[f"{tech} store","fixed"], 
+                capital_cost=costs.at[techs_stores_dict[tech],"capital_cost"], 
                 lifetime = costs.at[techs_stores_dict[tech],'lifetime']) 
 
 def add_storage_and_grids(

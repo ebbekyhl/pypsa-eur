@@ -1270,6 +1270,7 @@ def input_heat_source_power(w):
 rule prepare_sector_network:
     params:
         uk_settings=config_provider("uk_settings"),
+        ldes_settings = config_provider("LDES"),
         time_resolution=config_provider("clustering", "temporal", "resolution_sector"),
         co2_budget=config_provider("co2_budget"),
         conventional_carriers=config_provider(

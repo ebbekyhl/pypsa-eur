@@ -151,6 +151,15 @@ def add_UK_gas_storage_data(n, onshore, offshore):
     # update network
     n.stores = stores
 
+def scale_up_offwind_potential(n, country, factor):
+    offwind_techs = ["offwind-ac", "offwind-dc"]
+    for owt in offwind_techs:
+        country_offwind = n.generators.loc[n.generators.index.str.contains(country)].query("carrier== @owt").index
+
+        n.generators.loc[country_offwind, "p_nom_max"] = n.generators.loc[country_offwind, "p_nom_max"] * factor
+
+        logger.info(f"Scaled up offshore wind potential in {country} by a factor of {factor}.")
+
 def define_spatial(nodes, options):
     """
     Namespace for spatial.
@@ -7139,13 +7148,17 @@ if __name__ == "__main__":
     countries = snakemake.params.countries
     if uk_settings["uk_only"]:
         countries.remove("IE")
-
         remove_ie_from_network(n)
 
     if uk_settings["uk_new_gas_storage_data"]:
         onshore = snakemake.input.regions_onshore
         offshore = snakemake.input.regions_offshore
         add_UK_gas_storage_data(n, onshore, offshore)
+
+    # check if uk_settings["uk_scale_up_offwind_potential"] is a number
+    factor = uk_settings.get("uk_scale_up_offwind_potential", None)
+    if isinstance(factor, (int, float)):
+        scale_up_offwind_potential(n, "GB", factor)
 
     n.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
 

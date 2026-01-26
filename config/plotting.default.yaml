@@ -243,6 +243,34 @@ plotting:
       - 200
       - 100
       branch_sizes:
+    steel:
+      unit: Mt
+      unit_conversion: 1_000_000
+      cmap: Blues
+      vmin:
+      vmax:
+      region_unit: €/t
+      bus_factor: 0.005
+      branch_factor: 0.1
+      flow_factor: 100
+      bus_sizes:
+      - 300
+      - 100
+      branch_sizes:
+    hbi:
+      unit: Mt
+      unit_conversion: 1_000_000
+      cmap: Blues
+      vmin:
+      vmax:
+      region_unit: €/t
+      bus_factor: 0.005
+      branch_factor: 0.1
+      flow_factor: 100
+      bus_sizes:
+      - 300
+      - 100
+      branch_sizes:
 
   nice_names:
     OCGT: "Open-Cycle Gas"

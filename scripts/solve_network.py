@@ -354,6 +354,98 @@ def update_UK_gas_price(n):
 
     return n
 
+def add_UK_fixed_electricity_generation_mix(n, base_year):
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    if investment_year > base_year:
+        logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
+        return
+
+    # Exogenous electricity load
+    elec_loads = n.loads.loc[n.loads.carrier.str.contains("electricity")]
+    uk_elec_loads = elec_loads.loc[elec_loads.index.str.contains("GB")]
+
+    load = (n.loads_t.p_set[uk_elec_loads.query("carrier == 'electricity'").index].sum().sum() + 
+            (uk_elec_loads.loc[uk_elec_loads.carrier != 'electricity'].p_set*len(n.snapshots)).sum()
+            )
+
+    # Additional electricity demand from sector-coupling
+    links_wo_transmission = n.links.drop(n.links.query("carrier == 'DC'").index)
+    electricity_buses = list(n.buses.query('carrier == "AC"').index) + list(
+        n.buses.query('carrier == "low voltage"').index
+    )
+    boolean_elec_demand_via_links = [
+        links_wo_transmission.bus0[i] in electricity_buses
+        for i in range(len(links_wo_transmission.bus0))
+    ]
+    boolean_elec_demand_via_links_series = pd.Series(boolean_elec_demand_via_links)
+    elec_demand_via_links = links_wo_transmission.iloc[
+        boolean_elec_demand_via_links_series[boolean_elec_demand_via_links_series].index
+    ]
+
+    # Drop storage dischargers as they are not a part of the generation mix
+    elec_demand_via_links = elec_demand_via_links.drop(
+        elec_demand_via_links.index[elec_demand_via_links.index.str.contains("discharge")]
+    )
+
+    # Drop distribution links
+    elec_demand_via_links = elec_demand_via_links.drop(
+        elec_demand_via_links.index[
+            elec_demand_via_links.index.str.contains("distribution")
+        ]
+    )
+
+    # Access data for UK
+    elec_demand_via_links = elec_demand_via_links.loc[elec_demand_via_links.index.str.contains("GB")]
+
+    uk_electricity_demand = n.model.variables["Link-p"].loc[:, elec_demand_via_links.index].sum() + load
+
+    # https://grid.iamkate.com/, https://www.energyoasis.org.uk/blog/uk-renewable-energy-mix-2024  
+    carriers = {"nuclear": [10, 20],
+                "wind": [30, 35],
+                "solar": [4, 8],
+                "gas": [25, 35]}
+
+    uk_buses = n.buses.loc[n.buses.index.str.contains("GB")].query("carrier == 'AC'")
+    for carrier, c_range in carriers.items():
+
+        print(carrier)
+
+        if carrier in ["wind", "solar"]:
+
+            uk_generators_t = n.generators.index[n.generators.index.str.contains(carrier) & n.generators.index.str.contains("GB")]
+
+            # drop solar thermal 
+            if carrier == "solar":
+                uk_generators_t = uk_generators_t.drop(
+                    uk_generators_t[uk_generators_t.str.contains("thermal")]
+                )
+
+            lhs = n.model.variables["Generator-p"].loc[:, uk_generators_t].sum()
+
+        else:
+            uk_power_generation_links = n.links.loc[n.links.bus1.isin(uk_buses)]
+            carriers = f"{carrier} | OCGT | CCGT" if carrier == "gas" else carrier
+            uk_power_generation_links = uk_power_generation_links.loc[uk_power_generation_links.index.str.contains(carriers)] 
+
+            lhs = n.model.variables["Link-p"].loc[:, uk_power_generation_links.index].sum()
+
+        # n.model.add_constraints(
+        #     lhs >= (uk_electricity_demand * c_range[0] / 100)
+        #     ,
+        #     name="lower_generation_limit_" + carrier,
+        #     )
+
+        n.model.add_constraints(
+            lhs <= (uk_electricity_demand * c_range[1] / 100)
+            ,
+            name="upper_generation_limit_" + carrier,
+            )
+
+        # undefine lhs 
+        del lhs
+
+        # logger.info(f"Added generation limits for {carrier} in UK: {c_range[0]}% - {c_range[1]}% of total electricity generation")
+
 def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
     investment_year = int(snakemake.wildcards.planning_horizons)
     if investment_year > base_year:
@@ -1588,6 +1680,8 @@ def extra_functionality(
 
     base_year = snakemake.config["scenario"]["planning_horizons"][0]
     uk_settings = snakemake.params.uk_settings
+    if uk_settings["uk_fixed_electricity_generation_mix"]:
+        add_UK_fixed_electricity_generation_mix(n, base_year)
     if isinstance(uk_settings["uk_brownfield_minimum_capacity_factors"], dict):
         logger.info("Adding UK brownfield minimum capacity factors.")
         capacity_factors = uk_settings["uk_brownfield_minimum_capacity_factors"]

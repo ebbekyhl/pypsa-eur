@@ -17,15 +17,15 @@ remote:
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#run
 run:
   prefix: "pypsa-uk"
-  name: "" # scenario name
+  name: "all" # scenario name
   scenarios:
-    enable: false
+    enable: true
     file: config/scenarios.yaml
   disable_progressbar: false
   shared_resources:
     policy: false
     exclude: []
-  shared_cutouts: true # <------- true, unless weather years are different between runs
+  shared_cutouts: false # <------- true, unless weather years are different between runs
   use_shadow_directory: true
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#foresight
@@ -39,14 +39,14 @@ scenario:
   opts:
   - ''
   sector_opts:
-  - '168h'
+  - '6h'
   planning_horizons:
   - 2025
   - 2030
   - 2035
-  # - 2040
-  # - 2045
-  # - 2050
+  - 2040
+  - 2045
+  - 2050
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#countries
 countries:
@@ -98,15 +98,17 @@ uk_settings:
   uk_new_gas_storage_data: true # whether to use new UK gas storage data
   uk_new_powerplants_data: true # whether to use new UK powerplant data from OpenStreetMap  
   uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov
-  uk_brownfield_minimum_capacity_factors: # minimum capacity factors for a selection of brownfield capacities in the UK
-    CCGT: 0.5 # https://wattdirection.substack.com/p/uk-combined-cycle-gas-power-stations-748
-    nuclear: 0.5
+  uk_scale_up_offwind_potential: 2 # to align with UK government's ambitious offshore wind targets, increase the offshore wind potential in the UK waters by given factor 
+  uk_fixed_electricity_generation_mix: true # to align the base year with historical levels of generation mix
+  uk_brownfield_minimum_capacity_factors: false # minimum capacity factors of brownfield capacities for the base year to approximate historical power mix
+    # CCGT: 0.5 # https://wattdirection.substack.com/p/uk-combined-cycle-gas-power-stations-748
+    # nuclear: 0.7 # https://assets.publishing.service.gov.uk/media/5a75a748e5274a545822d2b9/Nuclear_Capacity_in_the_UK.pdf 
   uk_build_out_rates: false # in MW
-    # heatpump: 1000 # heat pumps in MW_th (only applies to 2025 base year for calibration purpose)
-    # onwind: 20000 # onshore wind
-    # offwind: 20000 # offshore wind (including AC, DC, floating)
-    # solar: 20000 # utility scale PV
-    # solar-rooftop: 20000 # rooftop PV
+    # heatpump: 1000 # heat pumps in MW_th (only applies to 2025 base year for calibration purpose) [MW / year]
+    # onwind: 1000 # onshore wind [MW / year]
+    # offwind: 1000 # offshore wind (including AC, DC, floating) [MW / year]
+    # solar: 1000 # utility scale PV [MW / year]
+    # solar-rooftop: 1000 # rooftop PV [MW / year]
 
     # Further UK settings not listed here but are included further down: 
     # - Limit on fuel imports (see L. )
@@ -140,7 +142,7 @@ enable:
 # Add national CO2 emissions reduction targets
 local_co2:
   GB:
-    2025: 0.433 # Legislated carbon budget 
+    2025: 0.460 # https://www.warpnews.org/green-tech/uk-greenhouse-gas-emissions-drop-to-lowest-level-since-1872/
     2030: 0.383 # Legislated carbon budget 
     2035: 0.220 # The Sixth Carbon Budget
     2040: 0.092 # Exponential decay
@@ -205,7 +207,7 @@ electricity:
     enable: false
     by_country: false
 
-  transmission_limit: v2.0
+  transmission_limit: v1.0
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#atlite
 atlite:
@@ -226,6 +228,21 @@ atlite:
       time: ['2013', '2013']
       # features: [] 
       # sarah_dir: ""
+    europe-2010-sarah3-era5:
+      module: [sarah, era5] # in priority order
+      x: [-12., 42.]
+      y: [33., 72.]
+      dx: 0.3
+      dy: 0.3
+      time: ['2013', '2013']
+    europe-2020-sarah3-era5:
+      module: [sarah, era5] # in priority order
+      x: [-12., 42.]
+      y: [33., 72.]
+      dx: 0.3
+      dy: 0.3
+      time: ['2013', '2013']
+    
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#renewable
 renewable:
@@ -450,7 +467,6 @@ pypsa_eur:
   - solar-hsat
   - solar
   - ror
-  # - nuclear <----------------------------------------- needs to be removed in myopic foresight
   StorageUnit:
   - PHS
   - hydro
@@ -846,7 +862,7 @@ sector:
   biosng: false
   biosng_cc: false
   bioH2: false
-  municipal_solid_waste: false
+  municipal_solid_waste: true
   limit_max_growth:
     enable: false
     # allowing 30% larger than max historic growth
@@ -880,11 +896,7 @@ sector:
       # GB: 500 # TWh (if no limit wanted: .inf) 
     limit_sense: <=
     price:
-      # H2: 74
-      # NH3: 97
-      # methanol: 121
       gas: 50 # 122 # Adding a more recent value for gas import price from LNG 
-      # oil: 125
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#industry
 industry:
@@ -956,7 +968,7 @@ industry:
     2045: 0.16
     2050: 0.20
   HVC_environment_sequestration_fraction: 0.
-  waste_to_energy: false
+  waste_to_energy: true
   waste_to_energy_cc: false
   sector_ratios_fraction_future:
     2020: 0.0
@@ -1185,6 +1197,6 @@ solving:
     atol: 1_000_000
     rtol: 0.01
 
-  mem_mb: 200000 # 110000 for 3-hourly fully sector-coupled
+  mem_mb: 150000 # 110000 for 3-hourly fully sector-coupled
   memory_logging_frequency: 5 # in seconds
   runtime: 48h #runtime in humanfriendly style https://humanfriendly.readthedocs.io/en/latest/

@@ -356,6 +356,7 @@ def update_UK_gas_price(n):
 
 def add_UK_fixed_electricity_generation_mix(n, base_year):
     investment_year = int(snakemake.wildcards.planning_horizons)
+
     if investment_year > base_year:
         logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
         return
@@ -400,10 +401,13 @@ def add_UK_fixed_electricity_generation_mix(n, base_year):
     uk_electricity_demand = n.model.variables["Link-p"].loc[:, elec_demand_via_links.index].sum() + load
 
     # https://grid.iamkate.com/, https://www.energyoasis.org.uk/blog/uk-renewable-energy-mix-2024  
-    carriers = {"nuclear": [10, 20],
-                "wind": [30, 35],
-                "solar": [4, 8],
-                "gas": [25, 35]}
+    carriers = {
+                "nuclear": 20, #[10, 20],
+                "wind": 35, # [30, 35],
+                "solar": 10,# [4, 8],
+                # "gas": 30, #[25, 35]
+                # "urban central solid biomass CHP": 8,
+                }
 
     uk_buses = n.buses.loc[n.buses.index.str.contains("GB")].query("carrier == 'AC'")
     for carrier, c_range in carriers.items():
@@ -430,13 +434,13 @@ def add_UK_fixed_electricity_generation_mix(n, base_year):
             lhs = n.model.variables["Link-p"].loc[:, uk_power_generation_links.index].sum()
 
         # n.model.add_constraints(
-        #     lhs >= (uk_electricity_demand * c_range[0] / 100)
+        #     lhs >= (uk_electricity_demand * c_range / 100)
         #     ,
         #     name="lower_generation_limit_" + carrier,
         #     )
 
         n.model.add_constraints(
-            lhs <= (uk_electricity_demand * c_range[1] / 100)
+            lhs <= (uk_electricity_demand * c_range / 100)
             ,
             name="upper_generation_limit_" + carrier,
             )
@@ -444,16 +448,20 @@ def add_UK_fixed_electricity_generation_mix(n, base_year):
         # undefine lhs 
         del lhs
 
-        # logger.info(f"Added generation limits for {carrier} in UK: {c_range[0]}% - {c_range[1]}% of total electricity generation")
+        logger.info(f"Added generation limits for {carrier} in UK: {c_range}% of total electricity generation")
 
 def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
+
+    # For example:
+    # CCGT: 0.5 # https://wattdirection.substack.com/p/uk-combined-cycle-gas-power-stations-748
+    # nuclear: 0.7 # https://assets.publishing.service.gov.uk/media/5a75a748e5274a545822d2b9/Nuclear_Capacity_in_the_UK.pdf 
+
     investment_year = int(snakemake.wildcards.planning_horizons)
     if investment_year > base_year:
         logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
         return
     T = len(n.snapshots)
-    for tech in ["nuclear", "CCGT"]:
-        minimum_capacity_factor = capacity_factors[tech] # fraction, from 0 to 1
+    for tech, minimum_capacity_factor in capacity_factors.items():
 
         # Select UK links of that tech
         tech_uk = n.links[
@@ -490,6 +498,13 @@ def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
         logger.info(f"Added minimum capacity factor constraint for UK {tech}: {minimum_capacity_factor}")
 
 def add_UK_build_out_rates(n, build_out_rates):
+
+    # For example:
+    # heatpump: 1000 # heat pumps in MW_th (only applies to 2025 base year for calibration purpose) [MW / year]
+    # onwind: 1000 # onshore wind [MW / year]
+    # offwind: 1000 # offshore wind (including AC, DC, floating) [MW / year]
+    # solar: 1000 # utility scale PV [MW / year]
+    # solar-rooftop: 1000 # rooftop PV [MW / year]
 
     investment_year = int(snakemake.wildcards.planning_horizons)
 
@@ -849,7 +864,6 @@ def add_retrofit_gas_boiler_constraint(
     lhs = p_gas + p_h2
 
     n.model.add_constraints(lhs == rhs, name="gas_retrofit")
-
 
 def prepare_network(
     n: pypsa.Network,
@@ -1680,8 +1694,10 @@ def extra_functionality(
 
     base_year = snakemake.config["scenario"]["planning_horizons"][0]
     uk_settings = snakemake.params.uk_settings
+
     if uk_settings["uk_fixed_electricity_generation_mix"]:
         add_UK_fixed_electricity_generation_mix(n, base_year)
+    
     if isinstance(uk_settings["uk_brownfield_minimum_capacity_factors"], dict):
         logger.info("Adding UK brownfield minimum capacity factors.")
         capacity_factors = uk_settings["uk_brownfield_minimum_capacity_factors"]
@@ -1798,6 +1814,119 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
 
         df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_collective_co2_" + investment_year + "_" + clusters + ".csv")
 
+def add_uk_load_shedding(n, base_year):
+
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    if investment_year > base_year:
+        logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
+        return
+
+    n.add("Carrier", "load", color="#dd2e23", nice_name="Load shedding")
+    
+    # buses_i = n.buses.index
+    buses_i = n.buses.loc[n.buses.index.str.contains("GB")].index
+    
+    load_shedding = 100000  # Eur/MWh
+
+    n.add(
+        "Generator",
+        buses_i,
+        " load",
+        bus=buses_i,
+        carrier="load",
+        # sign=1e-3,  # Adjust sign to measure p and p_nom in kW instead of MW
+        marginal_cost=load_shedding, 
+        p_nom_extendable = False,
+        p_nom=1e9,  # MW
+    )
+
+def freeze_uk_capacities(n, base_year):
+
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    if investment_year > base_year:
+        logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
+        return
+
+    # links (looping over buses)
+    for bus in ["bus0", "bus1", "bus2", "bus3", "bus4"]:
+
+        ########################## LINKS ########################################################
+        uk_links_new_index = pd.Index([])
+        uk_links = n.links.query(f"{bus}.str.contains('GB')").query("capital_cost > 0 or carrier.str.contains('charge')").index
+        uk_links_df = n.links.loc[uk_links]
+
+        # For special cases
+        uk_links_df_special = uk_links_df.loc[uk_links_df.p_nom_min != uk_links_df.p_nom]
+        n.links.loc[uk_links_df_special.index, "p_nom"] = n.links.loc[uk_links_df_special.index, "p_nom"] + n.links.loc[uk_links_df_special.index, "p_nom_min"] 
+        
+        # Non-special cases
+        uk_links_df_normal = uk_links_df.loc[uk_links_df.p_nom_min == uk_links_df.p_nom]
+        uk_links_df_normal_zeros = uk_links_df_normal.loc[uk_links_df_normal.p_nom == 0].index
+
+        # if empty, then skip
+        if len(uk_links_df_normal_zeros) == 0:
+            continue
+
+        # Check for links with reversed counterparts
+        uk_links_reversed = n.links.loc[uk_links_df_normal_zeros].copy()
+        reverse_strings = ["-reversed"]
+        uk_links_reversed_index = pd.Index([])
+        for rev_str in reverse_strings:
+            uk_links_reversed_index_i = uk_links_reversed.index.str.split(f"-{base_year}", expand = True).get_level_values(0) + f"{rev_str}-{base_year}"
+            # check if the created indices exist in the network
+            intersect = n.links.index.intersection(uk_links_reversed_index_i)
+            if len(intersect) > 0:
+                uk_links_reversed_index = uk_links_reversed_index.append(intersect)
+
+        # get the reversed links
+        uk_links_reversed = n.links.loc[uk_links_reversed_index]
+
+        uk_links = pd.Index(uk_links)
+        if len(uk_links_reversed) > 0:
+            uk_links = uk_links.append(uk_links_reversed.index)
+            uk_links_df_normal_zeros = uk_links_df_normal_zeros.append(uk_links_reversed.index)
+
+        # Remove links with zero capacity
+        uk_links_new_index = n.links.loc[uk_links].drop(uk_links_df_normal_zeros).index
+        print(f"Removing {len(uk_links_df_normal_zeros)} links with zero capacity for {bus}")
+        n.remove(name = uk_links_df_normal_zeros, class_name = "Link")
+
+        # For the remaining links, set p_nom_extendable to False
+        n.links.loc[uk_links_new_index, "p_nom_extendable"] = False
+        
+        ########################## GENERATORS #######################################################
+        # generators
+        uk_generators = n.generators.loc[n.generators.index.str.contains("GB")].query("capital_cost > 0").index
+        uk_generators_df = n.generators.loc[uk_generators]
+
+        # For special cases
+        uk_generators_df_special = uk_generators_df.loc[uk_generators_df.p_nom_min != uk_generators_df.p_nom]
+        n.generators.loc[uk_generators_df_special.index, "p_nom"] = n.generators.loc[uk_generators_df_special.index, "p_nom"] + n.generators.loc[uk_generators_df_special.index, "p_nom_min"]
+
+        # Non-special cases
+        uk_generators_df_normal = uk_generators_df.loc[uk_generators_df.p_nom_min == uk_generators_df.p_nom]
+        uk_generators_df_normal_zeros = uk_generators_df_normal.loc[uk_generators_df_normal.p_nom == 0].index
+        uk_generators_new_index = n.generators.loc[uk_generators].drop(uk_generators_df_normal_zeros).index
+        n.remove(name = uk_generators_df_normal_zeros, class_name = "Generator")
+
+        n.generators.loc[uk_generators_new_index, "p_nom_extendable"] = False
+
+        ########################## STORES #######################################################
+        # stores
+        uk_stores = n.stores.loc[n.stores.index.str.contains("GB")].query("capital_cost > 0").index
+        uk_stores_df = n.stores.loc[uk_stores]
+
+        # For special cases
+        uk_stores_df_special = uk_stores_df.loc[uk_stores_df.e_nom_min != uk_stores_df.e_nom]
+        n.stores.loc[uk_stores_df_special.index, "e_nom"] = n.stores.loc[uk_stores_df_special.index, "e_nom"] + n.stores.loc[uk_stores_df_special.index, "e_nom_min"]
+
+        # Non-special cases
+        uk_stores_df_normal = uk_stores_df.loc[uk_stores_df.e_nom_min == uk_stores_df.e_nom]
+        uk_stores_df_normal_zeros = uk_stores_df_normal.loc[uk_stores_df_normal.e_nom == 0].index
+        uk_stores_new_index = n.stores.loc[uk_stores].drop(uk_stores_df_normal_zeros).index
+        n.remove(name = uk_stores_df_normal_zeros, class_name = "Store")
+
+        n.stores.loc[uk_stores_new_index, "e_nom_extendable"] = False
 
 def solve_network(
     n: pypsa.Network,
@@ -1938,6 +2067,7 @@ if __name__ == "__main__":
     np.random.seed(solve_opts.get("seed", 123))
 
     n = pypsa.Network(snakemake.input.network)
+
     planning_horizons = snakemake.wildcards.get("planning_horizons", None)
 
     prepare_network(
@@ -1948,6 +2078,15 @@ if __name__ == "__main__":
         co2_sequestration_potential=snakemake.params["co2_sequestration_potential"],
         limit_max_growth=snakemake.params.get("sector", {}).get("limit_max_growth"),
     )
+
+    uk_settings = snakemake.params.uk_settings
+
+    base_year = snakemake.config["scenario"]["planning_horizons"][0]
+    if uk_settings["uk_load_shedding"]:
+        add_uk_load_shedding(n, base_year)
+
+    if uk_settings["uk_freeze_base_year_capacities"]:
+        freeze_uk_capacities(n, base_year)
 
     logging_frequency = snakemake.config.get("solving", {}).get(
         "mem_logging_frequency", 30

@@ -36,7 +36,7 @@ idx = pd.IndexSlice
 spatial = SimpleNamespace()
 
 
-def add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers):
+def add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers,baseyear):
     """
     This function adds conventional power plants from the Open Infrastructure Map (OIM) dataset for the
     United Kingdom (UK) to the existing conventional power plant dataset (df_agg) in the PyPSA-Eur workflow.
@@ -107,6 +107,15 @@ def add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers):
 
     all_columns = df_agg.columns
     uk_pp_new = uk_pp_new[all_columns]
+
+    lifetime_for_existing_UK_conventional_powerplants = 40 # years
+    date_out = uk_pp_new["DateIn"] + lifetime_for_existing_UK_conventional_powerplants
+
+    # where date_out is earlier than baseyear, set to baseyear + 1
+    date_out_adjusted = date_out.loc[date_out < baseyear]
+    date_out.loc[date_out_adjusted.index] = baseyear + 1
+
+    uk_pp_new.loc[:, "DateOut"] = date_out
 
     # add updated UK power plants to df_agg
     df_agg = pd.concat([df_agg, uk_pp_new], ignore_index=False)
@@ -716,7 +725,7 @@ def add_power_capacities_installed_before_baseyear(
 
     # replace powerplants UK
     if uk_settings["uk_new_powerplants_data"]:
-        df_agg = add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers)
+        df_agg = add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers,baseyear)
 
     # drop assets which are already phased out / decommissioned
     phased_out = df_agg[df_agg["DateOut"] < baseyear].index
@@ -876,7 +885,8 @@ def add_power_capacities_installed_before_baseyear(
 
                 if generator not in ["urban central solid biomass CHP", 
                                       "urban central biogas CHP",
-                                      "urban central gas CHP"]:
+                                      "urban central gas CHP",
+                                      "waste CHP"]:
                     n.add(
                         "Link",
                         new_capacity.index,

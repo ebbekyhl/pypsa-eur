@@ -4803,7 +4803,8 @@ def add_industry(
                 spatial.steel.nodes,
                 bus=spatial.steel.nodes,
                 carrier="steel import",
-                p_nom_extendable=True,
+                p_nom=1e3, # t/h capacity per node (assuming some large number)
+                p_nom_extendable = True,
                 marginal_cost=cf_industry["steel_import"],
             )
 
@@ -4826,6 +4827,7 @@ def add_industry(
             "Store",
             nodes + " steel Store",
             bus=spatial.steel.nodes,
+            e_nom = 1e6, # assuming some large number
             e_nom_extendable=True,
             e_cyclic=True,
             carrier="steel",
@@ -4834,6 +4836,7 @@ def add_industry(
         n.add(
             "Store",
             nodes + " HBI Store",
+            e_nom = 1e6, # assuming some large number
             bus=spatial.hbi.nodes,
             e_nom_extendable=True,
             e_cyclic=True,
@@ -4841,8 +4844,8 @@ def add_industry(
         )
 
         # Adding DRI-EAF routes
-        dri_electricity_input = {"H2": costs.at["hydrogen direct iron reduction furnace", "electricity-input"], 
-                                 "gas": costs.at["hydrogen direct iron reduction furnace", "electricity-input"]}
+        dri_electricity_input = {"H2": 0, #costs.at["hydrogen direct iron reduction furnace", "electricity-input"], 
+                                 "gas": 0} # costs.at["hydrogen direct iron reduction furnace", "electricity-input"]}
         
         fuel_input = {"H2": costs.at["hydrogen direct iron reduction furnace", "hydrogen-input"], 
                       "gas": costs.at["natural gas direct iron reduction furnace", "gas-input"]}
@@ -4861,7 +4864,7 @@ def add_industry(
             p_nom = (
                     steel
                     * EAF_hbi_input
-                    * dri_electricity_input[fuel]
+                    * fuel_input[fuel]
                     )
 
             p_nom.index += f" {fuel} DRI"
@@ -4876,16 +4879,14 @@ def add_industry(
                     suffix=" steel H2 DRI",
                     carrier="H2 DRI",
                     capital_cost=DRI_fixed_cost["H2"]
-                    / dri_electricity_input["H2"],
+                    / fuel_input["H2"],
                     marginal_cost=marginal_cost,
                     p_nom=p_nom if no_relocation else 0,
                     p_nom_extendable=False if no_relocation else True,
                     p_min_pu=0,
-                    bus0=nodes,
+                    bus0=nodes + " H2",
                     bus1=spatial.hbi.nodes,
-                    bus2=nodes + " H2",
-                    efficiency=1 / dri_electricity_input["H2"],
-                    efficiency2=-fuel_input["H2"] / dri_electricity_input["H2"],
+                    efficiency=1 / fuel_input["H2"],
                     lifetime = DRI_lifetimes["H2"],
                 )
 
@@ -6797,7 +6798,6 @@ def add_import_options(
             marginal_cost=import_options["H2"],
         )
 
-
 def scale_UK_gas_network(n):
     # The data for gas network in UK has some deficiencies, as some interconnections 
     # with countries are underestimated. One prominent example is the gas import from Norway to UK.
@@ -7154,7 +7154,7 @@ if __name__ == "__main__":
         onshore = snakemake.input.regions_onshore
         offshore = snakemake.input.regions_offshore
         add_UK_gas_storage_data(n, onshore, offshore)
-
+        
     # check if uk_settings["uk_scale_up_offwind_potential"] is a number
     factor = uk_settings.get("uk_scale_up_offwind_potential", None)
     if isinstance(factor, (int, float)):

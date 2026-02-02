@@ -57,7 +57,8 @@ def add_brownfield(
     # electric transmission grid set optimised capacities of previous as minimum
     n.lines.s_nom_min = n_p.lines.s_nom_opt
     dc_i = n.links[n.links.carrier == "DC"].index
-    n.links.loc[dc_i, "p_nom_min"] = n_p.links.loc[dc_i, "p_nom_opt"]
+    dc_i_intersect = dc_i.intersection(n_p.links.index)
+    n.links.loc[dc_i_intersect, "p_nom_min"] = n_p.links.loc[dc_i_intersect, "p_nom_opt"]
 
     for c in n_p.iterate_components(["Link", "Generator", "Store"]):
         attr = "e" if c.name == "Store" else "p"
@@ -173,8 +174,8 @@ def add_planned_generation_capacities(n, year):
     # Read data with planned power plants under construction
     df_OIM_pp_uc = pd.read_csv("data/data_UK/uk_powerplants_cleaned_under_construction.csv")
     df_OIM_pp_uc.Technology = df_OIM_pp_uc.Technology.replace({"Natural Gas": "CCGT",
-                                                            "biomass": "urban central solid biomass CHP",
-                                                            "offwind-ac": "offwind-dc"}) # assumption: new offshore wind farms are DC-connected
+                                                                "biomass": "urban central solid biomass CHP",
+                                                                "offwind-ac": "offwind-dc"}) # assumption: new offshore wind farms are DC-connected
 
     # Add planned capacities to network
     planning_horizon = snakemake.config["scenario"]["planning_horizons"]
@@ -188,50 +189,99 @@ def add_planned_generation_capacities(n, year):
         # group by bus 
         df_tech_in_grouped = df_tech_in.groupby("bus").agg({"Capacity": "sum"})
 
-        if tech in ["onwind", "offwind-dc", "solar"]:    
+        if df_tech_in_grouped["Capacity"].sum() == 0:
+            continue
+
+        capacity_added = df_tech_in_grouped["Capacity"].sum()
+        print(tech, capacity_added, " will be added")
+
+        if tech in ["onwind", "offwind-dc", "offwind-ac", "solar", "solar rooftop"]:    
             # We need to treat renewables separately, as they are included at different resource classes, representing 
             # different resource quality and thus different capacity factors. Each level has its own p_nom_max. We will 
             # thus need to distribute the planned capacity over the different resource levels.
 
-            res_level = 0
+            tech_already_added = False
+            resource_classes = 4 - 1 # snakemake.config["renewable_resources"]["resource_classes"] - 1# we assume planned capacities are deployed at the resource-abundant regions first
+            res_levels = range(resource_classes, -1, -1)
+
+            res_level = res_levels[0]
             df_tech_in_grouped_index = df_tech_in_grouped.index
             df_tech_in_grouped.index = df_tech_in_grouped_index + f" {res_level} " + tech + "-" + str(year)
 
-            while (df_tech_in_grouped["Capacity"] > n.generators.loc[df_tech_in_grouped.index].p_nom_max).any() and res_level <= 3:
+            planned_capacity= df_tech_in_grouped["Capacity"].copy()
 
-                p_nom_max = n.generators.loc[df_tech_in_grouped.index, "p_nom_max"].values
+            stop = False
+            i = 0
+            while not stop:
 
-                if res_level != 3:
-                    n.generators.loc[df_tech_in_grouped.index, "p_nom_min"] = p_nom_max
-                    df_tech_in_grouped["Capacity"] = df_tech_in_grouped["Capacity"] - p_nom_max
-                    df_tech_in_grouped.loc[df_tech_in_grouped["Capacity"] < 0, "Capacity"] = 0
+                p_nom_max = n.generators.loc[planned_capacity.index, "p_nom_max"]
 
-                    res_level += 1
-                    df_tech_in_grouped.index = df_tech_in_grouped_index + f" {res_level} " + tech + "-" + str(year)
-                    print("increased res level to ", res_level, " for technology ", tech)
+                # First, check if planned capaity exceeds the estimated technical potential
+                if (planned_capacity > p_nom_max).any() and tech not in ["offwind-dc", "offwind-ac", "offwind"]: # make exception for offshore wind as we assume all planned capacity can be added at most abundant resource level
+                    
+                    if res_level < res_levels[0]:
+                        print("Planned capacity still exceeds technical potential at resource level ", res_level, " for technology ", tech)
 
-                elif res_level == 3:
-                    for idx in df_tech_in_grouped["Capacity"].index:
+                    tech_already_added = True
 
-                        p_nom_max_n = n.generators.loc[idx, "p_nom_max"]
+                    if res_level != 0:
 
-                        if df_tech_in_grouped.loc[idx, "Capacity"] > p_nom_max_n:
+                        for idx in planned_capacity.index:
+                            
+                            p_nom_max_n = n.generators.loc[idx, "p_nom_max"]
+
+                            if planned_capacity.loc[idx] > p_nom_max_n:
+                                p_nom_max_df = planned_capacity.loc[idx]
+                                n.generators.loc[idx, "p_nom_max"] = p_nom_max_df
+                                n.generators.loc[idx, "p_nom_min"] = p_nom_max_df
+                                planned_capacity.loc[idx] = planned_capacity.loc[idx] - p_nom_max_n if planned_capacity.loc[idx] - p_nom_max_n > 0 else 0
+
+                            else:
+                                n.generators.loc[idx, "p_nom_min"] = planned_capacity.loc[idx]
+
+                        i += 1
+                        res_level = res_levels[i]
+                        planned_capacity.index = df_tech_in_grouped_index + f" {res_level} " + tech + "-" + str(year)
+
+                    elif res_level == 0:
+                        for idx in planned_capacity.index:
+                            p_nom_max_n = n.generators.loc[idx, "p_nom_max"]
+                            if planned_capacity.loc[idx] > p_nom_max_n:
+                                p_nom_max_df = planned_capacity.loc[idx]
+                                n.generators.loc[idx, "p_nom_max"] = p_nom_max_df
+                            
+                            n.generators.loc[idx, "p_nom_min"] = p_nom_max_df
+
+                        stop = True
                         
-                            p_nom_max_df = df_tech_in_grouped.loc[idx, "Capacity"]
-                            print("Increased p_nom_max from ", p_nom_max_n, " to ", p_nom_max_df, " for ", idx)
+                elif not tech_already_added:
+                    n.generators.loc[planned_capacity.index, "p_nom_min"] = planned_capacity.values
 
-                            n.generators.loc[idx, "p_nom_max"] = p_nom_max_df
-                        
-                        n.generators.loc[idx, "p_nom_min"] = p_nom_max_df
+                    # Adjust p_nom_max if planned capacity exceeds it (only for offshore wind)
+                    if tech in ["offwind-dc", "offwind-ac"] and (planned_capacity > p_nom_max).any():
+                        for idx in planned_capacity.index:
+                            p_nom_max_new = planned_capacity.loc[idx]
+                            p_nom_max_old = n.generators.loc[idx, "p_nom_max"]
+                            if p_nom_max_new > p_nom_max_old:
+                                n.generators.loc[idx, "p_nom_max"] = p_nom_max_new
 
-                    res_level += 1
+                    stop = True
+
+                else:
+                    print("For", tech, ", total planned capacity added: ", capacity_added, " MW in resource level , stopped at ", res_levels[i-1])
+                    stop = True
+                    
 
         elif tech in ["CCGT", 
-                      "nuclear", 
-                      "urban central solid biomass CHP"
-                     ]:
-            df_tech_in_grouped.index = df_tech_in_grouped.index + " " + tech + "-" + str(year)
-            n.links.loc[df_tech_in_grouped.index, "p_nom_min"] = df_tech_in_grouped["Capacity"].values
+                        "nuclear", 
+                        "urban central solid biomass CHP"
+                        ]:
+            
+            planned_capacity = df_tech_in_grouped["Capacity"].copy()
+            planned_capacity.index = planned_capacity.index + " " + tech + "-" + str(year)
+            n.links.loc[planned_capacity.index, "p_nom_min"] = planned_capacity.values
+
+            print("For", tech, ", total planned capacity added: ", capacity_added, " MW")
 
 def add_planned_storage_capacities(n, year):
     """

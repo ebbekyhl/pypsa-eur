@@ -311,6 +311,8 @@ def define_spatial(nodes, options):
         spatial.oil.agriculture_machinery = ["EU agriculture machinery oil"]
         spatial.oil.land_transport = ["EU land transport oil"]
 
+    spatial.oil.non_sequestered_hvc.df = pd.DataFrame(vars(spatial.oil.non_sequestered_hvc), index=nodes)
+
     # uranium
     spatial.uranium = SimpleNamespace()
     spatial.uranium.nodes = ["EU uranium"]
@@ -4872,7 +4874,7 @@ def add_industry(
             logger.info(f"For {fuel}, adding {p_nom} of capacities.")
 
             if fuel == "H2":
-                marginal_cost = DRI_commodity * DRI_ore_input["H2"] / dri_electricity_input["H2"]
+                marginal_cost = DRI_commodity * DRI_ore_input["H2"] / fuel_input["H2"]
                 n.madd(
                     "Link",
                     nodes,

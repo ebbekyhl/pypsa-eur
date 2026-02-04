@@ -908,7 +908,12 @@ def add_power_capacities_installed_before_baseyear(
                         lifetime=lifetime_assets_new_capacity,
                     )
                 else:
-                    key = "central solid biomass CHP"
+                    spatial_dic = {"urban central solid biomass CHP": spatial.biomass.df.loc[new_capacity.index]["nodes"].values,
+                                    "urban central biogas CHP": spatial.biomass.df.loc[new_capacity.index]["nodes"].values,
+                                    "urban central gas CHP": spatial.gas.df.loc[new_capacity.index]["nodes"].values,
+                                    "waste CHP":  spatial.oil.non_sequestered_hvc.df.loc[new_capacity.index]["nodes"].values}
+                    
+                    key = "central solid biomass CHP" # for cost technology lookup, we assume the same cost as for biomass CHP
                     central_heat = n.buses.query(
                         "carrier == 'urban central heat'"
                     ).location.unique()
@@ -920,7 +925,7 @@ def add_power_capacities_installed_before_baseyear(
                         "Link",
                         new_capacity.index,
                         suffix=name_suffix,
-                        bus0=spatial.biomass.df.loc[new_capacity.index]["nodes"].values,
+                        bus0=spatial_dic[generator],
                         bus1=new_capacity.index,
                         bus2=heat_buses,
                         carrier=generator,

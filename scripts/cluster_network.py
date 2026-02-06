@@ -97,45 +97,41 @@ GEO_CRS = "EPSG:4326"
 DISTANCE_CRS = "EPSG:3035"
 BUS_TOL = 500  # meters
 
+central_england_short = ["GBH11", "GBH12", "GBH21", "GBH23","GBH24", "GBF24", "GBF25", "GBJ14", "GBJ37"]
 scotland_short = "GBM"
 north_west_short = "GBD"
 north_east_yorkshire_humber_short = ["GBC", "GBE"]
-east_midland_short = "GBF"
+east_midland_short = ["GBE13", "GBF"]
 west_midland_short = "GBG"
 east_short = "GBH"
-central_england_short = "GBJ1"
 south_east_short = "GBJ"
 south_west_short = "GBK"
 wales_cymru_short = "GBL"
 greater_london_short = "GBI"
 north_ireland_short = "GBN"
 
-dct1 = {"GB scotland": scotland_short, 
+dct1 = {
+        "GB central england": central_england_short, 
+        "GB east midland": east_midland_short, 
+        "GB scotland": scotland_short, 
         "GB north west": north_west_short, 
         "GB north east yorkshire humber": north_east_yorkshire_humber_short, 
-        "GB east midland": east_midland_short, 
         "GB west midland": west_midland_short, 
-        "GB east": east_short, 
-        "GB central england": central_england_short, 
+        "GB east": east_short,
         "GB south east": south_east_short, 
         "GB south west": south_west_short, 
         "GB wales cymru": wales_cymru_short, 
         "GB greater london": greater_london_short,
-        "GB north ireland": north_ireland_short}
+        "GB north ireland": north_ireland_short
+        }
 
-dct1_rev = {'GBM': 'GB scotland',
-                'GBD': 'GB north west',
-                'GBC': 'GB north east yorkshire humber',
-                'GBE': 'GB north east yorkshire humber',
-                'GBF': 'GB east midland',
-                'GBG': 'GB west midland',
-                'GBH': 'GB east',
-                'GBJ1': 'GB central england',
-                'GBJ': 'GB south east',
-                'GBK': 'GB south west',
-                'GBL': 'GB wales cymru',
-                'GBI': 'GB greater london',
-                'GBN': 'GB north ireland'}
+dct1_rev = {}
+for region, codes in dct1.items():
+    if isinstance(codes, list):
+        for code in codes:
+            dct1_rev[code] = region
+    else:
+        dct1_rev[codes] = region
 
 def create_neighbors_matrix(regions):
     neighbors_dct = {}
@@ -230,7 +226,7 @@ def collect_small_regions(regions, neighbors_dct):
 
 def merge_small_regions(regions, regions_post, neighbors_dct):
 
-    logger.info(f"Number of regions after merging step: {len(regions_post['admin1'].unique())}")
+    # logger.info(f"Number of regions after merging step: {len(regions_post['admin1'].unique())}")
     
     for a1 in regions_post["admin1"].unique():
         regions_post_a1 = regions_post.query("admin1 == @a1")
@@ -248,8 +244,14 @@ def merge_small_regions(regions, regions_post, neighbors_dct):
 
         elif len(regions_post_a1) == 1 and regions_post_a1["colors"].values[0] == 1:
 
-            number_of_small_neighbors = regions.loc[neighbors_dct[dct1_rev[a1[0:3]]].loc[a1].dropna().index]["colors"].sum()
+            try: 
+                dct1_rev_a1 = dct1_rev[a1[0:5]]
 
+            except:
+                dct1_rev_a1 = dct1_rev[a1[0:3]]
+                
+            number_of_small_neighbors = regions.loc[neighbors_dct[dct1_rev_a1].loc[a1].dropna().index]["colors"].sum()
+            
             if number_of_small_neighbors > 0:
                 print(f"Region {a1} is small, it has {number_of_small_neighbors} small neighbors, and was for some reason not merged.")
 
@@ -273,17 +275,30 @@ def aggregate_small_admin_subregions(admin_shapes_all, area_threshold, country =
     admin_shapes_size.loc[admin_shapes_size > area_threshold] = 0
 
     admin_shapes["colors"] = admin_shapes_size
+    admin_shapes_new = admin_shapes.copy()
 
     for key, value in dct1.items():
-        
-        if type(value) == str:
+
+        if key in ['GB central england', 'GB east midland']:
+            admin_key = pd.concat([admin_shapes.query("contains.str.contains(@value[@i])") for i in range(len(value))]).drop_duplicates()
+        elif type(value) == str:
             admin_key = admin_shapes.loc[admin_shapes.index.str.startswith(value)]
         else:
             admin_key = admin_shapes.loc[admin_shapes.index.str.startswith(value[0]) | admin_shapes.index.str.contains(value[1])]
 
-        admin_shapes.loc[admin_key.index, "admin"] = key
+        if "admin" in admin_shapes_new.columns:
+            condition = admin_shapes_new.loc[admin_key.index, "admin"].isna()
+            if condition.any():
+                indices_to_replace = admin_shapes_new.loc[admin_key.index].loc[condition].index
+            else:
+                continue
+        else:
+            indices_to_replace = admin_key.index
 
-    admin_shapes_update = admin_shapes.copy()
+        admin_shapes_new.loc[indices_to_replace, "admin"] = key
+
+    admin_shapes_update = admin_shapes_new.copy()
+    logger.info(f"Colors sum: {admin_shapes_update['colors'].sum()}")
     i = 0
     while admin_shapes_update["colors"].sum() > 3 and i < 10:
         # create neighbor matrix
@@ -303,6 +318,10 @@ def aggregate_small_admin_subregions(admin_shapes_all, area_threshold, country =
         admin_shapes_update["colors"] = admin_shapes_size
 
         i += 1
+
+    # print admin_shapes_update
+    logger.info(f"admin_shapes_update columns: {admin_shapes_update.columns}")
+    logger.info(f"admin_shapes_update admin: {admin_shapes_update.admin.unique()}")
 
     admin_shapes_update.drop(columns=["size", "colors","admin", "admin1"], inplace=True)
 

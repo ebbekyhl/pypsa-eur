@@ -97,7 +97,7 @@ GEO_CRS = "EPSG:4326"
 DISTANCE_CRS = "EPSG:3035"
 BUS_TOL = 500  # meters
 
-central_england_short = ["GBH11", "GBH12", "GBH21", "GBH23","GBH24", "GBF24", "GBF25", "GBJ14", "GBJ37"]
+central_england_short = ["GBH11", "GBH12", "GBH21", "GBH23","GBH24", "GBF24", "GBF25", "GBJ14", "GBJ11", "GBH25"]
 scotland_short = "GBM"
 north_west_short = "GBD"
 north_east_yorkshire_humber_short = ["GBC", "GBE"]

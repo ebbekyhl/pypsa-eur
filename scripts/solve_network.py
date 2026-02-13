@@ -620,6 +620,46 @@ def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
         name="collective co2 emissions constraint",
     )
 
+def add_local_co2_constraint_expression(n: pypsa.Network, local_co2: dict) -> None:
+    """
+    This function adds local CO2 emissions constraints for each country specified 
+    in the dictionary "local_co2" in the config file.
+    """
+    co2_totals_file = snakemake.input.co2_totals
+    co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0) # convert Mt to tCO2
+
+    options = snakemake.params.sector
+    sectors = determine_emission_sectors(options)
+    nhours = n.snapshot_weightings.generators.sum()
+    nyears = nhours / 8760
+
+    year = int(snakemake.wildcards.planning_horizons)
+    countries = local_co2.keys()
+
+    expr = n.optimize.expressions.energy_balance(
+                                                bus_carrier="co2",
+                                                groupby=False
+                                                )
+
+    for country in countries:
+        # CO2 allowance
+        limit = local_co2[country][year]
+        logger.info("Individual CO2 emissions limit relative to 1990 :", limit)
+        co2_1990 = co2_totals.loc[country, sectors].sum() # tCO2 emissions per year
+        net_co2_allowance = co2_1990 * limit * nyears
+        logger.info("CO2 emissions allowance for " + country + " :", net_co2_allowance)
+
+        # Add expression containing all CO2 variables attached to country
+        uk_expr_0 = expr.sel(Link=expr.coords["Link"].str.contains(country)).sel(group = 0)
+
+        lhs = uk_expr_0.sum()
+        rhs = net_co2_allowance
+
+        n.model.add_constraints(
+            lhs <= rhs,
+            name="local co2 emissions constraint " + country ,
+        )
+
 def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
     """
     This function adds local CO2 emissions constraints for each country specified 

@@ -92,37 +92,39 @@ countries:
 # - DME (no - not yet included)
 
 uk_settings:
-  uk_only: false # whether study is for UK only. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
-  uk_energy_balance_year: 2019 # year for UK energy balance data (from ECUK)
-  uk_demand_year: 2019 # whether to use specific year for UK electricity demand data
-  uk_new_gas_storage_data: true # whether to use new UK gas storage data
-  uk_new_powerplants_data: true # whether to use new UK powerplant data from OpenStreetMap  
-  uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov
-  uk_scale_up_offwind_potential: 2 # to align with UK government's ambitious offshore wind targets, increase the offshore wind potential in the UK waters by given factor 
-  uk_fixed_electricity_generation_mix: true # to align the base year with historical levels of generation mix
-  uk_brownfield_minimum_capacity_factors: false # minimum capacity factors of brownfield capacities for the base year to approximate historical power mix
-    # CCGT: 0.5 # https://wattdirection.substack.com/p/uk-combined-cycle-gas-power-stations-748
-    # nuclear: 0.7 # https://assets.publishing.service.gov.uk/media/5a75a748e5274a545822d2b9/Nuclear_Capacity_in_the_UK.pdf 
-  uk_build_out_rates: false # in MW
-    # heatpump: 1000 # heat pumps in MW_th (only applies to 2025 base year for calibration purpose) [MW / year]
-    # onwind: 1000 # onshore wind [MW / year]
-    # offwind: 1000 # offshore wind (including AC, DC, floating) [MW / year]
-    # solar: 1000 # utility scale PV [MW / year]
-    # solar-rooftop: 1000 # rooftop PV [MW / year]
+  # New data sources for UK
+  uk_energy_balance_year: 2024 # year for UK energy balance data (ECUK)
+  uk_electricity_demand_year: 2024 # whether to use specific year for UK electricity demand data (NESO)
+  uk_new_gas_storage_data: true # whether to use new UK gas storage data (various sources)
+  uk_new_powerplants_data: true # whether to use new UK powerplant data (OpenStreetMap)  
+  uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov (DUKES)
+  
+  # For calibration purpose:
+  uk_scale_up_offwind_potential: 2 # to align with UK government's ambitious offshore wind targets, we increase the estimated offshore wind potential in the UK by 2
+  uk_freeze_base_year_capacities: true # only in the base year: if true, only brownfield capacities are allowed in the UK, i.e., disallowing capacity expansion. 
+  uk_load_shedding: true # only in the base year: if true, load shedding is enabled
 
-    # Further UK settings not listed here but are included further down: 
-    # - Limit on fuel imports (see L. )
-    # - CO2 emissions targets (see L. )
-    # - District heating potential (see L. )
- 
-# other settings relevant
-# - demand response / price elasticity
-# - storage portfolio
+  # In the process of calibrating the model, we have also tested the following options, again only applied on UK in the base year:
+  uk_fixed_electricity_generation_mix: false # fix electricity generation mix to historical levels
+  uk_brownfield_minimum_capacity_factors: false # minimum capacity factors of brownfield capacities 
+
+  # Other settings
+  uk_build_out_rates: false # limit the deployment of certain technologies [MW / year] to represent realistic build-out rates in the UK
+  uk_only: false # whether the study is intended to only include the UK. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
+
+  # Further UK assumptions not listed here but are included further down: 
+  # - CO2 emissions targets: search for "local_co2:"
+  # - District heating potential: search for "sector:", then "district_heating:", then "potential" 
+  # - Land transport, EV shares: search for "land_transport:", then "land_transport_electric_share:"
 
 # Long-duration energy storage technologies
 LDES:
   technologies:
   - redox flow battery
+  # fischer tropsch fuels 
+  # ammonia
+  # liquid air energy storage
+  # molten salt thermal storage
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:
@@ -253,7 +255,7 @@ renewable:
       turbine: Vestas_V112_3MW
       smooth: false
       add_cutout_windspeed: true
-    resource_classes: 4
+    resource_classes: 1
     capacity_per_sqkm: 3
     # correction_factor: 0.93
     corine:
@@ -274,7 +276,7 @@ renewable:
       turbine: NREL_ReferenceTurbine_2020ATB_5.5MW
       smooth: false
       add_cutout_windspeed: true
-    resource_classes: 4
+    resource_classes: 1
     capacity_per_sqkm: 2
     correction_factor: 0.8855
     corine: [44, 255]
@@ -293,7 +295,7 @@ renewable:
       turbine: NREL_ReferenceTurbine_2020ATB_5.5MW
       smooth: false
       add_cutout_windspeed: true
-    resource_classes: 4
+    resource_classes: 1
     capacity_per_sqkm: 2
     correction_factor: 0.8855
     corine: [44, 255]
@@ -312,7 +314,7 @@ renewable:
       turbine: NREL_ReferenceTurbine_5MW_offshore
       smooth: false
       add_cutout_windspeed: true
-    resource_classes: 4
+    resource_classes: 1
     # ScholzPhd Tab 4.3.1: 10MW/km^2
     capacity_per_sqkm: 2
     correction_factor: 0.8855
@@ -335,7 +337,7 @@ renewable:
       orientation:
         slope: 35.
         azimuth: 180.
-    resource_classes: 4
+    resource_classes: 1
     capacity_per_sqkm: 5.1
     # correction_factor: 0.854337
     corine: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 26, 31, 32]
@@ -352,7 +354,7 @@ renewable:
         slope: 35.
         azimuth: 180.
       tracking: horizontal
-    resource_classes: 4
+    resource_classes: 1
     capacity_per_sqkm: 4.43 # 15% higher land usage acc. to NREL
     corine: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 26, 31, 32]
     luisa: false # [1111, 1121, 1122, 1123, 1130, 1210, 1221, 1222, 1230, 1241, 1242, 1310, 1320, 1330, 1410, 1421, 1422, 2110, 2120, 2130, 2210, 2220, 2230, 2310, 2410, 2420, 3210, 3320, 3330]
@@ -805,7 +807,7 @@ sector:
     biomass_to_methanol_cc: true 
     biogas_to_methanol: true 
   replace_medium_heat: false
-  ammonia: true
+  ammonia: regional
   min_part_load_fischer_tropsch: 0.5
   min_part_load_methanolisation: 0.3
   min_part_load_methanation: 0.3
@@ -1030,13 +1032,25 @@ costs:
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#clustering
 clustering:
-  mode: administrative_mixed
-  area_threshold: 10000 # km2
-  group_clusters:
-    - Northern Ireland
+  mode: busmap
+  area_threshold: 1000000 # km2
+  group_clusters: false
+    # - GBNI # force listed regions to have only one node
   administrative:
     GB: 3
-  focus_weights: false
+  focus_weights:
+    GBCE: 0.083
+    GBEM: 0.083
+    GBSC: 0.083
+    GBNW: 0.083
+    GBNE: 0.083
+    GBWM: 0.083
+    GBEA: 0.083
+    GBSE: 0.083
+    GBSW: 0.083
+    GBCY: 0.083
+    GBGL: 0.083
+    GBNI: 0.083
   copperplate_regions: []
   build_bidding_zones:
     remove_islands: true
@@ -1047,6 +1061,13 @@ clustering:
     remove_stubs_across_borders: false
   cluster_network:
     algorithm: kmeans
+    subregions:
+      GB:
+        geojson: "data/data_UK/RESP_regions.geojson"
+        id_field: "name"                 # property/column in geojson features
+        allocation_method: "load"        # "load" | "buses" | "equal"
+        min_clusters_per_subregion: 1
+        on_unassigned: "nearest"         # "nearest" | "error"
     hac_features:
     - wnd100m
     - influx_direct
@@ -1197,6 +1218,6 @@ solving:
     atol: 1_000_000
     rtol: 0.01
 
-  mem_mb: 150000 # 110000 for 3-hourly fully sector-coupled
+  mem_mb: 15000 # 110000 for 3-hourly fully sector-coupled
   memory_logging_frequency: 5 # in seconds
   runtime: 48h #runtime in humanfriendly style https://humanfriendly.readthedocs.io/en/latest/

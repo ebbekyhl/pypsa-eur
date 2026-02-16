@@ -82,6 +82,7 @@ rule base_network:
         links=config_provider("links"),
         transformers=config_provider("transformers"),
         clustering=config_provider("clustering", "mode"),
+        cluster_network=config_provider("clustering", "cluster_network"),
         admin_levels=config_provider("clustering", "administrative"),
     input:
         unpack(input_base_network),

@@ -262,7 +262,7 @@ def merge_small_regions(regions, regions_post, neighbors_dct):
 
 def aggregate_small_admin_subregions(admin_shapes_all, area_threshold, country = "GB"):
 
-    admin_shapes_all = admin_shapes_all.to_crs(epsg=3035)
+    admin_shapes_all = admin_shapes_all.to_crs(DISTANCE_CRS)
 
     admin_shapes = admin_shapes_all.query("country == @country")
     admin_shapes_c_index = admin_shapes.index
@@ -331,52 +331,45 @@ def aggregate_small_admin_subregions(admin_shapes_all, area_threshold, country =
     # add new admin regions for country
     admin_shapes_all = pd.concat([admin_shapes_all, admin_shapes_update])
 
-    return admin_shapes_all
+    return admin_shapes_all.to_crs(GEO_CRS)
 
-def group_clusters(n, country):
+def group_clusters(n, region):
     """
-    Group the buses in a country to one bus.
+    Group the buses in a region to one bus.
 
     Parameters
     ----------
     n : pypsa.Network
         The PyPSA network to modify.
-    country : str
-        The country code (e.g. 'GB', 'IE') for which to correct the clusters.
+    region : str
+        The region code (e.g. 'GBNI', 'IE') for which to correct the clusters.
     """
-
-    if country == "Northern Ireland":
-        # get the buses in Northern Ireland (filter based on coordinates)
-        ni_buses = n.buses[n.buses.country == 'GB'] 
-        ni_buses = ni_buses[(ni_buses.x < -5.3) & (ni_buses.x > -8.2)]
-        ni_buses = ni_buses[(ni_buses.y > 53.9) & (ni_buses.y < 55.3)]
-    else:
-        ni_buses = n.buses[n.buses.country == country]
+    ni_buses = n.buses.query("index.str.startswith(@region)")
 
     ni_bus_name = 'new_bus' # temporary name for country bus
 
     # add new bus for country
     n.add("Bus", 
             ni_bus_name, 
-            country=country if country != "Northern Ireland" else "GB", 
+            country=region[0:2], 
             v_nom=380.0,
             x=ni_buses.x.mean(), 
             y=ni_buses.y.mean())
 
     # drop remaining buses in country and replace with new bus
     n.buses = n.buses.drop(ni_buses.index)
-    new_bus = ni_buses.index.str[0:3][0] + " 0"  # e.g. "GB3 0"
+    new_bus = region + " 0"  # e.g. "GBNI 0"
     buses_copy = n.buses.copy()
     buses_copy.rename({ni_bus_name: new_bus}, inplace=True)
     n.buses = buses_copy
 
-    # drop internal lines in country
+    # drop internal lines within listed region
     lines_country = n.lines.loc[n.lines.bus1.isin(ni_buses.index)]
     lines_country_0 = n.lines.loc[n.lines.bus0.isin(ni_buses.index)]
     lines_country_1 = lines_country_0.loc[lines_country_0.bus1.isin(ni_buses.index)]
     n.lines = n.lines.drop(lines_country_1.index)
 
-    # rename bus0 and bus1 on interconnections with Northern Ireland
+    # rename bus0 and bus1 on interconnections
     for line in n.lines.itertuples():
         if line.bus0 in ni_buses.index:
             n.lines.at[line.Index, 'bus0'] = new_bus
@@ -719,6 +712,7 @@ def make_country_subregion_labels(
       - NaN for other buses
     """
     shapes = gpd.read_file(subregions_geojson)
+    shapes.to_crs(GEO_CRS, inplace=True)
 
     if id_field not in shapes.columns:
         raise ValueError(
@@ -1119,6 +1113,63 @@ def update_bus_coordinates(
 
     n.buses = buses
 
+def temporarily_split_countries_into_subcountries(
+    n: pypsa.Network,
+    split_cfg: dict,
+) -> pd.Series:
+    """
+    Temporarily overwrite n.buses.country for selected countries
+    using subregion polygons defined in split_cfg.
+
+    Returns a copy of the original country Series for restoration.
+    """
+    original_country = n.buses.country.copy()
+
+    for country, cfg in split_cfg.items():
+
+        shapes = gpd.read_file(cfg["geojson"])
+        if shapes.crs is None:
+            shapes = shapes.set_crs(GEO_CRS)
+
+        id_field = cfg.get("id_field", "name")
+
+        if id_field not in shapes.columns:
+            raise ValueError(
+                f"{country} geojson missing id_field='{id_field}'. "
+                f"Columns: {list(shapes.columns)}"
+            )
+
+        shapes[id_field] = shapes[id_field].astype(str).str.strip()
+
+        if shapes[id_field].isna().any() or (shapes[id_field] == "").any():
+            raise ValueError(
+                f"{country} geojson has missing/blank '{id_field}' values."
+            )
+
+        # Select buses in this country
+        buses_c = n.buses[n.buses.country == country][["x", "y", "country"]].copy()
+
+        if buses_c.empty:
+            continue
+
+        # Assign each bus to subregion
+        subregion_for_bus = busmap_from_shapes(
+            n,
+            shapes,
+            buses=buses_c,
+            cluster_names=id_field,
+            per_country=False,
+        )
+
+        if subregion_for_bus.isna().any():
+            missing = subregion_for_bus.index[subregion_for_bus.isna()].tolist()[:10]
+            raise ValueError(
+                f"Some buses in {country} were not assigned to any subregion. "
+                f"Sample: {missing}"
+            )
+
+        # Overwrite country column with subregion IDs
+        n.buses.loc[buses_c.index, "country"] = subregion_for_bus.astype(str).values
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -1275,6 +1326,10 @@ if __name__ == "__main__":
             if algorithm == "hac":
                 features = get_feature_data_for_hac(snakemake.input.hac_features)
                 fix_country_assignment_for_hac(n)
+
+            cluster_subregions = params.cluster_network.get("subregions", {})
+            if cluster_subregions:
+                temporarily_split_countries_into_subcountries(n, cluster_subregions)
 
             n.determine_network_topology()
 
@@ -1441,9 +1496,9 @@ if __name__ == "__main__":
     busmap_clustering = clustering.busmap.copy()
     # group clusters in country
     if params.group_clusters:
-        group_countries = params.group_clusters
-        for country in group_countries:
-            country_bus, nc = group_clusters(nc, country)
+        group_regions = params.group_clusters
+        for gr in group_regions:
+            country_bus, nc = group_clusters(nc, gr)
             busmap_clustering = correct_busmap(busmap_clustering, country_bus)
         
     busmap_clustering.index.name = "Bus"
@@ -1456,6 +1511,7 @@ if __name__ == "__main__":
         clustered_regions.to_file(snakemake.output[which])
         # append_bus_shapes(nc, clustered_regions, type=which.split("_")[1])
 
+    nc.buses.country = nc.buses.country.str[0:2]
     nc.export_to_netcdf(snakemake.output.network)
 
     logger.info(

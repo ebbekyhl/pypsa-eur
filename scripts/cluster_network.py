@@ -1333,6 +1333,16 @@ if __name__ == "__main__":
 
             n.determine_network_topology()
 
+            # --- DEBUG SAFETY CHECK ---
+            if n.buses["sub_network"].isna().any():
+                missing = n.buses.index[n.buses["sub_network"].isna()]
+                raise ValueError(
+                    f"{len(missing)} buses have NaN sub_network "
+                    f"(e.g. {missing[:10].tolist()})."
+                )
+            # --------------------------
+
+            # 1) Country allocation (unchanged)
             n_clusters_c = distribute_n_clusters_to_countries(
                 n,
                 n_clusters,
@@ -1341,13 +1351,131 @@ if __name__ == "__main__":
                 solver_name=solver_name,
             )
 
-            busmap = busmap_for_n_clusters(
+            # 2) Default grouping is country for everyone
+            # bus_groups = n.buses.country.astype(str).copy()
+            bus_groups = n.buses.country.astype("object").copy()
+            bus_groups = bus_groups.fillna(n.buses.country.fillna("NA")).fillna("NA")
+
+            # 3) Optional: apply subregions for configured countries (e.g. GB)
+            subcfg = params.cluster_network.get("subregions", {})
+            if subcfg:
+                for ccode, cfg in subcfg.items():
+                    logger.info(f"Applying subregion constraints for {ccode}")
+
+                    regions_c = make_country_subregion_labels(
+                        n,
+                        country=ccode,
+                        subregions_geojson=cfg["geojson"],
+                        id_field=cfg.get("id_field", "name"),
+                        on_unassigned=cfg.get("on_unassigned", "nearest"),
+                    )
+
+                    # overwrite grouping for that country only
+                    bus_groups.loc[regions_c.index] = regions_c
+
+            bus_groups = bus_groups.fillna("NA")
+
+            # 4) Build group-level cluster counts (region, sub_network)
+            # Start by expanding the existing country counts into (country, sub_network)
+            n_clusters_g = n_clusters_c.copy()
+            n_clusters_g.index = pd.MultiIndex.from_tuples(
+                [(c, sn) for (c, sn) in n_clusters_c.index],
+                names=["region", "sub_network"],
+            )
+
+            # For each country with subregions, replace its entries with split-by-subregion entries
+            if subcfg:
+                for ccode, cfg in subcfg.items():
+                    method = cfg.get("allocation_method", "load")
+                    min_k = int(cfg.get("min_clusters_per_subregion", 1))
+
+                    # Which buses are in that country and what subregion they belong to
+                    buses_c = n.buses[n.buses.country == ccode].index
+                    regions_c = bus_groups.loc[buses_c]  # values like "GB:Something"
+
+                    # For each sub_network inside the country, split separately
+                    subnets = n.buses.loc[buses_c, "sub_network"].unique()
+
+                    # Remove the old country-level rows (ccode, sub_network)
+                    drop_idx = [(ccode, sn) for sn in subnets if (ccode, sn) in n_clusters_c.index]
+                    n_clusters_g = n_clusters_g.drop(index=drop_idx, errors="ignore")
+
+                    for sn in subnets:
+                        k_country = int(n_clusters_c.loc[(ccode, sn)])
+
+                        buses_cs = n.buses.loc[buses_c].query("sub_network == @sn").index
+                        regions_cs = regions_c.loc[buses_cs]
+
+                        # Determine weights per subregion
+                        if method == "load":
+                            w = load.loc[buses_cs].groupby(regions_cs).sum()
+                        elif method == "buses":
+                            w = regions_cs.value_counts()
+                        elif method == "equal":
+                            w = pd.Series(1.0, index=regions_cs.unique())
+                        else:
+                            raise ValueError(f"Unknown allocation_method='{method}'")
+
+                        # Cap minimum in case a subregion has too few buses
+                        # (a hard feasibility constraint: you can't have more clusters than buses)
+                        buses_per_region = regions_cs.value_counts()
+                        feasible_min = (buses_per_region > 0).astype(int)  # at least 1 if region has buses
+                        # We'll still apply configured min_k, but later we must ensure k <= buses.
+                        # Allocate
+                        alloc = allocate_integer_clusters(w, k_country, min_per_group=min_k)
+
+                        # Feasibility adjust: ensure alloc[r] <= buses_per_region[r]
+                        # If not, reduce and redistribute
+                        excess = 0
+                        alloc_adj = alloc.copy()
+                        logger.info(
+                        f"{ccode}/{sn}: allocated {k_country} clusters across {len(alloc_adj)} subregions. "
+                        f"min={alloc_adj.min()}, max={alloc_adj.max()}")
+                        for r in alloc.index:
+                            cap = int(buses_per_region.get(r, 0))
+                            if cap <= 0:
+                                alloc_adj[r] = 0
+                            elif alloc_adj[r] > cap:
+                                excess += int(alloc_adj[r] - cap)
+                                alloc_adj[r] = cap
+
+                        if excess > 0:
+                            # redistribute excess to regions with spare capacity
+                            spare = (buses_per_region.reindex(alloc_adj.index, fill_value=0) - alloc_adj).clip(lower=0)
+                            if spare.sum() == 0:
+                                raise ValueError(
+                                    f"Cannot redistribute {excess} excess clusters in {ccode}/{sn}; "
+                                    "all subregions are at capacity."
+                                )
+                            # redistribute one-by-one by spare (weighted)
+                            while excess > 0:
+                                candidates = spare[spare > 0].index
+                                # choose the candidate with largest spare first (deterministic)
+                                r = spare.loc[candidates].sort_values(ascending=False).index[0]
+                                alloc_adj[r] += 1
+                                spare[r] -= 1
+                                excess -= 1
+
+                        # Write back to n_clusters_g
+                        for r, k in alloc_adj.items():
+                            if k <= 0:
+                                continue
+                            n_clusters_g.loc[(r, sn)] = int(k)
+
+            logger.info(f"Final cluster counts for (region, sub_network):\n{n_clusters_g}")
+            logger.info(f"Bus groups:\n{bus_groups}")
+
+            # 5) Cluster by (region, sub_network)
+            busmap = busmap_for_n_clusters_by_bus_groups(
                 n,
-                n_clusters_c,
+                bus_groups=bus_groups,
+                n_clusters_g=n_clusters_g,
                 cluster_weights=load,
                 algorithm=algorithm,
                 features=features,
             )
+
+        busmap.to_csv("busmap_debug.csv")
 
         clustering = clustering_for_n_clusters(
             n,

@@ -697,8 +697,8 @@ def add_power_capacities_installed_before_baseyear(
     df_OIM_pp_uc = df_OIM_pp_all_w_buses.query("facility == 'power plant'").query("status == 'under construction'")
     df_OIM_storage = df_OIM_pp_all_w_buses.query("facility == 'storage'")
 
-    df_OIM_pp_uc.to_csv("data/data_UK/uk_powerplants_cleaned_under_construction.csv", index=False)
-    df_OIM_storage.to_csv("data/data_UK/uk_powerplants_cleaned_storage.csv", index=False)
+    df_OIM_pp_uc.to_csv(snakemake.output.uk_brownfield_power_plant_under_construction, index=False)
+    df_OIM_storage.to_csv(snakemake.output.uk_brownfield_storage, index=False)
 
     # get intersecting columns of df_OIM_pp_all_w_buses and powerplants
     intersecting_cols = df_OIM_pp_online.columns.intersection(df_agg.columns)
@@ -967,7 +967,7 @@ def add_storage_capacities_installed_before_baseyear(n, baseyear):
         Modified network with existing storage capacities added 
     """
     # read existing storage power plants from cleaned OIM data
-    df_OIM_storage = pd.read_csv("data/data_UK/uk_powerplants_cleaned_storage.csv")
+    df_OIM_storage = pd.read_csv(snakemake.output.uk_brownfield_storage)
 
     # only consider storage already constructed and online
     df_OIM_storage_online = df_OIM_storage.query("status == 'online'")
@@ -1398,4 +1398,4 @@ if __name__ == "__main__":
 
     sanitize_custom_columns(n)
     sanitize_carriers(n, snakemake.config)
-    n.export_to_netcdf(snakemake.output[0])
+    n.export_to_netcdf(snakemake.output.network)

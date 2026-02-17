@@ -156,7 +156,7 @@ def add_brownfield(
             n.links.loc[gas_pipes_i, "p_nom"] = remaining_capacity
             n.links.loc[gas_pipes_i, "p_nom_max"] = remaining_capacity
 
-def add_planned_generation_capacities(n, year):
+def add_planned_generation_capacities(n, year, file):
     """
     Adding planned generation capacities under construction to the network.
     This includes both renewable and conventional power plants.
@@ -172,7 +172,7 @@ def add_planned_generation_capacities(n, year):
         This function modifies the network in place and does not return a value.
     """
     # Read data with planned power plants under construction
-    df_OIM_pp_uc = pd.read_csv("data/data_UK/uk_powerplants_cleaned_under_construction.csv")
+    df_OIM_pp_uc = pd.read_csv(file)
     df_OIM_pp_uc.Technology = df_OIM_pp_uc.Technology.replace({"Natural Gas": "CCGT",
                                                                 "biomass": "urban central solid biomass CHP",
                                                                 "offwind-ac": "offwind-dc"}) # assumption: new offshore wind farms are DC-connected
@@ -201,8 +201,9 @@ def add_planned_generation_capacities(n, year):
             # thus need to distribute the planned capacity over the different resource levels.
 
             tech_already_added = False
-            resource_classes = 4 - 1 # snakemake.config["renewable_resources"]["resource_classes"] - 1# we assume planned capacities are deployed at the resource-abundant regions first
-            res_levels = range(resource_classes, -1, -1)
+            resource_classes = snakemake.config["renewable"][tech]["resource_classes"] 
+            
+            res_levels = range(resource_classes-1, -1, -1)
 
             res_level = res_levels[0]
             df_tech_in_grouped_index = df_tech_in_grouped.index
@@ -245,19 +246,20 @@ def add_planned_generation_capacities(n, year):
 
                     elif res_level == 0:
                         for idx in planned_capacity.index:
+                            n.generators.loc[idx, "p_nom_min"] = planned_capacity.loc[idx]
+
+                            # Adjust p_nom_max if planned capacity exceeds it
                             p_nom_max_n = n.generators.loc[idx, "p_nom_max"]
                             if planned_capacity.loc[idx] > p_nom_max_n:
                                 p_nom_max_df = planned_capacity.loc[idx]
                                 n.generators.loc[idx, "p_nom_max"] = p_nom_max_df
-                            
-                            n.generators.loc[idx, "p_nom_min"] = p_nom_max_df
 
                         stop = True
                         
                 elif not tech_already_added:
                     n.generators.loc[planned_capacity.index, "p_nom_min"] = planned_capacity.values
 
-                    # Adjust p_nom_max if planned capacity exceeds it (only for offshore wind)
+                    # Adjust p_nom_max if planned capacity exceeds it
                     if tech in ["offwind-dc", "offwind-ac"] and (planned_capacity > p_nom_max).any():
                         for idx in planned_capacity.index:
                             p_nom_max_new = planned_capacity.loc[idx]
@@ -283,7 +285,7 @@ def add_planned_generation_capacities(n, year):
 
             print("For", tech, ", total planned capacity added: ", capacity_added, " MW")
 
-def add_planned_storage_capacities(n, year):
+def add_planned_storage_capacities(n, year, file):
     """
     Adding planned electricity storage capacities under construction to the network.
     This includes battery storage and pumped hydro storage (PHS) power plants.
@@ -300,7 +302,7 @@ def add_planned_storage_capacities(n, year):
     """
 
     # Read cleaned data set with storage power plants 
-    df_OIM_storage = pd.read_csv("data/data_UK/uk_powerplants_cleaned_storage.csv")
+    df_OIM_storage = pd.read_csv(file)
 
     # only consider storage planned and not yet in operation
     df_OIM_storage_uc = df_OIM_storage.query("status == 'under construction'")
@@ -568,8 +570,10 @@ if __name__ == "__main__":
         capacity_threshold=snakemake.params.threshold_capacity,
     )
 
-    add_planned_generation_capacities(n, year)
-    add_planned_storage_capacities(n, year)
+    file_powerplants = snakemake.input.uk_brownfield_power_plant_under_construction
+    add_planned_generation_capacities(n, year, file_powerplants)
+    file_storage = snakemake.input.uk_brownfield_storage
+    add_planned_storage_capacities(n, year, file_storage)
 
     disable_grid_expansion_if_limit_hit(n)
 
@@ -577,4 +581,4 @@ if __name__ == "__main__":
 
     sanitize_custom_columns(n)
     sanitize_carriers(n, snakemake.config)
-    n.export_to_netcdf(snakemake.output[0])
+    n.export_to_netcdf(snakemake.output.network)

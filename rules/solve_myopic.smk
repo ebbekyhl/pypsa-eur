@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: MIT
 
-
 rule add_existing_baseyear:
     params:
         baseyear=config_provider("scenario", "planning_horizons", 0),
@@ -34,7 +33,9 @@ rule add_existing_baseyear:
         onshore_regions = resources("regions_onshore_base_s_{clusters}.geojson"),
         offshore_regions = resources("regions_offshore_base_s_{clusters}.geojson")
     output:
-        resources(
+        uk_brownfield_power_plant_under_construction = resources("uk_brownfield_cleaned_storage_{clusters}_{opts}_{sector_opts}_{planning_horizons}_under_construction"),
+        uk_brownfield_storage = resources("uk_brownfield_cleaned_storage_{clusters}_{opts}_{sector_opts}_{planning_horizons}"),
+        network = resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}_brownfield.nc"
         ),
     wildcard_constraints:
@@ -92,8 +93,10 @@ rule add_brownfield:
         network_p=solved_previous_horizon,  #solved network at previous time step
         costs=resources("costs_{planning_horizons}.csv"),
         cop_profiles=resources("cop_profiles_base_s_{clusters}_{planning_horizons}.nc"),
+        uk_brownfield_power_plant_under_construction = resources("uk_brownfield_cleaned_storage_{clusters}_{opts}_{sector_opts}_2025_under_construction"),
+        uk_brownfield_storage = resources("uk_brownfield_cleaned_storage_{clusters}_{opts}_{sector_opts}_2025"),    
     output:
-        resources(
+        network = resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}_brownfield.nc"
         ),
     threads: 4

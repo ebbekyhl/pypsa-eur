@@ -1034,8 +1034,9 @@ costs:
 clustering:
   mode: busmap
   area_threshold: 1000000 # km2
-  group_clusters: false
-    # - GBNI # force listed regions to have only one node
+  single_node_regions: # force listed regions to have only one node
+    - GBNI 
+    - GBGL
   administrative:
     GB: 3
   focus_weights:

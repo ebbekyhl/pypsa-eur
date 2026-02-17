@@ -645,6 +645,7 @@ rule cluster_network:
         administrative=config_provider("clustering", "administrative"),
         group_clusters=config_provider("clustering", "group_clusters"),
         cluster_network=config_provider("clustering", "cluster_network"),
+        single_node_regions=config_provider("clustering", "single_node_regions"),
         aggregation_strategies=config_provider(
             "clustering", "aggregation_strategies", default={}
         ),

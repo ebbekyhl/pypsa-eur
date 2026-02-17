@@ -333,61 +333,6 @@ def aggregate_small_admin_subregions(admin_shapes_all, area_threshold, country =
 
     return admin_shapes_all.to_crs(GEO_CRS)
 
-def group_clusters(n, region):
-    """
-    Group the buses in a region to one bus.
-
-    Parameters
-    ----------
-    n : pypsa.Network
-        The PyPSA network to modify.
-    region : str
-        The region code (e.g. 'GBNI', 'IE') for which to correct the clusters.
-    """
-    ni_buses = n.buses.query("index.str.startswith(@region)")
-
-    ni_bus_name = 'new_bus' # temporary name for country bus
-
-    # add new bus for country
-    n.add("Bus", 
-            ni_bus_name, 
-            country=region[0:2], 
-            v_nom=380.0,
-            x=ni_buses.x.mean(), 
-            y=ni_buses.y.mean())
-
-    # drop remaining buses in country and replace with new bus
-    n.buses = n.buses.drop(ni_buses.index)
-    new_bus = region + " 0"  # e.g. "GBNI 0"
-    buses_copy = n.buses.copy()
-    buses_copy.rename({ni_bus_name: new_bus}, inplace=True)
-    n.buses = buses_copy
-
-    # drop internal lines within listed region
-    lines_country = n.lines.loc[n.lines.bus1.isin(ni_buses.index)]
-    lines_country_0 = n.lines.loc[n.lines.bus0.isin(ni_buses.index)]
-    lines_country_1 = lines_country_0.loc[lines_country_0.bus1.isin(ni_buses.index)]
-    n.lines = n.lines.drop(lines_country_1.index)
-
-    # rename bus0 and bus1 on interconnections
-    for line in n.lines.itertuples():
-        if line.bus0 in ni_buses.index:
-            n.lines.at[line.Index, 'bus0'] = new_bus
-            print("Bus 0 changed for lines")
-        if line.bus1 in ni_buses.index:
-            n.lines.at[line.Index, 'bus1'] = new_bus
-            print("Bus 1 changed for lines")
-        
-    for link in n.links.itertuples():    
-        if link.bus0 in ni_buses.index:
-            n.links.at[link.Index, 'bus0'] = new_bus
-            print("Bus 0 changed for links")
-        if link.bus1 in ni_buses.index:
-            n.links.at[link.Index, 'bus1'] = new_bus
-            print("Bus 1 changed for links")
-
-    return new_bus, n
-
 def correct_busmap(busmap, bus):
     """
     Corrects the busmap for Northern Ireland to point to the new bus.
@@ -647,197 +592,6 @@ def distribute_n_clusters_to_countries(
         solver_name = "scip"
     m.solve(solver_name=solver_name)
     return m.solution["n"].to_series().astype(int)
-
-def allocate_integer_clusters(
-    weights: pd.Series,
-    n_total: int,
-    min_per_group: int = 0,
-) -> pd.Series:
-    """
-    Allocate n_total integer clusters across groups proportionally to weights.
-
-    - Ensures sum == n_total
-    - Enforces min_per_group where possible
-    """
-    weights = weights.fillna(0.0)
-
-    if len(weights) == 0:
-        return weights.astype(int)
-
-    # If everything is zero, fall back to equal weights
-    if weights.sum() <= 0:
-        weights = pd.Series(1.0, index=weights.index)
-
-    # Enforce minimums if requested
-    min_total = min_per_group * len(weights)
-    if min_total > n_total:
-        raise ValueError(
-            f"Cannot allocate {n_total} clusters with min_per_group={min_per_group} "
-            f"across {len(weights)} groups (need at least {min_total})."
-        )
-
-    # Start with minimums
-    alloc = pd.Series(min_per_group, index=weights.index, dtype=int)
-    remaining = n_total - alloc.sum()
-    if remaining == 0:
-        return alloc
-
-    # Proportional allocation on remaining
-    w = weights / weights.sum()
-    raw = w * remaining
-    floored = np.floor(raw).astype(int)
-    alloc += floored
-    remainder = remaining - floored.sum()
-
-    if remainder > 0:
-        # Largest remainder method
-        frac = (raw - np.floor(raw)).sort_values(ascending=False)
-        winners = frac.index[:remainder]
-        alloc.loc[winners] += 1
-
-    # Safety
-    assert alloc.sum() == n_total
-    return alloc
-
-def make_country_subregion_labels(
-    n: pypsa.Network,
-    country: str,
-    subregions_geojson: str,
-    id_field: str = "name",
-    on_unassigned: str = "nearest",
-) -> pd.Series:
-    """
-    Returns a Series indexed by n.buses.index with values:
-      - "<country>:<subregion_id>" for buses in the selected country
-      - NaN for other buses
-    """
-    shapes = gpd.read_file(subregions_geojson)
-    shapes.to_crs(GEO_CRS, inplace=True)
-
-    if id_field not in shapes.columns:
-        raise ValueError(
-            f"GeoJSON does not contain id_field='{id_field}'. Columns: {list(shapes.columns)}"
-        )
-
-    # Optional: if geojson contains multiple countries, filter
-    if "country" in shapes.columns:
-        shapes = shapes[shapes["country"] == country]
-
-    # Assign only that country's buses
-    buses_c = n.buses[n.buses.country == country][["x", "y", "country"]].copy()
-
-    # Use existing helper: assigns by polygon containment; if missing, assigns nearest polygon.
-    busmap = busmap_from_shapes(
-        n,
-        shapes,
-        buses=buses_c,
-        cluster_names=id_field,
-        per_country=False,
-    )
-
-    # busmap_from_shapes always fills by nearest if unassigned; if you want strictness, check:
-    if on_unassigned == "error":
-        # Recompute without nearest fallback would require extra logic;
-        # simplest: detect if any were outside (not possible here because we already fill nearest).
-        # Alternative: you can implement "error" by doing a pure sjoin first and raising if null.
-        pass
-
-    return busmap.astype(str).rename("region")
-
-def busmap_for_n_clusters_by_bus_groups(
-    n: pypsa.Network,
-    bus_groups: pd.Series,          # index=buses, values=region label
-    n_clusters_g: pd.Series,        # MultiIndex: (region, sub_network) -> int
-    cluster_weights: pd.Series,
-    algorithm: str = "kmeans",
-    features: pd.DataFrame | None = None,
-    **algorithm_kwds,
-) -> pd.Series:
-    """
-    Like busmap_for_n_clusters, but groups buses by (bus_groups, sub_network)
-    instead of (country, sub_network).
-    """
-
-    if algorithm == "hac" and features is None:
-        raise ValueError("For HAC clustering, features must be provided.")
-
-    if algorithm == "kmeans":
-        algorithm_kwds.setdefault("n_init", 1000)
-        algorithm_kwds.setdefault("max_iter", 30000)
-        algorithm_kwds.setdefault("tol", 1e-6)
-        algorithm_kwds.setdefault("random_state", 0)
-
-    # Ensure aligned
-    bus_groups = bus_groups.reindex(n.buses.index)
-
-    # Create a working dataframe of buses with grouping keys
-    df = n.buses[["sub_network"]].copy()
-    df["region"] = bus_groups
-
-    def busmap_for_group(x):
-        region, sub_network = x.name
-        prefix = f"{region} {sub_network} "
-        k = int(n_clusters_g.loc[(region, sub_network)])
-
-        logger.debug(
-            f"Determining busmap for group {region}/{sub_network} "
-            f"from {len(x)} buses to {k}."
-        )
-
-        if len(x) == 1:
-            return pd.Series(prefix + "0", index=x.index)
-
-        weight = weighting_for_country(x, cluster_weights)
-
-        if algorithm == "kmeans":
-            return prefix + busmap_by_kmeans(
-                n, weight, k, buses_i=x.index, **algorithm_kwds
-            )
-        elif algorithm == "hac":
-            return prefix + busmap_by_hac(
-                n,
-                k,
-                buses_i=x.index,
-                feature=features.reindex(x.index, fill_value=0.0),
-            )
-        elif algorithm == "modularity":
-            return prefix + busmap_by_greedy_modularity(
-                n, k, buses_i=x.index
-            )
-        else:
-            raise ValueError(
-                f"`algorithm` must be one of 'kmeans' or 'hac' or 'modularity'. Is {algorithm}."
-            )
-
-    compat_kws = dict(include_groups=False) if PD_GE_2_2 else {}
-
-    df.to_csv("debug_busmap.csv")
-    grouped = df.groupby(["region", "sub_network"], group_keys=False)
-    df.to_csv("debug_busmap_grouped.csv")
-
-    # return grouped.apply(busmap_for_group, **compat_kws).squeeze().rename("busmap")
-
-    busmap = (
-        grouped
-        .apply(busmap_for_group, **compat_kws)
-        .squeeze()
-        .rename("busmap")
-    )
-
-    # Ensure all buses are present
-    busmap = busmap.reindex(n.buses.index)
-
-    if busmap.isna().any():
-        missing = busmap.index[busmap.isna()]
-        sample = missing[:20].tolist()
-        raise ValueError(
-            f"busmap is incomplete: {len(missing)} buses were not assigned to any cluster. "
-            f"Sample: {sample}. "
-            "This usually means region/sub_network had NaN or there is no "
-            "n_clusters entry for a group."
-        )
-
-    return busmap.astype(str)
 
 def busmap_for_n_clusters(
     n: pypsa.Network,
@@ -1123,8 +877,6 @@ def temporarily_split_countries_into_subcountries(
 
     Returns a copy of the original country Series for restoration.
     """
-    original_country = n.buses.country.copy()
-
     for country, cfg in split_cfg.items():
 
         shapes = gpd.read_file(cfg["geojson"])
@@ -1341,6 +1093,12 @@ if __name__ == "__main__":
                 solver_name=solver_name,
             )
 
+            single_node_regions = params.single_node_regions
+            if single_node_regions:
+                idx = n_clusters_c.index.get_level_values("country").isin(single_node_regions)
+                fixed_idx = n_clusters_c.index[idx]
+                n_clusters_c.loc[fixed_idx] = 1
+
             busmap = busmap_for_n_clusters(
                 n,
                 n_clusters_c,
@@ -1366,13 +1124,6 @@ if __name__ == "__main__":
     nc.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
 
     busmap_clustering = clustering.busmap.copy()
-    # group clusters in country
-    if params.group_clusters:
-        group_regions = params.group_clusters
-        for gr in group_regions:
-            country_bus, nc = group_clusters(nc, gr)
-            busmap_clustering = correct_busmap(busmap_clustering, country_bus)
-        
     busmap_clustering.index.name = "Bus"
     busmap_clustering.to_csv(snakemake.output.busmap, index=True)
 

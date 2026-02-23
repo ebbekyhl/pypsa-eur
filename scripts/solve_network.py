@@ -2152,9 +2152,6 @@ if __name__ == "__main__":
     if uk_settings["uk_load_shedding"]:
         add_uk_load_shedding(n, base_year)
 
-    if "EU" in n.buses.index:
-        n.remove("Bus", "EU")
-
     logging_frequency = snakemake.config.get("solving", {}).get(
         "mem_logging_frequency", 30
     )

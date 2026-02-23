@@ -2924,9 +2924,11 @@ def build_heat_demand(
 
     # subtract from electricity load since heat demand already in heat_demand
     electric_nodes = n.loads.index[n.loads.carrier == "electricity"]
+    index = n.loads_t.p_set.index
+    to_be_subtracted = electric_heat_supply.T.groupby(level=1).sum().T[electric_nodes]
     n.loads_t.p_set[electric_nodes] = (
         n.loads_t.p_set[electric_nodes]
-        - electric_heat_supply.T.groupby(level=1).sum().T[electric_nodes]
+        - to_be_subtracted.loc[index]
     )
 
     return heat_demand
@@ -5501,10 +5503,11 @@ def add_industry(
         ]
         if n.loads_t.p_set[loads_i].empty:
             continue
+        weighting = n.snapshot_weightings["generators"].iloc[0]
         factor = (
             1
             - industrial_demand.loc[loads_i, "current electricity"].sum()
-            / n.loads_t.p_set[loads_i].sum().sum()
+            / (n.loads_t.p_set[loads_i].sum().sum() * weighting)
         )
         n.loads_t.p_set[loads_i] *= factor
 
@@ -6963,6 +6966,12 @@ if __name__ == "__main__":
     options = snakemake.params.sector
     cf_industry = snakemake.params.industry
     uk_settings = snakemake.params.uk_settings
+    clustering = snakemake.params.clustering
+
+    if clustering["temporal"]["resolution_elec"]:
+        freq = clustering["temporal"]["resolution_elec"]
+    else:
+        freq = "h"
 
     investment_year = int(snakemake.wildcards.planning_horizons)
 
@@ -6973,7 +6982,7 @@ if __name__ == "__main__":
     start_datetime = pd.to_datetime(snapshots["start"]) 
     end_datetime = pd.to_datetime(snapshots["end"])
     inclusive = snapshots["inclusive"]
-    snapshots_new = pd.date_range(start=start_datetime, end=end_datetime, freq="h", inclusive=inclusive)
+    snapshots_new = pd.date_range(start=start_datetime, end=end_datetime, freq=freq, inclusive=inclusive)
     n.snapshots = snapshots_new
 
     pop_layout = pd.read_csv(snakemake.input.clustered_pop_layout, index_col=0)

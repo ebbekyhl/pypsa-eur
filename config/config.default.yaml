@@ -111,7 +111,7 @@ uk_settings:
   # Other settings
   uk_build_out_rates: false # limit the deployment of certain technologies [MW / year] to represent realistic build-out rates in the UK
   uk_only: false # whether the study is intended to only include the UK. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
-
+  uk_include_offshore_buses: false
   # Further UK assumptions not listed here but are included further down: 
   # - CO2 emissions targets: search for "local_co2:"
   # - District heating potential: search for "sector:", then "district_heating:", then "potential" 

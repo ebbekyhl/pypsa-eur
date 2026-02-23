@@ -6803,35 +6803,36 @@ def add_import_options(
         )
 
 def scale_UK_gas_network(n):
-    # The data for gas network in UK has some deficiencies, as some interconnections 
-    # with countries are underestimated. One prominent example is the gas import from Norway to UK.
-    # To account for this, we scale the gas pipelines from Norway to UK to match the
-    # actual size of the gas interconnection.
+    # Scale gas network to match annual demand for given locations. 
+    # As not all capacities might be included in the gas network dataset, 
+    # we ensure that the total capacity in given locations is able to 
+    # satisfy the annual demand in given locations.
 
-    links = n.links.copy()
-    uk_gas_pipelines = links.query("carrier =='gas pipeline'").loc[links.query("carrier =='gas pipeline'").index.str.contains("GB")]
-    uk_gas_pipelines_NO = uk_gas_pipelines.loc[uk_gas_pipelines.index.str.contains("NO")]
-    uk_gas_pipelines_NO_rev = uk_gas_pipelines_NO[uk_gas_pipelines_NO.index.str.contains("reversed")]
-    uk_gas_pipelines_NO = uk_gas_pipelines_NO.drop(uk_gas_pipelines_NO_rev.index)
+    dic = {"GBGL": ["any", 54.3], # matching annual demand (2024, https://www.gov.uk/government/statistics/regional-and-local-authority-gas-consumption-statistics) with the gas grid connection. 
+           "GB": ["NO", 345.9]} # UK gets 50% of its gas from Norway, based 2024 numbers (https://www.sunsave.energy/blog/uk-gas-sources). This is equivalent to 345 TWh.
 
-    # log about uk_gas_pipelines_NO
-    logger.info(f"UK gas pipelines from Norway before scaling:\n{uk_gas_pipelines_NO[['p_nom']]}")
+    for region, interconnections in dic.items():
+        links = n.links.copy()
+        uk_gas_pipelines = links.query("carrier =='gas pipeline'").loc[links.query("carrier =='gas pipeline'").index.str.contains(region)]
+        if interconnections[0] != "any":
+            uk_gas_pipelines = uk_gas_pipelines.loc[uk_gas_pipelines.index.str.contains(interconnections[0])]
+        uk_gas_pipelines_rev = uk_gas_pipelines[uk_gas_pipelines.index.str.contains("reversed")]
+        uk_gas_pipelines = uk_gas_pipelines.drop(uk_gas_pipelines_rev.index)
+        
+        logger.info(f"{region} gas pipelines from {interconnections[0]} before scaling:\n{uk_gas_pipelines[['p_nom']]}")
 
-    # UK gets 50% of its gas from Norway, based 2024 numbers (https://www.sunsave.energy/blog/uk-gas-sources)
-    # This is equivalent to 345 TWh. With the current layout of gas pipelines, this is not sufficient to cover this. 
-    # As a solution, we expand the gas pipelines of UK to allow this:
-    UK_NO_gas_network = (uk_gas_pipelines_NO[["p_nom"]].sum()*8760 / 1e6).item()
-    scaling = 345.9 / UK_NO_gas_network
+        UK_r_gas_network = (uk_gas_pipelines[["p_nom"]].sum()*8760 / 1e6).item()
+        scaling = interconnections[1] / UK_r_gas_network
 
-    if scaling > 1:
-        links.loc[uk_gas_pipelines_NO.index, "p_nom"] = uk_gas_pipelines_NO["p_nom"] * scaling
-        links.loc[uk_gas_pipelines_NO_rev.index, "p_nom"] = uk_gas_pipelines_NO_rev["p_nom"] * scaling
+        if scaling > 1:
+            links.loc[uk_gas_pipelines.index, "p_nom"] = uk_gas_pipelines["p_nom"] * scaling
+            links.loc[uk_gas_pipelines_rev.index, "p_nom"] = uk_gas_pipelines_rev["p_nom"] * scaling
 
-        logger.info(f"UK gas pipelines from Norway after scaling:\n{links.loc[uk_gas_pipelines_NO.index, 'p_nom']}")
+            logger.info(f"{region} gas pipelines from {interconnections[0]} after scaling:\n{links.loc[uk_gas_pipelines.index, 'p_nom']}")
 
-        n.links = links
-    else:
-        logger.info("No scaling applied to UK gas pipelines from Norway, as current capacity satisfies annual gas flow from NO to GB.")
+            n.links = links
+        else:
+            logger.info(f"No scaling applied to {region} gas pipelines from {interconnections[0]}, as current capacity satisfies annual gas flow from {interconnections[0]} to {region}.")
 
 def make_clean_and_nonclean_classification(n):
 

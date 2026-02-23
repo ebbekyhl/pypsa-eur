@@ -83,6 +83,7 @@ from pypsa.clustering.spatial import (
 )
 from scipy.sparse.csgraph import connected_components
 from shapely.algorithms.polylabel import polylabel
+from shapely.geometry import Point
 from shapely.geometry import MultiPolygon, Polygon
 
 from scripts._helpers import configure_logging, set_scenario_config
@@ -923,6 +924,112 @@ def temporarily_split_countries_into_subcountries(
         # Overwrite country column with subregion IDs
         n.buses.loc[buses_c.index, "country"] = subregion_for_bus.astype(str).values
 
+def move_unintended_offshore_buses(n, region_file):
+    """ 
+    This function checks if any of the clusters in the network are located outside the onshore region 
+    of the UK, and if so, moves them to the nearest point on the onshore boundary. This can happen expectedly 
+    due to offshore wind connections, shifting a bit the coordinates of the cluster towards the sea. 
+    """
+    uk_buses = n.buses.query("country == 'GB'")
+
+    uk_buses_gdf = gpd.GeoDataFrame(
+        uk_buses,
+        geometry=gpd.points_from_xy(uk_buses["x"], uk_buses["y"]),
+        crs="EPSG:4326"
+    )
+    uk_buses_gdf = uk_buses_gdf.to_crs(epsg=3035)
+
+    regions = gpd.read_file(region_file)
+    uk_regions = regions.query("name.str.contains('GB')")
+    uk_regions = uk_regions.to_crs(epsg=3035)
+    uk_onshore = uk_regions.dissolve()
+
+    uk_buses_gdf["within_onshore"] = uk_buses_gdf["geometry"].apply(lambda x: x.within(uk_onshore.geometry.iloc[0]))
+    coordinates_moved = uk_buses_gdf.index[uk_buses_gdf["within_onshore"] == False]
+    if len(coordinates_moved) == 0:
+        print("No buses were moved, all buses are within the onshore region.")
+        
+    else:
+        print(f"Moving {len(coordinates_moved)} buses that were outside the onshore region to the nearest point on the onshore boundary.")
+        print(coordinates_moved)
+
+    # if not uk_buses_gdf["within_onshore"], then move the lat to the nearest point on the uk_onshore geometry
+    uk_buses_gdf_update = uk_buses_gdf.copy()
+
+    # must only merge to a region if it belongs to it! Check first 4 letters of the region name and the bus region
+    for i in range(len(coordinates_moved)):
+        row = uk_buses_gdf.loc[coordinates_moved[i]]
+        length = len(uk_regions.name.iloc[0])
+        name = row.name[0:length]
+        subregion = uk_regions.query("name == @name")
+        new_point = subregion.geometry.boundary.interpolate(subregion.boundary.project(row["geometry"]))
+        uk_buses_gdf_update.loc[row.name, 
+                                "geometry"] = new_point.item()
+
+    # transform back to lat and lon 
+    uk_buses_gdf_update = uk_buses_gdf_update.to_crs(epsg=4326)
+    uk_buses_gdf_update["x"] = uk_buses_gdf_update.geometry.x
+    uk_buses_gdf_update["y"] = uk_buses_gdf_update.geometry.y
+    uk_buses_gdf_update.drop(columns = ["geometry", "within_onshore"], inplace=True)
+
+    n_updated = n.copy()
+    n_updated.buses.loc[uk_buses_gdf_update.index, :] = uk_buses_gdf_update
+
+    #############################################################################################################
+    ################################# Update network ############################################################
+    #############################################################################################################
+    def calculate_distances(bus0, bus1, DISTANCE_CRS):
+        n_lines_bus0_coords = bus0[["x", "y"]]
+        n_lines_bus1_coords = bus1[["x", "y"]]
+
+        bus0_coords = gpd.GeoDataFrame(
+                n_lines_bus0_coords,
+                geometry=gpd.points_from_xy(n_lines_bus0_coords["x"], n_lines_bus0_coords["y"]),
+                crs="EPSG:4326"
+            ).to_crs(DISTANCE_CRS)
+
+        bus1_coords = gpd.GeoDataFrame(
+                n_lines_bus1_coords,
+                geometry=gpd.points_from_xy(n_lines_bus1_coords["x"], n_lines_bus1_coords["y"]),
+                crs="EPSG:4326"
+            ).to_crs(DISTANCE_CRS)
+
+        # calculate distance between bus0 and bus1 for lines
+        distances = [bus0_coords.iloc[i].geometry.distance(bus1_coords.iloc[i].geometry) / 1e3 for i in range(len(bus0_coords))]
+
+        return distances
+        
+    lines_bus0 = n_updated.lines.where(n_updated.lines.bus0.isin(coordinates_moved)).dropna()
+    lines_bus1 = n_updated.lines.where(n_updated.lines.bus1.isin(coordinates_moved)).dropna()
+
+    links = n_updated.links.query("carrier == 'DC'")
+    links_bus0 = links.where(links.bus0.isin(coordinates_moved)).dropna()
+    links_bus1 = links.where(links.bus1.isin(coordinates_moved)).dropna()
+
+    # lines
+    buses0_0 = n_updated.buses.loc[lines_bus0.bus0]
+    buses0_1 = n_updated.buses.loc[lines_bus0.bus1]
+    buses1_0 = n_updated.buses.loc[lines_bus1.bus0]
+    buses1_1 = n_updated.buses.loc[lines_bus1.bus1]
+    lines_distances_0_updated = calculate_distances(buses0_0, buses0_1, DISTANCE_CRS)
+    lines_distances_1_updated = calculate_distances(buses1_0, buses1_1, DISTANCE_CRS)
+
+    # links
+    buses0_0 = n_updated.buses.loc[links_bus0.bus0]
+    buses0_1 = n_updated.buses.loc[links_bus0.bus1]
+    buses1_0 = n_updated.buses.loc[links_bus1.bus0]
+    buses1_1 = n_updated.buses.loc[links_bus1.bus1]
+    links_distances_0_updated = calculate_distances(buses0_0, buses0_1, DISTANCE_CRS)
+    links_distances_1_updated = calculate_distances(buses1_0, buses1_1, DISTANCE_CRS)
+
+    # Update distances
+    n_updated.lines.loc[lines_bus0.index, "length"] = lines_distances_0_updated
+    n_updated.lines.loc[lines_bus1.index, "length"] = lines_distances_1_updated
+    n_updated.links.loc[links_bus0.index, "length"] = links_distances_0_updated
+    n_updated.links.loc[links_bus1.index, "length"] = links_distances_1_updated
+
+    return n_updated
+
 if __name__ == "__main__":
     if "snakemake" not in globals():
         from scripts._helpers import mock_snakemake
@@ -935,6 +1042,7 @@ if __name__ == "__main__":
     mode = params.mode
     administrative = params.administrative
     countries = params.countries
+    uk_settings = params.uk_settings
     n_clusters = int(snakemake.wildcards.clusters)
     solver_name = snakemake.config["solving"]["solver"]["name"]
 
@@ -1135,6 +1243,10 @@ if __name__ == "__main__":
         # append_bus_shapes(nc, clustered_regions, type=which.split("_")[1])
 
     nc.buses.country = nc.buses.country.str[0:2]
+
+    if "GB" in nc.buses.country.unique() and not uk_settings["uk_include_offshore_buses"]:
+        nc = move_unintended_offshore_buses(nc, snakemake.output["regions_onshore"])
+
     nc.export_to_netcdf(snakemake.output.network)
 
     logger.info(

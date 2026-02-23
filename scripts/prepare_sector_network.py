@@ -1869,6 +1869,8 @@ def add_ldes_storage(n, tech):
 
     # Add carrier
     n.add("Carrier", tech)
+    n.add("Carrier", tech + " charger")
+    n.add("Carrier", tech + " discharger")
 
     # Add bus
     n.add("Bus",
@@ -6821,12 +6823,15 @@ def scale_UK_gas_network(n):
     UK_NO_gas_network = (uk_gas_pipelines_NO[["p_nom"]].sum()*8760 / 1e6).item()
     scaling = 345.9 / UK_NO_gas_network
 
-    links.loc[uk_gas_pipelines_NO.index, "p_nom"] = uk_gas_pipelines_NO["p_nom"] * scaling
-    links.loc[uk_gas_pipelines_NO_rev.index, "p_nom"] = uk_gas_pipelines_NO_rev["p_nom"] * scaling
+    if scaling > 1:
+        links.loc[uk_gas_pipelines_NO.index, "p_nom"] = uk_gas_pipelines_NO["p_nom"] * scaling
+        links.loc[uk_gas_pipelines_NO_rev.index, "p_nom"] = uk_gas_pipelines_NO_rev["p_nom"] * scaling
 
-    logger.info(f"UK gas pipelines from Norway after scaling:\n{links.loc[uk_gas_pipelines_NO.index, 'p_nom']}")
+        logger.info(f"UK gas pipelines from Norway after scaling:\n{links.loc[uk_gas_pipelines_NO.index, 'p_nom']}")
 
-    n.links = links
+        n.links = links
+    else:
+        logger.info("No scaling applied to UK gas pipelines from Norway, as current capacity satisfies annual gas flow from NO to GB.")
 
 def make_clean_and_nonclean_classification(n):
 

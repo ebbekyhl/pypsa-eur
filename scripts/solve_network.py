@@ -1899,7 +1899,7 @@ def add_uk_load_shedding(n, base_year):
     
     buses_i = n.buses.loc[n.buses.index.str.contains("GB")].index
     
-    load_shedding = 100000  # Eur/MWh
+    load_shedding = 100e3 # Eur/MWh
 
     n.add(
         "Generator",
@@ -1907,18 +1907,20 @@ def add_uk_load_shedding(n, base_year):
         " load",
         bus=buses_i,
         carrier="load",
-        # sign=1e-3,  # Adjust sign to measure p and p_nom in kW instead of MW
         marginal_cost=load_shedding, 
-        p_nom_extendable = False,
+        p_nom_extendable = True,
         p_nom=1e9,  # MW
     )
 
+
 def freeze_uk_capacities(n, base_year):
-    buses_of_relevance = n.buses.query("carrier == 'AC' or carrier.str.contains('heat') or carrier.str.contains('low voltage') or carrier in ['H2', 'NH3', 'methanol', 'battery'] or carrier.str.contains('water')")
+    buses_of_relevance = n.buses.query("carrier == 'AC' or carrier.str.contains('heat') or carrier.str.contains('low voltage') or carrier in ['H2', 'NH3', 'methanol', 'battery'] or carrier.str.contains('water')").index
     investment_year = int(snakemake.wildcards.planning_horizons)
     if investment_year > base_year:
         logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
         return
+    else:
+        logger.info("Planning year equals base year. Freezing UK capacities.")
 
     # links (looping over buses)
     for bus in ["bus0", "bus1", "bus2", "bus3", "bus4"]:
@@ -1939,6 +1941,8 @@ def freeze_uk_capacities(n, base_year):
         # if empty, then skip
         if len(uk_links_df_normal_zeros) == 0:
             continue
+        else:
+            logger.info(f"Freezing {len(uk_links_df_normal_zeros)} UK links with zero p_nom in {bus}.")
 
         # Check for links with reversed counterparts
         uk_links_reversed = n.links.loc[uk_links_df_normal_zeros].copy()
@@ -1961,36 +1965,32 @@ def freeze_uk_capacities(n, base_year):
         # For the remaining links, set p_nom_extendable to False
         n.links.loc[uk_links, "p_nom_extendable"] = False
         
-        ########################## GENERATORS #######################################################
-        # generators
-        uk_generators = n.generators.loc[n.generators.index.str.contains("GB")].query("capital_cost > 0").index
-        uk_generators_df = n.generators.loc[uk_generators]
-        uk_generators_df = uk_generators_df.loc[uk_generators_df.bus.isin(buses_of_relevance)]
+    ########################## GENERATORS #######################################################
+    # generators
+    uk_generators = n.generators.loc[n.generators.index.str.contains("GB")].query("capital_cost > 0").index
+    uk_generators_df = n.generators.loc[uk_generators]
+    uk_generators_df = uk_generators_df.loc[uk_generators_df.bus.isin(buses_of_relevance)]
 
-        # For special cases
-        uk_generators_df_special = uk_generators_df.loc[uk_generators_df.p_nom_min != uk_generators_df.p_nom]
-        n.generators.loc[uk_generators_df_special.index, "p_nom"] = n.generators.loc[uk_generators_df_special.index, "p_nom"] + n.generators.loc[uk_generators_df_special.index, "p_nom_min"]
+    # For special cases
+    uk_generators_df_special = uk_generators_df.loc[uk_generators_df.p_nom_min != uk_generators_df.p_nom]
+    n.generators.loc[uk_generators_df_special.index, "p_nom"] = n.generators.loc[uk_generators_df_special.index, "p_nom"] + n.generators.loc[uk_generators_df_special.index, "p_nom_min"]
 
-        # Non-special cases
-        uk_generators_df_normal = uk_generators_df.loc[uk_generators_df.p_nom_min == uk_generators_df.p_nom]
+    # Non-special cases
+    uk_generators_df_normal = uk_generators_df.loc[uk_generators_df.p_nom_min == uk_generators_df.p_nom]
+    n.generators.loc[uk_generators_df_normal.index, "p_nom_extendable"] = False
 
-        n.generators.loc[uk_generators_df_normal.index, "p_nom_extendable"] = False
+    ########################## Stores #######################################################
+    # stores
+    uk_stores = n.stores.loc[n.stores.index.str.contains("GB")].query("capital_cost > 0").index
+    uk_stores_df = n.stores.loc[uk_stores]
 
-        ########################## STORES #######################################################
-        # # stores
-        # uk_stores = n.stores.loc[n.stores.index.str.contains("GB")].query("capital_cost > 0").index
-        # uk_stores_df = n.stores.loc[uk_stores]
+    # For special cases
+    uk_stores_df_special = uk_stores_df.loc[uk_stores_df.e_nom_min != uk_stores_df.e_nom]
+    n.stores.loc[uk_stores_df_special.index, "e_nom"] = n.stores.loc[uk_stores_df_special.index, "e_nom"] + n.stores.loc[uk_stores_df_special.index, "e_nom_min"]
 
-        # # For special cases
-        # uk_stores_df_special = uk_stores_df.loc[uk_stores_df.e_nom_min != uk_stores_df.e_nom]
-        # n.stores.loc[uk_stores_df_special.index, "e_nom"] = n.stores.loc[uk_stores_df_special.index, "e_nom"] + n.stores.loc[uk_stores_df_special.index, "e_nom_min"]
-
-        # # Non-special cases
-        # uk_stores_df_normal = uk_stores_df.loc[uk_stores_df.e_nom_min == uk_stores_df.e_nom]
-
-        # n.stores.loc[uk_stores_df_normal.index, "e_nom_extendable"] = False
-
-        n.export_to_netcdf("results/" + snakemake.params.RDIR + "/test.nc")
+    # Non-special cases
+    uk_stores_df_normal = uk_stores_df.loc[uk_stores_df.e_nom_min == uk_stores_df.e_nom]
+    n.stores.loc[uk_stores_df_normal.index, "e_nom_extendable"] = False
 
 def solve_network(
     n: pypsa.Network,

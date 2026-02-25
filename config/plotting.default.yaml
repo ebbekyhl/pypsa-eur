@@ -390,6 +390,7 @@ plotting:
     gas DRI CC: '#a85522'
     EAF: '#ff8c00'
     steel transport: '#777777'
+    steel import: '#999999'
     # biomass
     biogas: '#e3d37d'
     biomass: '#baa741'

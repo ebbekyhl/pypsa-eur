@@ -11,7 +11,7 @@ rule add_existing_baseyear:
         costs=config_provider("costs"),
         heat_pump_sources=config_provider("sector", "heat_pump_sources"),
         energy_totals_year=config_provider("energy", "energy_totals_year"),
-        uk_settings=config_provider("uk_settings"),
+        uk_settings=config_provider("uk_settings", "data"),
     input:
         network=resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc"
@@ -135,7 +135,7 @@ rule solve_sector_network_myopic:
             "sector", "co2_sequestration_potential", default=200
         ),
         custom_extra_functionality=input_custom_extra_functionality,
-        uk_settings=config_provider("uk_settings"),
+        uk_settings=config_provider("uk_settings", "solve"),
     input:
         eurostat="data/eurostat/Balances-April2023",
         co2_totals = resources("co2_totals.csv"),

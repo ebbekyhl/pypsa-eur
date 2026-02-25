@@ -877,7 +877,7 @@ rule build_industrial_distribution_key:
             "industry", "hotmaps_locate_missing", default=False
         ),
         countries=config_provider("countries"),
-        uk_settings=config_provider("uk_settings"),
+        uk_settings=config_provider("uk_settings", "data"),
     input:
         regions_onshore=resources("regions_onshore_base_s_{clusters}.geojson"),
         clustered_pop_layout=resources("pop_layout_base_s_{clusters}.csv"),
@@ -971,7 +971,7 @@ rule build_industrial_energy_demand_per_country_today:
         countries=config_provider("countries"),
         industry=config_provider("industry"),
         ammonia=config_provider("sector", "ammonia", default=False),
-        uk_settings=config_provider("uk_settings"),
+        uk_settings=config_provider("uk_settings", "data"),
     input:
         transformation_output_coke=resources("transformation_output_coke.csv"),
         jrc="data/jrc-idees-2021",
@@ -1278,7 +1278,8 @@ def input_heat_source_power(w):
 
 rule prepare_sector_network:
     params:
-        uk_settings=config_provider("uk_settings"),
+        uk_settings_prepare=config_provider("uk_settings", "prepare"),
+        uk_settings_data=config_provider("uk_settings", "data"),
         clustering=config_provider("clustering"),
         ldes_settings = config_provider("LDES"),
         time_resolution=config_provider("clustering", "temporal", "resolution_sector"),

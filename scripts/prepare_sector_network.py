@@ -6965,7 +6965,8 @@ if __name__ == "__main__":
 
     options = snakemake.params.sector
     cf_industry = snakemake.params.industry
-    uk_settings = snakemake.params.uk_settings
+    uk_settings_prepare = snakemake.params.uk_settings_prepare
+    uk_settings_data = snakemake.params.uk_settings_data
     clustering = snakemake.params.clustering
 
     if clustering["temporal"]["resolution_elec"]:
@@ -7273,17 +7274,16 @@ if __name__ == "__main__":
     )
 
     countries = snakemake.params.countries
-    if uk_settings["uk_only"]:
+    if uk_settings_prepare["uk_only"]:
         countries.remove("IE")
         remove_ie_from_network(n)
 
-    if uk_settings["uk_new_gas_storage_data"]:
+    if uk_settings_data["uk_new_gas_storage_data"]:
         onshore = snakemake.input.regions_onshore
         offshore = snakemake.input.regions_offshore
         add_UK_gas_storage_data(n, onshore, offshore)
         
-    # check if uk_settings["uk_scale_up_offwind_potential"] is a number
-    factor = uk_settings.get("uk_scale_up_offwind_potential", None)
+    factor = uk_settings_prepare.get("uk_scale_up_offwind_potential", None)
     if isinstance(factor, (int, float)):
         scale_up_offwind_potential(n, "GB", factor)
 

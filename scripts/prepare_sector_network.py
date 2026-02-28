@@ -6806,12 +6806,32 @@ def add_import_options(
         )
 
 def scale_UK_gas_network(n):
+
+    def correct_scotland_part_of_gas_network(n):
+        # The gas network needs to be corrected for the northern part of Scotland
+        scotland_far_north = n.buses.query("index.str.contains('GBSC') and carrier == 'AC'").y.idxmax()
+        scotland_far_east = n.buses.query("index.str.contains('GBSC') and carrier == 'AC'").x.idxmax()
+
+        # copy n.links and overwrite with corrected gas network links
+        links = n.links.copy()
+        gas_pipes_connected_to_far_east = links.query("carrier == 'gas pipeline' and (bus0.str.startswith(@scotland_far_east) or bus1.str.startswith(@scotland_far_east))")
+        gas_pipes_connected_to_far_north = links.query("carrier == 'gas pipeline' and (bus0.str.startswith(@scotland_far_north) or bus1.str.startswith(@scotland_far_north))")
+
+        # Far north of Scotland is currently not connected to the gas transmission network, so we ensure that this is removed - if by mistake this was added.
+        links.drop(pd.concat([
+                                # gas_pipes_connected_to_far_east, 
+                                gas_pipes_connected_to_far_north]).index, inplace=True)
+
+        n.links = links
+
+    correct_scotland_part_of_gas_network(n)
+
     # Scale gas network to match annual demand for given locations. 
     # As not all capacities might be included in the gas network dataset, 
     # we ensure that the total capacity in given locations is able to 
     # satisfy the annual demand in given locations.
 
-    dic = {"GBGL": ["any", 54.3], # matching annual demand (2024, https://www.gov.uk/government/statistics/regional-and-local-authority-gas-consumption-statistics) with the gas grid connection. 
+    dic = {"GBGL": ["any", 54.3], # matching annual demand in London (2024, https://www.gov.uk/government/statistics/regional-and-local-authority-gas-consumption-statistics) with the gas grid connection. 
            "GB": ["NO", 345.9]} # UK gets 50% of its gas from Norway, based 2024 numbers (https://www.sunsave.energy/blog/uk-gas-sources). This is equivalent to 345 TWh.
 
     for region, interconnections in dic.items():

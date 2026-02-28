@@ -92,26 +92,24 @@ countries:
 # - DME (no - not yet included)
 
 uk_settings:
-  # New data sources for UK
-  uk_energy_balance_year: 2024 # year for UK energy balance data (ECUK)
-  uk_electricity_demand_year: 2024 # whether to use specific year for UK electricity demand data (NESO)
-  uk_new_gas_storage_data: true # whether to use new UK gas storage data (various sources)
-  uk_new_powerplants_data: true # whether to use new UK powerplant data (OpenStreetMap)  
-  uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov (DUKES)
-  
-  # For calibration purpose:
-  uk_scale_up_offwind_potential: 2 # to align with UK government's ambitious offshore wind targets, we increase the estimated offshore wind potential in the UK by 2
-  uk_freeze_base_year_capacities: true # only in the base year: if true, only brownfield capacities are allowed in the UK, i.e., disallowing capacity expansion. 
-  uk_load_shedding: true # only in the base year: if true, load shedding is enabled
+  data:
+    uk_energy_balance_year: 2024 # year for UK energy balance data (ECUK)
+    uk_electricity_demand_year: 2024 # whether to use specific year for UK electricity demand data (NESO)
+    uk_new_gas_storage_data: true # whether to use new UK gas storage data (various sources)
+    uk_new_powerplants_data: true # whether to use new UK powerplant data (OpenStreetMap)  
+    uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov (DUKES)
+    
+  prepare:
+    uk_scale_up_offwind_potential: 2 # to align with UK government's offshore wind targets, we increase the estimated offshore wind potential in the UK by 2 
+    uk_only: false # whether the study is intended to only include the UK. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
+    uk_include_offshore_buses: false # whether offshore buses (not to be confused with offshore regions) are included.
 
-  # In the process of calibrating the model, we have also tested the following options, again only applied on UK in the base year:
-  uk_fixed_electricity_generation_mix: false # fix electricity generation mix to historical levels
-  uk_brownfield_minimum_capacity_factors: false # minimum capacity factors of brownfield capacities 
-
-  # Other settings
-  uk_build_out_rates: false # limit the deployment of certain technologies [MW / year] to represent realistic build-out rates in the UK
-  uk_only: false # whether the study is intended to only include the UK. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
-  uk_include_offshore_buses: false
+  solve:
+    uk_freeze_base_year_capacities: true # only in the base year: if true, only brownfield capacities are allowed in the UK, i.e., disallowing capacity expansion.
+    uk_brownfield_minimum_capacity_factors: {CCGT: 0.5} # minimum capacity factors of brownfield capacities  # minimum capacity factors of brownfield capacities 
+    uk_fixed_electricity_generation_mix: false # fix electricity generation mix to historical levels
+    uk_build_out_rates: false # limit the deployment of certain technologies [MW / year] to represent realistic build-out rates in the UK
+    
   # Further UK assumptions not listed here but are included further down: 
   # - CO2 emissions targets: search for "local_co2:"
   # - District heating potential: search for "sector:", then "district_heating:", then "potential" 
@@ -1040,18 +1038,18 @@ clustering:
   administrative:
     GB: 3
   focus_weights:
-    GBCE: 0.083
-    GBEM: 0.083
-    GBSC: 0.083
-    GBNW: 0.083
-    GBNE: 0.083
-    GBWM: 0.083
-    GBEA: 0.083
-    GBSE: 0.083
-    GBSW: 0.083
-    GBCY: 0.083
-    GBGL: 0.083
-    GBNI: 0.083
+    GBCE: 0.0714 # Central England (1/(2+12)) 
+    GBEM: 0.0714 # East Midlands (1/(2+12))
+    GBSC: 0.2143 # Scotland (3/(2+12))          Two extra weightings in Scotland
+    GBNW: 0.0714 # North West (1/(2+12))
+    GBNE: 0.0714 # North East (1/(2+12))
+    GBWM: 0.0714 # West Midlands (1/(2+12))
+    GBEA: 0.0714 # East (1/(2+12))
+    GBSE: 0.0714 # South East (1/(2+12))
+    GBSW: 0.0714 # South West (1/(2+12))
+    GBCY: 0.0714 # Wales (1/(2+12))
+    GBGL: 0.0714 # Greater London (1/(2+12))
+    GBNI: 0.0714 # Northern Ireland (1/(2+12))
   copperplate_regions: []
   build_bidding_zones:
     remove_islands: true

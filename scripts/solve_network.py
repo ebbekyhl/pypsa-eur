@@ -1732,6 +1732,7 @@ def extra_functionality(
     uk_settings = snakemake.params.uk_settings
 
     if uk_settings["uk_fixed_electricity_generation_mix"]:
+        logger.info("Adding UK fixed electricity generation mix.")
         add_UK_fixed_electricity_generation_mix(n, base_year)
     
     if isinstance(uk_settings["uk_brownfield_minimum_capacity_factors"], dict):
@@ -1740,7 +1741,7 @@ def extra_functionality(
         add_UK_minimum_capacity_factors(n, capacity_factors, base_year)
 
     if isinstance(uk_settings["uk_build_out_rates"], dict):
-        logger.info("Adding UK build out rates.")
+        logger.info("Adding UK deployment rates.")
         add_UK_build_out_rates(n, uk_settings["uk_build_out_rates"])
 
     if isinstance(config["local_co2"], dict):

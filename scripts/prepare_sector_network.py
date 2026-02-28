@@ -3032,6 +3032,11 @@ def add_heat(
         heating_efficiencies,
     )
 
+    # "heat_demand" has the hourly demand by nodes split by sector 
+    # (residential water, residential space, services water, services space)
+    # it does not account for the distribution between rural and urban demands, 
+    # which is done in the following lines.
+
     cop = xr.open_dataarray(cop_profiles_file)
     direct_heat_profile = xr.open_dataarray(direct_heat_source_utilisation_profile_file)
     district_heat_info = pd.read_csv(district_heat_share_file, index_col=0)
@@ -3119,6 +3124,9 @@ def add_heat(
                     factor * (1 + options["district_heating"]["district_heating_loss"])
                 )
             )
+
+        # "heat_load" contains the hourly heat demand split by sector (residential, services) and, in urban areas,
+        #  by individual and central (district) heating.
 
         n.add(
             "Load",
@@ -6837,6 +6845,11 @@ def scale_UK_gas_network(n):
     for region, interconnections in dic.items():
         links = n.links.copy()
         uk_gas_pipelines = links.query("carrier =='gas pipeline'").loc[links.query("carrier =='gas pipeline'").index.str.contains(region)]
+        
+        if uk_gas_pipelines.empty:
+            logger.info("{region} not in network")
+            continue
+
         if interconnections[0] != "any":
             uk_gas_pipelines = uk_gas_pipelines.loc[uk_gas_pipelines.index.str.contains(interconnections[0])]
         uk_gas_pipelines_rev = uk_gas_pipelines[uk_gas_pipelines.index.str.contains("reversed")]

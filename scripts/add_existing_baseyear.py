@@ -1003,7 +1003,7 @@ def add_storage_capacities_installed_before_baseyear(n, baseyear):
     battery_duration = 6 # assume 6 hours discharge time for battery storage units
     if not existing_batteries.empty:
         
-        # Update power capacity
+        # Update discharging power capacity
         n.links.loc[battery.index, 
                     "p_nom_min"] = battery["Capacity"].values
         

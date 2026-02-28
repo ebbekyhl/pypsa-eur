@@ -1354,10 +1354,25 @@ def add_TES_energy_to_power_ratio_constraints(n: pypsa.Network) -> None:
         n.links.index.str.contains("water tanks charger|water pits charger")
         & n.links.p_nom_extendable
     ]
+
     indices_stores_e_nom_extendable = n.stores.index[
-        n.stores.index.str.contains("water tanks|water pits")
-        & n.stores.e_nom_extendable
-    ]
+            n.stores.index.str.contains("water tanks|water pits")
+            & n.stores.e_nom_extendable
+        ]
+
+    # Ensure indices of chargers and stores match
+    indices_charger_p_nom_extendable_df = pd.DataFrame(indices_charger_p_nom_extendable)
+    indices_charger_p_nom_extendable_df["index_reduced"] = indices_charger_p_nom_extendable.str.split(" charger", expand = True).get_level_values(0)
+    indices_stores_e_nom_extendable_df = pd.DataFrame(indices_stores_e_nom_extendable)
+    indices_stores_e_nom_extendable_df["index_reduced"] = indices_stores_e_nom_extendable.str.split("-", expand = True).get_level_values(0)
+
+    indices_stores_e_nom_extendable_df = indices_stores_e_nom_extendable_df.reset_index().set_index("index_reduced")
+    indices_charger_p_nom_extendable_df = indices_charger_p_nom_extendable_df.reset_index().set_index("index_reduced")
+
+    index_in_common = indices_charger_p_nom_extendable_df.index.intersection(indices_stores_e_nom_extendable_df.index)
+
+    indices_charger_p_nom_extendable = pd.Index(indices_charger_p_nom_extendable_df.loc[index_in_common]["Link"].values)
+    indices_stores_e_nom_extendable = pd.Index(indices_stores_e_nom_extendable_df.loc[index_in_common]["Store"].values)
 
     if indices_charger_p_nom_extendable.empty or indices_stores_e_nom_extendable.empty:
         logger.warning(
@@ -1888,109 +1903,77 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
 
         df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_collective_co2_" + investment_year + "_" + clusters + ".csv")
 
-def add_uk_load_shedding(n, base_year):
+def add_load_shedding(n):
+    buses = n.buses
 
-    investment_year = int(snakemake.wildcards.planning_horizons)
-    if investment_year > base_year:
-        logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
-        return
-
-    n.add("Carrier", "load", color="#dd2e23", nice_name="Load shedding")
+    n.add("Carrier", 
+        "load",#
+        color="#000000", 
+        nice_name="Load shedding")
     
-    buses_i = n.buses.loc[n.buses.index.str.contains("GB")].index
-    
-    load_shedding = 100e3 # Eur/MWh
-
-    n.add(
-        "Generator",
-        buses_i,
-        " load",
-        bus=buses_i,
-        carrier="load",
-        marginal_cost=load_shedding, 
+    n.add("Generator", 
+        buses.index + " load shedding",
+        bus=buses.index,
+        carrier='load',
+        marginal_cost=1e5, # Eur/MWh
+        # intersect between macroeconomic and surveybased willingness to pay
+        # http://journal.frontiersin.org/article/10.3389/fenrg.2015.00055/full
         p_nom_extendable = True,
-        p_nom=1e9,  # MW
-    )
-
+        capital_cost = 0)
 
 def freeze_uk_capacities(n, base_year):
-    buses_of_relevance = n.buses.query("carrier == 'AC' or carrier.str.contains('heat') or carrier.str.contains('low voltage') or carrier in ['H2', 'NH3', 'methanol', 'battery'] or carrier.str.contains('water')").index
     investment_year = int(snakemake.wildcards.planning_horizons)
     if investment_year > base_year:
-        logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
+        logger.info("Freezing capacities in UK only applies to the base year. Skipping.")
         return
     else:
-        logger.info("Planning year equals base year. Freezing UK capacities.")
+        logger.info("Freezing capacities in UK for the baseyear.")
 
-    # links (looping over buses)
-    for bus in ["bus0", "bus1", "bus2", "bus3", "bus4"]:
+    # add load shedding
+    add_load_shedding(n)
 
-        ########################## LINKS ########################################################
-        uk_links = n.links.query(f"{bus}.str.contains('GB')").query("capital_cost > 0 or carrier.str.contains('charge')").index
-        uk_links_df = n.links.loc[uk_links]
-        uk_links_df = uk_links_df.loc[uk_links_df[bus].isin(buses_of_relevance)]
-
-        # For special cases
-        uk_links_df_special = uk_links_df.loc[uk_links_df.p_nom_min != uk_links_df.p_nom]
-        n.links.loc[uk_links_df_special.index, "p_nom"] = n.links.loc[uk_links_df_special.index, "p_nom"] + n.links.loc[uk_links_df_special.index, "p_nom_min"] 
-        
-        # Non-special cases
-        uk_links_df_normal = uk_links_df.loc[uk_links_df.p_nom_min == uk_links_df.p_nom]
-        uk_links_df_normal_zeros = uk_links_df_normal.loc[uk_links_df_normal.p_nom == 0].index
-
-        # if empty, then skip
-        if len(uk_links_df_normal_zeros) == 0:
-            continue
-        else:
-            logger.info(f"Freezing {len(uk_links_df_normal_zeros)} UK links with zero p_nom in {bus}.")
-
-        # Check for links with reversed counterparts
-        uk_links_reversed = n.links.loc[uk_links_df_normal_zeros].copy()
-        reverse_strings = ["-reversed"]
-        uk_links_reversed_index = pd.Index([])
-        for rev_str in reverse_strings:
-            uk_links_reversed_index_i = uk_links_reversed.index.str.split(f"-{base_year}", expand = True).get_level_values(0) + f"{rev_str}-{base_year}"
-            # check if the created indices exist in the network
-            intersect = n.links.index.intersection(uk_links_reversed_index_i)
-            if len(intersect) > 0:
-                uk_links_reversed_index = uk_links_reversed_index.append(intersect)
-
-        # get the reversed links
-        uk_links_reversed = n.links.loc[uk_links_reversed_index]
-        uk_links = pd.Index(uk_links)
-        if len(uk_links_reversed) > 0:
-            uk_links = uk_links.append(uk_links_reversed.index)
-            uk_links_df_normal_zeros = uk_links_df_normal_zeros.append(uk_links_reversed.index)
-
-        # For the remaining links, set p_nom_extendable to False
-        n.links.loc[uk_links, "p_nom_extendable"] = False
-        
-    ########################## GENERATORS #######################################################
     # generators
-    uk_generators = n.generators.loc[n.generators.index.str.contains("GB")].query("capital_cost > 0").index
-    uk_generators_df = n.generators.loc[uk_generators]
-    uk_generators_df = uk_generators_df.loc[uk_generators_df.bus.isin(buses_of_relevance)]
-
-    # For special cases
-    uk_generators_df_special = uk_generators_df.loc[uk_generators_df.p_nom_min != uk_generators_df.p_nom]
-    n.generators.loc[uk_generators_df_special.index, "p_nom"] = n.generators.loc[uk_generators_df_special.index, "p_nom"] + n.generators.loc[uk_generators_df_special.index, "p_nom_min"]
-
-    # Non-special cases
-    uk_generators_df_normal = uk_generators_df.loc[uk_generators_df.p_nom_min == uk_generators_df.p_nom]
-    n.generators.loc[uk_generators_df_normal.index, "p_nom_extendable"] = False
-
-    ########################## Stores #######################################################
+    uk_generators = n.generators.query("bus.str.contains('GB')")
+    
+    # lines
+    uk_lines = n.lines.query("bus0.str.contains('GB') or bus1.str.contains('GB')")
+    
+    # links
+    carriers = ["AC", "urban central heat"]
+    uk_buses = n.buses.query("index.str.contains('GB') and carrier.isin(@carriers)")
+    uk_links = n.links.query("bus1.isin(@uk_buses.index)")
+    uk_links = uk_links.query("carrier.str.contains('OCGT') | carrier.str.contains('CCGT') | carrier.str.contains('nuclear') | carrier.str.contains('lignite') | carrier.str.contains('coal') | carrier.str.contains('oil') | carrier.str.contains('CHP') | carrier.str.contains('heat pump')") 
+    
     # stores
-    uk_stores = n.stores.loc[n.stores.index.str.contains("GB")].query("capital_cost > 0").index
-    uk_stores_df = n.stores.loc[uk_stores]
+    uk_stores = n.stores.query("bus.str.contains('GB')")
+    
+    # storage units
+    uk_storage_units = n.storage_units.query("bus.str.contains('GB')")
+    
+    elements = {
+                "generators": uk_generators, 
+                "lines": uk_lines, 
+                "links": uk_links, 
+                "stores": uk_stores, 
+                "storage_units": uk_storage_units
+                }
+    attributes = {"generators": "p", "lines": "s", "links": "p", "stores": "e", "storage_units": "p"}
 
-    # For special cases
-    uk_stores_df_special = uk_stores_df.loc[uk_stores_df.e_nom_min != uk_stores_df.e_nom]
-    n.stores.loc[uk_stores_df_special.index, "e_nom"] = n.stores.loc[uk_stores_df_special.index, "e_nom"] + n.stores.loc[uk_stores_df_special.index, "e_nom_min"]
+    for element_name, element in elements.items():
+        att = attributes[element_name]
+        df = getattr(n, element_name)
+        conditions = f"capital_cost > 0 and {att}_nom_extendable"
+        elements_to_freeze = df.loc[element.index].query(conditions)
 
-    # Non-special cases
-    uk_stores_df_normal = uk_stores_df.loc[uk_stores_df.e_nom_min == uk_stores_df.e_nom]
-    n.stores.loc[uk_stores_df_normal.index, "e_nom_extendable"] = False
+        if element_name == "links":
+            elements_to_freeze_rev_index = elements_to_freeze.index.str[:-4] + f"reversed-{base_year}"
+            elements_to_freeze = pd.concat([elements_to_freeze, df.loc[df.index.intersection(elements_to_freeze_rev_index)]])
+
+        # before freezing, merge p_nom_min and p_nom
+        element_tf_special = elements_to_freeze.loc[elements_to_freeze[f"{att}_nom_min"] != elements_to_freeze[f"{att}_nom"]]
+        df.loc[element_tf_special.index, f"{att}_nom"] = df.loc[element_tf_special.index, f"{att}_nom"] + df.loc[element_tf_special.index, f"{att}_nom_min"]
+        
+        df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
 
 def solve_network(
     n: pypsa.Network,
@@ -2148,9 +2131,6 @@ if __name__ == "__main__":
     base_year = snakemake.config["scenario"]["planning_horizons"][0]
     if uk_settings["uk_freeze_base_year_capacities"]:
         freeze_uk_capacities(n, base_year)
-
-    if uk_settings["uk_load_shedding"]:
-        add_uk_load_shedding(n, base_year)
 
     logging_frequency = snakemake.config.get("solving", {}).get(
         "mem_logging_frequency", 30

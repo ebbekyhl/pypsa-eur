@@ -9,6 +9,7 @@ import logging
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import pypsa
 import xarray as xr
 
@@ -156,7 +157,7 @@ def add_brownfield(
             n.links.loc[gas_pipes_i, "p_nom"] = remaining_capacity
             n.links.loc[gas_pipes_i, "p_nom_max"] = remaining_capacity
 
-def add_planned_generation_capacities(n, year, file):
+def add_planned_generation_capacities(n, year, file, onshore_regions_file):
     """
     Adding planned generation capacities under construction to the network.
     This includes both renewable and conventional power plants.
@@ -171,6 +172,9 @@ def add_planned_generation_capacities(n, year, file):
     None
         This function modifies the network in place and does not return a value.
     """
+    # Read regions
+    onshore_regions = gpd.read_file(onshore_regions_file).set_index("name").to_crs(3857)
+
     # Read data with planned power plants under construction
     df_OIM_pp_uc = pd.read_csv(file)
     df_OIM_pp_uc.Technology = df_OIM_pp_uc.Technology.replace({"Natural Gas": "CCGT",
@@ -193,7 +197,8 @@ def add_planned_generation_capacities(n, year, file):
             continue
 
         capacity_added = df_tech_in_grouped["Capacity"].sum()
-        print(tech, capacity_added, " will be added")
+
+        logger.info(f"{tech} {capacity_added}MW will be added")
 
         if tech in ["onwind", "offwind-dc", "offwind-ac", "solar", "solar rooftop"]:    
             # We need to treat renewables separately, as they are included at different resource classes, representing 
@@ -210,6 +215,26 @@ def add_planned_generation_capacities(n, year, file):
             df_tech_in_grouped.index = df_tech_in_grouped_index + f" {res_level} " + tech + "-" + str(year)
 
             planned_capacity= df_tech_in_grouped["Capacity"].copy()
+
+            # in the case that some capacity is located in a cell where the technology is not feasible, then move it to the neighboring region
+            onshore_regions_available = onshore_regions.loc[n.generators.query("carrier == @tech").bus]
+            not_contained = planned_capacity.index.difference(n.generators.query("carrier == @tech").index)
+            if len(not_contained) > 0:
+                not_contained_index = list(pd.DataFrame(not_contained)[0].str.split(f"{res_level} {tech}", expand = True)[0].str.strip())
+                logger.info("Planned capacity at resource level ", res_level, " for technology ", tech, " that cannot be added at the location specified in the data set: ", not_contained_index)
+                for t in not_contained_index:
+                    target = onshore_regions.loc[[t]]
+
+                    nearest = gpd.sjoin_nearest(
+                        target,
+                        onshore_regions,
+                        how="left",
+                        distance_col="dist_m"
+                    ).query("name_right != @t")
+
+                    nearest = nearest.query("name_right.isin(@onshore_regions_available.index)").sort_values("dist_m")["name_right"].iloc[0]
+                    planned_capacity.index = planned_capacity.index.str.replace(t, nearest)
+                    planned_capacity = planned_capacity.groupby(planned_capacity.index).sum()
 
             stop = False
             i = 0
@@ -571,7 +596,8 @@ if __name__ == "__main__":
     )
 
     file_powerplants = snakemake.input.uk_brownfield_power_plant_under_construction
-    add_planned_generation_capacities(n, year, file_powerplants)
+    onshore_regions = snakemake.input.onshore_regions
+    add_planned_generation_capacities(n, year, file_powerplants, onshore_regions)
     file_storage = snakemake.input.uk_brownfield_storage
     add_planned_storage_capacities(n, year, file_storage)
 

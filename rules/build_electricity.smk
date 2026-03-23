@@ -9,6 +9,7 @@ rule build_electricity_demand:
         drop_leap_day=config_provider("enable", "drop_leap_day"),
         countries=config_provider("countries"),
         load=config_provider("load"),
+        uk_settings=config_provider("uk_settings", "data"),
     input:
         reported=ancient("data/electricity_demand_raw.csv"),
         synthetic=lambda w: (

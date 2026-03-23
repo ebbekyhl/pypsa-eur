@@ -393,6 +393,18 @@ def read_and_clean_OIM_UK_powerplants(uk_regions, baseyear):
 
     return df_OIM_powerplants
 
+def update_gas_storage_setting(n):
+    """
+    For the base year, we allow gas storage capacity in locations outside of UK 
+    to be expanded, to calibrate the model. This is to address any inadequate data 
+    in countries outside of UK, which could lead to infeasible scenarios.
+    """
+    df = getattr(n, "stores")
+    gas_stores = df.query("carrier == 'gas'")
+    UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
+
+    df.loc[gas_stores.drop(index = UK_gas_stores.index).index, "e_nom_extendable"] = True
+
 def attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions):
     oim_points = gpd.GeoDataFrame(
         df_OIM_pp,
@@ -1390,6 +1402,8 @@ if __name__ == "__main__":
             ],
             use_electricity_distribution_grid=options["electricity_distribution_grid"],
         )
+
+    update_gas_storage_setting(n)
 
     if options.get("cluster_heat_buses", False):
         cluster_heat_buses(n)

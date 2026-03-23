@@ -306,7 +306,8 @@ def add_planned_generation_capacities(n, year, file, onshore_regions_file):
             
             planned_capacity = df_tech_in_grouped["Capacity"].copy()
             planned_capacity.index = planned_capacity.index + " " + tech + "-" + str(year)
-            n.links.loc[planned_capacity.index, "p_nom_min"] = planned_capacity.values
+            efficiency = n.links.loc[planned_capacity.index, "efficiency"]
+            n.links.loc[planned_capacity.index, "p_nom_min"] = (planned_capacity / efficiency).values
 
             print("For", tech, ", total planned capacity added: ", capacity_added, " MW")
 

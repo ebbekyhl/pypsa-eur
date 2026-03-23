@@ -457,11 +457,15 @@ def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
     # nuclear: 0.7 # https://assets.publishing.service.gov.uk/media/5a75a748e5274a545822d2b9/Nuclear_Capacity_in_the_UK.pdf 
 
     investment_year = int(snakemake.wildcards.planning_horizons)
-    if investment_year > base_year:
-        logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
-        return
+
     T = len(n.snapshots)
     for tech, minimum_capacity_factor in capacity_factors.items():
+
+        if not investment_year in minimum_capacity_factor.keys():
+            logger.info(f"No minimum capacity factor specified for {tech} in year {investment_year}, skipping constraint.")
+            continue
+
+        minimum_capacity_factor_t_y = minimum_capacity_factor[investment_year]
 
         # Select UK links of that tech
         tech_uk = n.links[
@@ -469,7 +473,7 @@ def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
         ]
 
         # Prebuilt (brownfield) capacities only
-        tech_uk_prebuilt = tech_uk[tech_uk.build_year < base_year]
+        tech_uk_prebuilt = tech_uk[tech_uk.build_year < investment_year] if not (investment_year == base_year) else tech_uk[tech_uk.build_year <= investment_year] 
 
         # If no prebuilt capacity, skip constraint
         if tech_uk_prebuilt.empty:
@@ -487,7 +491,7 @@ def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
         tech_uk_prod = n.model["Link-p"].loc[:, tech_uk_prebuilt.index].sum()
 
         # Minimum energy requirement: CF * capacity * time
-        min_energy = minimum_capacity_factor * tech_uk_cap * T
+        min_energy = minimum_capacity_factor_t_y * tech_uk_cap * T
 
         lhs = -tech_uk_prod + min_energy
 
@@ -497,28 +501,16 @@ def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
         # log
         logger.info(f"Added minimum capacity factor constraint for UK {tech}: {minimum_capacity_factor}")
 
-def add_UK_build_out_rates(n, build_out_rates):
-
-    # For example:
-    # heatpump: 1000 # heat pumps in MW_th (only applies to 2025 base year for calibration purpose) [MW / year]
-    # onwind: 1000 # onshore wind [MW / year]
-    # offwind: 1000 # offshore wind (including AC, DC, floating) [MW / year]
-    # solar: 1000 # utility scale PV [MW / year]
-    # solar-rooftop: 1000 # rooftop PV [MW / year]
+def add_UK_deployment_rate_limits(n, deployment_rate_limits):
 
     investment_year = int(snakemake.wildcards.planning_horizons)
 
-    uk_generators = n.generators.loc[n.generators.index.str.contains("GB")]
+    uk_generators = n.generators.query("bus.str.contains('GB')")
     uk_links = n.links.loc[n.links.index.str.contains("GB")]
-
-    for tech in build_out_rates.keys():
-        
-        if investment_year > 2025: # we only limit build out rates for the base year
-            continue
+    for tech in deployment_rate_limits.keys():
 
         if tech in ["heat pump"]:
             # by 2025, UK has 250,000 heat pumps installed (https://www.edie.net/uk-passes-250000-heat-pump-milestone/)            
-
             uk_links_hp = uk_links.loc[uk_links.index.str.contains(tech)]   
             uk_links_hp_extend = uk_links_hp.query("p_nom_extendable == True")
             COP_avg = 3 # assumed average COP of heat pumps
@@ -531,99 +523,27 @@ def add_UK_build_out_rates(n, build_out_rates):
                 uk_generators_vre = uk_generators.query("carrier == @tech")
     
             uk_generators_vre_extend = uk_generators_vre.query("p_nom_extendable == True")
+
+            if uk_generators_vre_extend.empty:
+                logger.info(f"No extendable {tech} capacity in UK, skipping deployment rate limit constraint.")
+                continue
+
             lhs = n.model["Generator-p_nom"].loc[uk_generators_vre_extend.index].sum()
         
-        rhs = build_out_rates[tech] 
-        n.model.add_constraints(lhs <= rhs, name=f"build_out_limit_{tech}_{investment_year}")
-        logger.info(f"Added build out rate constraint for UK {tech}: {rhs} MW / year")
+        rhs = deployment_rate_limits[tech] 
+        n.model.add_constraints(lhs <= rhs, name=f"deployment_rate_limit_{tech}_{investment_year}")
+        logger.info(f"Added deployment rate limit for UK {tech}: {rhs} MW / 5-year period")
 
-def add_global_co2_constraint(n: pypsa.Network, config: dict) -> None:
+def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
     """
-    This function adds a collective CO2 emissions constraints for all countries that
-    do not have their own targets.
-    """
-    countries = snakemake.params.countries
-    local_co2 = config["local_co2"]
-
-    if isinstance(local_co2, dict):
-        local_co2_countries = local_co2.keys()
-
-        # remove local co2 countries from the collective
-        collective = [x for x in countries if x not in local_co2_countries]
-    
-    else: 
-        collective = countries
-        local_co2_countries = False
-
-    logger.info("Collective = %s", collective)
-
-    options = snakemake.params.sector
-    investment_year = int(snakemake.wildcards.planning_horizons)
-    sectors = determine_emission_sectors(options)
-    nhours = n.snapshot_weightings.generators.sum()
-    nyears = nhours / 8760
-    limit = calculate_co2_limit(investment_year, options, collective)
-    logger.info("Collective CO2 emissions limit relative to 1990 :", limit)
-
-    # CO2 allowance
-    co2_totals_file = snakemake.input.co2_totals
-    co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0)
-    co2_1990 = co2_totals.loc[collective, sectors].sum().sum()
-    co2_allowance = co2_1990 * limit * nyears
-    logger.info("CO2 emissions allowance for collective :", co2_allowance)
-
-    # 1. Carbon Capture 
-    dac = n.links.query('carrier == "DAC"')
-    CarbCapt = dac[dac.index.str[0:2].isin(collective)]
-    CarbCapt_algebra = algebra_carboncapture(n, CarbCapt.index, sign = "positive")
-
-    # 2. Process emissions (A) 
-    pe = n.links.query('bus1 == "co2 atmosphere"')
-    ProcEmissions = pe if not local_co2_countries else pe[~pe.index.str[0:2].isin(local_co2_countries)]
-    ProcEmissions_algebra = algebra_process_emissions(n, ProcEmissions.index)
-
-    # 3. Process emissions (B) 
-    pe_2 = n.loads.index[n.loads.index.str.contains('emissions')]
-    ProcEmissions_2 = pe_2 if not local_co2_countries else pe_2[~pe_2.str[0:2].isin(local_co2_countries)]
-    ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*nhours).sum()
-
-    # 4. Generation emissions
-    ge = n.links.query('bus2 == "co2 atmosphere"').copy() # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
-    ge.drop(ge.query("carrier == 'DAC'").index, inplace=True) # excluding DAC
-    GenEmissions = ge if not local_co2_countries else ge[~ge.index.str[0:2].isin(local_co2_countries)]
-    GenEmissions_algebra = algebra_generation_emissions(n, GenEmissions.index)
-
-    # 5. Biomass and Gas CHP
-    bg = n.links.query('bus3 == "co2 atmosphere"') 
-    bg = bg if not local_co2_countries else bg[~bg.index.str[0:2].isin(local_co2_countries)]
-    BioGas = bg[bg.efficiency3 > 0]
-    BioGas_algebra = algebra_bio_gas(n, BioGas.index)
-
-    # 6. Carbon Removal from CHP CC and production of electrobiofuels  
-    CarbRem = bg[bg.efficiency3 < 0]
-    CarbRem_algebra = algebra_carboncapture(n, CarbRem.index, sign = "negative")
-
-    # 7. Imports of fuels with embedded carbon emissions
-    imports = n.links.query('bus0 == "co2 atmosphere"') 
-    imports = imports if not local_co2_countries else imports[~imports.index.str[0:2].isin(local_co2_countries)]
-    CarbImp_algrebra = algebra_imports(n, imports.index)
-
-    # Net CO2 Emissions Constraint
-    emissions = ProcEmissions_algebra + GenEmissions_algebra + BioGas_algebra + ProcEmissions_2_sum + CarbImp_algrebra
-    removal = CarbCapt_algebra + CarbRem_algebra
-
-    lhs = emissions 
-    rhs = removal + co2_allowance
-
-    n.model.add_constraints(
-        lhs <= rhs,
-        name="collective co2 emissions constraint",
-    )
-
-def add_local_co2_constraint_expression(n: pypsa.Network, local_co2: dict) -> None:
-    """
-    This function adds local CO2 emissions constraints for each country specified 
-    in the dictionary "local_co2" in the config file.
+    This function adds local net co2 emissions constraints, according to the limits 
+    specified in the "local_co2" variable in the config file. 
+    For the remaining countries not listed, a collective co2 emisssions constraint is 
+    added, with the limit equivalent to the carbon budget "co2_budget" defined in the 
+    config file. 
+    The current version excludes the region specified in the local_co2 from the collective 
+    constraint. Later, we should make it an option of either including or excluding the region
+    in the collective constraint.
     """
     co2_totals_file = snakemake.input.co2_totals
     co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0) # convert Mt to tCO2
@@ -633,104 +553,69 @@ def add_local_co2_constraint_expression(n: pypsa.Network, local_co2: dict) -> No
     nhours = n.snapshot_weightings.generators.sum()
     nyears = nhours / 8760
 
-    year = int(snakemake.wildcards.planning_horizons)
-    countries = local_co2.keys()
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    local_co2_regions = list(local_co2.keys())
 
     expr = n.optimize.expressions.energy_balance(
                                                 bus_carrier="co2",
                                                 groupby=False
                                                 )
 
-    for country in countries:
-        # CO2 allowance
-        limit = local_co2[country][year]
-        logger.info("Individual CO2 emissions limit relative to 1990 :", limit)
-        co2_1990 = co2_totals.loc[country, sectors].sum() # tCO2 emissions per year
+    # add local CO2 emissions constraints
+    i = 0
+    for region in local_co2_regions:
+
+        if (not region in co2_totals.index) or (investment_year not in local_co2[region].keys()):
+            local_co2_regions.remove(region)
+            logger.info(f"Region {region} specified in local_co2 not found in co2_totals, skipping local CO2 constraint for this region.")
+            continue
+        
+        # calculating the net CO2 emissions allowance for the country
+        limit = local_co2[region][investment_year]
+
+        co2_1990 = co2_totals.loc[region, sectors].sum() # tCO2 emissions per year
         net_co2_allowance = co2_1990 * limit * nyears
-        logger.info("CO2 emissions allowance for " + country + " :", net_co2_allowance)
+        logger.info(f"Net CO2 emissions cap for {region}: {net_co2_allowance}")
 
-        # Add expression containing all CO2 variables attached to country
-        uk_expr_0 = expr.sel(Link=expr.coords["Link"].str.contains(country)).sel(group = 0)
+        # Add expression containing all CO2 sources and sinks attached to the country
+        mask = expr.coords["Link"].str.contains(region)
+        expr_c_group = expr.sel(Link=mask, group = 0) # group 0 corresponds to links
 
-        lhs = uk_expr_0.sum()
+        lhs = expr_c_group.sum()
         rhs = net_co2_allowance
 
         n.model.add_constraints(
             lhs <= rhs,
-            name="local co2 emissions constraint " + country ,
+            name="local co2 emissions constraint " + region ,
         )
 
-def add_local_co2_constraint(n: pypsa.Network, local_co2: dict) -> None:
-    """
-    This function adds local CO2 emissions constraints for each country specified 
-    in the dictionary "local_co2" in the config file.
-    """
-    co2_totals_file = snakemake.input.co2_totals
-    co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0) # convert Mt to tCO2
+        if i == 0:
+            mask_merged = mask.copy()
+        else:
+            mask_merged = mask_merged | mask
 
-    options = snakemake.params.sector
-    sectors = determine_emission_sectors(options)
-    nhours = n.snapshot_weightings.generators.sum()
-    nyears = nhours / 8760
+        i += 1
 
-    year = int(snakemake.wildcards.planning_horizons)
-    countries = local_co2.keys()
-    for country in countries:
-        # CO2 allowance
-        limit = local_co2[country][year]
-        logger.info("Individual CO2 emissions limit relative to 1990 :", limit)
-        co2_1990 = co2_totals.loc[country, sectors].sum() # tCO2 emissions per year
-        co2_allowance = co2_1990 * limit * nyears
-        logger.info("CO2 emissions allowance for " + country + " :", co2_allowance)
+    # Add global co2 emissions constraint
+    all_countries = snakemake.params.countries
+    collective = [x for x in all_countries if x not in local_co2_regions]
+    limit = calculate_co2_limit(investment_year, options, collective)
+    co2_1990 = co2_totals.loc[collective, sectors].sum().sum()
+    net_co2_allowance = co2_1990 * limit * nyears
+    logger.info(f"Collective CO2 emissions budget for {len(collective)} countries: {net_co2_allowance}")
 
-        # 1. Carbon Capture 
-        dac = n.links.query('carrier == "DAC"')
-        CarbCapt = dac[dac.index.str.contains(country)]
-        CarbCapt_algebra = algebra_carboncapture(n, CarbCapt.index, sign = "positive")
-        
-        # 2. Process emissions (A) 
-        pe = n.links.query('bus1 == "co2 atmosphere"')
-        ProcEmissions = pe[pe.index.str.contains(country)]
-        ProcEmissions_algebra = algebra_process_emissions(n, ProcEmissions.index)
+    try:
+        expr_collective_group = expr.sel(Link=~mask_merged, group = 0)
+    except:
+        expr_collective_group = expr.sel(group = 0)
 
-        # 3. Process emissions (B)
-        pe_2 = n.loads.index[n.loads.index.str.contains('emissions')]
-        ProcEmissions_2 = pe_2[pe_2.str.contains(country)]
-        ProcEmissions_2_sum = -(n.loads.loc[ProcEmissions_2].p_set*nhours).sum()
+    lhs = expr_collective_group.sum()
+    rhs = net_co2_allowance
 
-        # 4. Generation emissions, Aviation etc. (all links which emits CO2 through bus2)
-        ge = n.links.query('bus2 == "co2 atmosphere"').copy() # links going from fuel buses (e.g., gas, coal, lignite etc.) to "CO2 atmosphere" bus
-        ge.drop(ge.query("carrier == 'DAC'").index, inplace=True) # excluding DAC
-        GenEmissions = ge[ge.index.str.contains(country)]
-        GenEmissions_algebra = algebra_generation_emissions(n, GenEmissions.index)
-
-        # 5. Biomass and Gas CHP
-        bg = n.links.query('bus3 == "co2 atmosphere"') 
-        bg = bg[bg.index.str.contains(country)]
-        BioGas = bg[bg.efficiency3 > 0]
-        BioGas_algebra = algebra_bio_gas(n, BioGas.index)
-
-        # 6. Carbon Removal from CHP CC and production of electrobiofuels  
-        CarbRem = bg[bg.efficiency3 < 0]
-        CarbRem_algebra = algebra_carboncapture(n, CarbRem.index, sign = "negative")
-
-        # 7. Imports of fuels with embedded carbon emissions
-        imports = n.links.query('bus0 == "co2 atmosphere"') 
-        imports = imports[imports.index.str.contains(country)]
-        CarbImp_algrebra = algebra_imports(n, imports.index)
-
-        # Net CO2 Emissions Constraint
-        emissions = ProcEmissions_algebra + GenEmissions_algebra + BioGas_algebra + ProcEmissions_2_sum + CarbImp_algrebra
-        removal = CarbCapt_algebra + CarbRem_algebra
-
-        lhs = emissions 
-        rhs = removal + co2_allowance
-
-        n.model.add_constraints(
-            lhs <= rhs,
-            name="local co2 emissions constraint " + country ,
-        )
-
+    n.model.add_constraints(
+        lhs <= rhs,
+        name="collective co2 emissions constraint",
+    )
 
 def add_co2_sequestration_limit(
     n: pypsa.Network,
@@ -1610,7 +1495,7 @@ def add_flexible_egs_constraint(n):
     )
 
 
-def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex):
+def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex, type: str, limit_sense: str = "<=", limit: dict | None = None) -> None:
     """
     Add constraint for limiting green energy imports (synthetic and biomass).
     Does not include fossil fuel imports.
@@ -1621,9 +1506,6 @@ def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex):
 
     import_links = n.links.loc[n.links.carrier.str.contains("import")].index
     import_gens = n.generators.loc[n.generators.carrier.str.contains("import")].index
-
-    limit = n.config["sector"]["imports"]["limit"]
-    limit_sense = n.config["sector"]["imports"]["limit_sense"]
 
     if (import_links.empty and import_gens.empty):
         return
@@ -1645,11 +1527,12 @@ def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex):
 
             rhs = lim * 1e6 * nyears
 
-            n.model.add_constraints(lhs, limit_sense, rhs, name=f"import_limit_{c}")
-            logger.info(f"Added import limit constraint for {c} with {limit_sense} {lim} TWh_fuel/year")
+            n.model.add_constraints(lhs, limit_sense, rhs, name=f"{type}_import_limit_{c}")
+            logger.info(f"Added {type} import limit constraint for {c} with {limit_sense} {lim} TWh_fuel/year")
 
 
 def add_co2_atmosphere_constraint(n, snapshots):
+    logger.info("Adding global CO2 constraint.")
     glcs = n.global_constraints[n.global_constraints.type == "co2_atmosphere"]
 
     if glcs.empty:
@@ -1734,14 +1617,21 @@ def extra_functionality(
         # add_carbon_constraint(n, snapshots)
         # add_carbon_budget_constraint(n, snapshots)
         add_retrofit_gas_boiler_constraint(n, snapshots)
-    # else:
-    #     add_co2_atmosphere_constraint(n, snapshots)
+    elif not isinstance(config["local_co2"], dict):
+        add_co2_atmosphere_constraint(n, snapshots)
 
     if config["sector"]["enhanced_geothermal"]["enable"]:
         add_flexible_egs_constraint(n)
 
-    if config["sector"]["imports"]["enable"]:
-        add_import_limit_constraint(n, snapshots)
+    if config["sector"]["green_imports"]["enable"]:
+        limit = config["sector"]["green_imports"]["limit"]
+        limit_sense = config["sector"]["green_imports"]["limit_sense"]
+        add_import_limit_constraint(n, snapshots, "green", limit_sense, limit)
+
+    if config["sector"]["fossil_imports"]["enable"]:
+        limit = config["sector"]["fossil_imports"]["limit"]
+        limit_sense = config["sector"]["fossil_imports"]["limit_sense"]
+        add_import_limit_constraint(n, snapshots, "fossil", limit_sense, limit)
 
     base_year = snakemake.config["scenario"]["planning_horizons"][0]
     uk_settings = snakemake.params.uk_settings
@@ -1755,62 +1645,13 @@ def extra_functionality(
         capacity_factors = uk_settings["uk_brownfield_minimum_capacity_factors"]
         add_UK_minimum_capacity_factors(n, capacity_factors, base_year)
 
-    if isinstance(uk_settings["uk_build_out_rates"], dict):
+    if isinstance(uk_settings["uk_deployment_rate_limits"], dict):
         logger.info("Adding UK deployment rates.")
-        add_UK_build_out_rates(n, uk_settings["uk_build_out_rates"])
+        add_UK_deployment_rate_limits(n, uk_settings["uk_deployment_rate_limits"])
 
     if isinstance(config["local_co2"], dict):
         logger.info("Adding local CO2 constraint.")
-        add_local_co2_constraint(n, config["local_co2"])
-
-    countries = snakemake.params.countries
-    local_co2_countries = config["local_co2"].keys() if config["local_co2"] is not False else False
-
-    if isinstance(local_co2_countries, list):
-        collective = [x for x in countries if x not in local_co2_countries]
-
-        collective_co2_countries = True if len(collective) > 0 else False
-
-        if collective_co2_countries:
-            logger.info("Adding collective CO2 constraint.")
-            add_global_co2_constraint(n, config)
-
-    else:
-        logger.info("Adding global CO2 constraint.")
-        co2_budget = snakemake.params.co2_budget
-        options = snakemake.params.sector
-        investment_year = int(snakemake.wildcards.planning_horizons)
-        nhours = n.snapshot_weightings.generators.sum()
-        nyears = nhours / 8760
-
-        if isinstance(co2_budget, str) and co2_budget.startswith("cb"):
-            fn = "results/" + snakemake.params.RDIR + "/csvs/carbon_budget_distribution.csv"
-            if not os.path.exists(fn):
-                emissions_scope = snakemake.params.emissions_scope
-                input_co2 = snakemake.input.co2
-                build_carbon_budget(
-                    co2_budget,
-                    snakemake.input.eurostat,
-                    fn,
-                    emissions_scope,
-                    input_co2,
-                    options,
-                    countries,
-                    snakemake.params.planning_horizons,
-                )
-            co2_cap = pd.read_csv(fn, index_col=0).squeeze()
-            limit = co2_cap.loc[investment_year]
-        else:
-            limit = get(co2_budget, investment_year)
-
-        add_co2limit(
-            n,
-            options,
-            snakemake.input.co2_totals,
-            countries,
-            nyears,
-            limit,
-        )
+        add_split_co2_constraints(n, config["local_co2"])
 
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality
@@ -1852,42 +1693,15 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
     """
     Save dual values of CO2 constraints to CSV files.
     """
+    # model specs
     investment_year = snakemake.wildcards.planning_horizons
-    clusters = snakemake.wildcards.clusters
-    
-    countries = snakemake.params.countries
 
-    if isinstance(n.config["local_co2"], dict):
-        local_co2_countries = n.config["local_co2"].keys()
-        for country in local_co2_countries:
+    # get constraints
+    constraints = pd.Series(n.model.constraints)
+    co2_constraints = constraints.loc[constraints.str.contains("co2", case=False)]
 
-            constraint_name = "local co2 emissions constraint " + country
-
-            df = pd.Series(n.model.dual[constraint_name].values)
-            coord = list(n.model.dual[constraint_name].coords)
-
-            if len(coord) == 1:
-                df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
-                df.index.name = coord[0]
-            
-            if len(coord) == 2:
-                df.index = pd.Series(n.model.dual[constraint_name].coords[coord[0]])
-                df.columns = pd.Series(n.model.dual[constraint_name].coords[coord[1]])
-
-                df.index.name = coord[0]
-                df.columns.name = coord[1]
-
-            df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_local_co2_" + country + "_" + investment_year + "_" + clusters + ".csv")
-
-        collective = [x for x in countries if x not in local_co2_countries]
-    
-    else: 
-        collective = countries
-        local_co2_countries = False
-
-    if len(collective) > 0:
-        constraint_name = "collective co2 emissions constraint"
-
+    # loop over constraints and save duals
+    for constraint_name in co2_constraints:
         df = pd.Series(n.model.dual[constraint_name].values)
         coord = list(n.model.dual[constraint_name].coords)
 
@@ -1902,10 +1716,10 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
             df.index.name = coord[0]
             df.columns.name = coord[1]
 
-        df.to_csv("results/" + snakemake.params.RDIR + "/networks/dual_collective_co2_" + investment_year + "_" + clusters + ".csv")
+        df.to_csv(f"results/{snakemake.params.RDIR}/networks/{constraint_name}_{investment_year}.csv")
 
 def add_load_shedding(n):
-    buses = n.buses
+    buses = n.buses.drop(index = n.buses.query("carrier.str.contains('co2')").index)
 
     n.add("Carrier", 
         "load",#
@@ -1923,6 +1737,31 @@ def add_load_shedding(n):
         capital_cost = 0)
 
 
+def freeze_uk_wind_projects(n, dictionary):
+    investment_year = int(snakemake.wildcards.planning_horizons)
+
+    for tech, years in dictionary.items():
+        if not investment_year in years:
+            continue
+
+        # generators
+        uk_generators = n.generators.query("bus.str.contains('GB')")
+        
+        elements = {"generators": uk_generators}
+        attributes = {"generators": "p"}
+
+        conditions = "carrier.str.contains(@tech)"
+
+        for element_name, element in elements.items():
+            att = attributes[element_name]
+            df = getattr(n, element_name)
+            elements_to_freeze = df.loc[element.index].query(conditions)
+
+            # before freezing, merge p_nom_min and p_nom
+            element_tf_special = elements_to_freeze.loc[elements_to_freeze[f"{att}_nom_min"] != elements_to_freeze[f"{att}_nom"]]
+            df.loc[element_tf_special.index, f"{att}_nom"] = df.loc[element_tf_special.index, f"{att}_nom"] + df.loc[element_tf_special.index, f"{att}_nom_min"]
+            df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
+
 def freeze_uk_capacities(n, base_year):
     investment_year = int(snakemake.wildcards.planning_horizons)
     if investment_year > base_year:
@@ -1930,6 +1769,26 @@ def freeze_uk_capacities(n, base_year):
         return
     else:
         logger.info("Freezing capacities in UK for the baseyear.")
+
+    # Fix AC and DC transmission lines everywhere
+    transmission_dic = {"AC": ["lines", "s_nom_extendable"], 
+                        "DC": ["links", "p_nom_extendable"]}
+    for carrier, element in transmission_dic.items():
+        df = getattr(n, element[0])
+        df_carrier = df.query("carrier == @carrier")
+        df.loc[df_carrier.index, element[1]] = False
+
+    # Fix emerging technologies everywhere
+    emerging_techs = ["CC", "DAC", 
+                      "H2 Electrolysis", 
+                      "H2 turbine", "H2 Fuel Cell", 
+                      "methanolisation",
+                      "redox flow"]
+    for carrier in emerging_techs:
+        condition = "carrier.str.contains(@carrier)" if not carrier == "CC" else "carrier.str.endswith(@carrier)"
+        df = getattr(n, "links")
+        df_carrier = df.query(condition)
+        df.loc[df_carrier.index, "p_nom_extendable"] = False
 
     # add load shedding
     add_load_shedding(n)
@@ -1941,11 +1800,13 @@ def freeze_uk_capacities(n, base_year):
     uk_lines = n.lines.query("bus0.str.contains('GB') or bus1.str.contains('GB')")
     
     # links
-    carriers = ["AC", "urban central heat"]
+    carriers = ["AC", "urban central heat", "urban decentral heat", "rural heat"]
     uk_buses = n.buses.query("index.str.contains('GB') and carrier.isin(@carriers)")
     uk_links = n.links.query("bus1.isin(@uk_buses.index)")
     uk_links = uk_links.query("carrier.str.contains('OCGT') | carrier.str.contains('CCGT') | carrier.str.contains('nuclear') | carrier.str.contains('lignite') | carrier.str.contains('coal') | carrier.str.contains('oil') | carrier.str.contains('CHP') | carrier.str.contains('heat pump')") 
-    
+    pipelines = n.links.query("carrier.str.contains('pipeline') and (bus0.str.contains('GB') or bus1.str.contains('GB'))")
+    uk_links = pd.concat([uk_links, pipelines])
+
     # stores
     uk_stores = n.stores.query("bus.str.contains('GB')")
     
@@ -2093,7 +1954,7 @@ def solve_network(
         n.model.print_infeasibilities()
         raise RuntimeError("Solving status 'infeasible'. Infeasibilities computed.")
 
-    # save_co2_constraint_duals(n)
+    save_co2_constraint_duals(n)
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -2133,6 +1994,46 @@ if __name__ == "__main__":
     base_year = snakemake.config["scenario"]["planning_horizons"][0]
     if uk_settings["uk_freeze_base_year_capacities"]:
         freeze_uk_capacities(n, base_year)
+
+    if isinstance(uk_settings["uk_freeze_wind_projects"], dict):
+        freeze_uk_wind_projects(n, uk_settings["uk_freeze_wind_projects"])
+
+    if not isinstance(snakemake.config["local_co2"], dict):
+        countries = snakemake.params.countries
+        co2_budget = snakemake.params.co2_budget
+        options = snakemake.params.sector
+        investment_year = int(snakemake.wildcards.planning_horizons)
+        nhours = n.snapshot_weightings.generators.sum()
+        nyears = nhours / 8760
+
+        if isinstance(co2_budget, str) and co2_budget.startswith("cb"):
+            fn = "results/" + snakemake.params.RDIR + "/csvs/carbon_budget_distribution.csv"
+            if not os.path.exists(fn):
+                emissions_scope = snakemake.params.emissions_scope
+                input_co2 = snakemake.input.co2
+                build_carbon_budget(
+                    co2_budget,
+                    snakemake.input.eurostat,
+                    fn,
+                    emissions_scope,
+                    input_co2,
+                    options,
+                    countries,
+                    snakemake.params.planning_horizons,
+                )
+            co2_cap = pd.read_csv(fn, index_col=0).squeeze()
+            limit = co2_cap.loc[investment_year]
+        else:
+            limit = get(co2_budget, investment_year)
+
+        add_co2limit(
+            n,
+            options,
+            snakemake.input.co2_totals,
+            countries,
+            nyears,
+            limit,
+        )
 
     logging_frequency = snakemake.config.get("solving", {}).get(
         "mem_logging_frequency", 30

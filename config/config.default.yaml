@@ -35,7 +35,7 @@ foresight: myopic
 # Wildcard docs in https://pypsa-eur.readthedocs.io/en/latest/wildcards.html
 scenario:
   clusters:
-  - 60 # minimum number of clusters vary with the variable "area_threshold" under clustering
+  - 110 # minimum number of clusters vary with the variable "area_threshold" under clustering
   opts:
   - ''
   sector_opts:
@@ -106,10 +106,16 @@ uk_settings:
 
   solve:
     uk_freeze_base_year_capacities: true # only in the base year: if true, only brownfield capacities are allowed in the UK, i.e., disallowing capacity expansion.
-    uk_brownfield_minimum_capacity_factors: {CCGT: 0.5} # minimum capacity factors of brownfield capacities  # minimum capacity factors of brownfield capacities 
+    uk_freeze_wind_projects: 
+      onwind: [2030,] # we assume that UK wind projects for 2030 are already established and will not be subject to expansion decisions in the model.
+      offwind: [2030,] # we assume that UK wind projects for 2030 are already established and will not be subject to expansion decisions in the model.
+    uk_brownfield_minimum_capacity_factors: # minimum capacity factors of brownfield capacities 
+      CCGT: 
+        2025: 0.35
     uk_fixed_electricity_generation_mix: false # fix electricity generation mix to historical levels
-    uk_build_out_rates: false # limit the deployment of certain technologies [MW / year] to represent realistic build-out rates in the UK
-    
+    uk_deployment_rate_limits: 
+      onwind: 15000 # equivalent to UK's entire onshore wind installments [MW] as per 2025.
+
   # Further UK assumptions not listed here but are included further down: 
   # - CO2 emissions targets: search for "local_co2:"
   # - District heating potential: search for "sector:", then "district_heating:", then "potential" 
@@ -142,7 +148,7 @@ enable:
 # Add national CO2 emissions reduction targets
 local_co2:
   GB:
-    2025: 0.460 # https://www.warpnews.org/green-tech/uk-greenhouse-gas-emissions-drop-to-lowest-level-since-1872/
+    # 2025: 0.460 # https://www.warpnews.org/green-tech/uk-greenhouse-gas-emissions-drop-to-lowest-level-since-1872/
     2030: 0.383 # Legislated carbon budget 
     2035: 0.220 # The Sixth Carbon Budget
     2040: 0.092 # Exponential decay
@@ -151,8 +157,7 @@ local_co2:
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#co2-budget
 co2_budget:
-  2020: 0.720 # average emissions of 2019 to 2021 relative to 1990, CO2 excl LULUCF, EEA data, European Environment Agency. (2023a). Annual European Union greenhouse gas inventory 1990–2021 and inventory report 2023 - CRF Table. https://unfccc.int/documents/627830
-  2025: 0.648 # With additional measures (WAM) projection, CO2 excl LULUCF, European Environment Agency. (2023e). Member States’ greenhouse gas (GHG) emission projections 2023. https://www.eea.europa.eu/en/datahub/datahubitem-view/4b8d94a4-aed7-4e67-a54c-0623a50f48e8
+  2025: 0.628 # Historical GHG emissions by EU members in 2024 relative to 1990, https://www.eea.europa.eu/en/analysis/publications/trends-and-projections-in-europe-2025/total-net-ghg-emissions?activeTab=570bee2d-1316-48cf-adde-4b640f92119b 
   2030: 0.450 # 55% reduction by 2030 (Ff55)
   2035: 0.250
   2040: 0.100 # 90% by 2040
@@ -207,7 +212,7 @@ electricity:
     enable: false
     by_country: false
 
-  transmission_limit: v1.0
+  transmission_limit: v1.2 
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#atlite
 atlite:
@@ -558,7 +563,7 @@ sector:
       GB: 0.1
     progress:
       2020: 0.0
-      2025: 0.1
+      2025: 0.0
       2030: 0.25
       2035: 0.4
       2040: 0.55
@@ -889,18 +894,22 @@ sector:
     price: 54 #EUR/MWh
     max_amount: 1390 # TWh
     upstream_emissions_factor: .1 #share of solid biomass CO2 emissions at full combustion
-  imports:
+  green_imports:
+    enable: false 
+    limit: false
+    limit_sense: <=
+    price:
+      gas: 122 
+  fossil_imports:
     enable: true 
     limit: false
-      # EU: 1000
-      # GB: 500 # TWh (if no limit wanted: .inf) 
     limit_sense: <=
     price:
       gas: 50 # 122 # Adding a more recent value for gas import price from LNG 
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#industry
 industry:
-  endogenous_steel: true
+  endogenous_steel: false
   relocation_steel: false
   steel_cc: true
   steel_import: 531 # in €/t (https://www.nature.com/articles/s41467-025-60652-1)
@@ -1031,7 +1040,7 @@ costs:
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#clustering
 clustering:
   mode: busmap
-  area_threshold: 1000000 # km2
+  area_threshold: 1000 # km2
   single_node_regions: # force listed regions to have only one node
     - GBNI 
     - GBGL
@@ -1217,6 +1226,6 @@ solving:
     atol: 1_000_000
     rtol: 0.01
 
-  mem_mb: 15000 # 110000 for 3-hourly fully sector-coupled
+  mem_mb: 110000 # 110000 for 3-hourly fully sector-coupled
   memory_logging_frequency: 5 # in seconds
   runtime: 48h #runtime in humanfriendly style https://humanfriendly.readthedocs.io/en/latest/

@@ -483,15 +483,26 @@ if config["enable"]["retrieve"]:
         response = requests.head(url)
         return response.status_code == 200
 
+    month_mapping = {-2: "Oct", -1: "Nov", 0: "Dec",
+                 1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "Maj",
+                 6: "Jun", 7: "Jul", 8: "Aug", 9: "Sep", 10: "Okt",
+                 11: "Nov", 12: "Dec", 13: "Jan", 14: "Feb"}
+    
+    today = datetime.now() - timedelta(20)
+    today_year = today.year
+    today_month = month_mapping[today.month]
+    previous_month = month_mapping[today.month - 1]
+    next_month = month_mapping[today.month + 1]
+
     # Basic pattern where WDPA files can be found
     url_pattern = (
         "https://d1gam3xoknrgr2.cloudfront.net/current/WDPA_{bYYYY}_Public_shp.zip"
     )
 
     # 3-letter month + 4 digit year for current/previous/next month to test
-    current_monthyear = datetime.now().strftime("%b%Y")
-    prev_monthyear = (datetime.now() - timedelta(30)).strftime("%b%Y")
-    next_monthyear = (datetime.now() + timedelta(30)).strftime("%b%Y")
+    current_monthyear = today_month + str(today_year)
+    prev_monthyear = previous_month + str(today_year) if not today_month == "Jan" else previous_month + str(today_year - 1)
+    next_monthyear = next_month + str(today_year)
 
     # Test prioritised: current month -> previous -> next
     for bYYYY in [current_monthyear, prev_monthyear, next_monthyear]:

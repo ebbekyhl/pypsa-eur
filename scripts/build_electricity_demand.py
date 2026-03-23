@@ -316,7 +316,7 @@ if __name__ == "__main__":
         load.index = load.index.map(lambda t: t.replace(year=snapshots.year[0]))
 
     # add UK electricity demand
-    uk_demand_year = snakemake.config["uk_settings"].get("uk_electricity_demand_year", False)
+    uk_demand_year = snakemake.params["uk_settings"].get("uk_electricity_demand_year", False)
     
     if uk_demand_year:
         years_UK = slice(pd.to_datetime(f"{uk_demand_year}-01-01 00:00:00"), 

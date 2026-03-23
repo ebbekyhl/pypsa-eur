@@ -131,25 +131,19 @@ def add_UK_gas_storage_data(n, onshore, offshore):
     joined_onshore.set_index("name", inplace=True)
 
     # copy stores elements from network
-    stores = n.stores.copy()
+    df = getattr(n, "stores")
+    gas_stores = df.query("carrier == 'gas'")
+    UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
 
-    gas_stores = stores.loc[stores.carrier == "gas"]
-    # gas_stores.loc[:, "e_nom"] = gas_stores.loc[:, "e_nom_min"]
-    # gas_stores.loc[:, "e_nom_min"] = gas_stores.loc[:, "e_nom_min"]
-    gas_stores.loc[:, "e_nom_extendable"] = True
+    # disallow gas storage capacity to be extended in all locations
+    df.loc[gas_stores.index, "e_nom_extendable"] = False
 
-    UK_gas_stores = gas_stores.loc[gas_stores.index.str.contains("GB")]
+    # include more recent data for UK gas storage capacity
     UK_gas_stores_capacity = joined_onshore["Capacity (MWh)"].groupby(joined_onshore.index).sum()
     UK_gas_stores_capacity.index = UK_gas_stores_capacity.index + " gas Store"
     intersect = UK_gas_stores_capacity.index.intersection(UK_gas_stores.index)
-    UK_gas_stores.loc[intersect, "e_nom_min"] = UK_gas_stores_capacity.loc[intersect]
-    UK_gas_stores.loc[UK_gas_stores.index.drop(intersect), "e_nom_min"] = 0
-
-    gas_stores.loc[UK_gas_stores.index, :] = UK_gas_stores
-    stores.loc[gas_stores.index, :] = gas_stores
-    
-    # update network
-    n.stores = stores
+    df.loc[intersect, "e_nom_min"] = UK_gas_stores_capacity.loc[intersect]
+    df.loc[UK_gas_stores.index.drop(intersect), "e_nom_min"] = 0
 
 def scale_up_offwind_potential(n, country, factor):
     offwind_techs = ["offwind-ac", "offwind-dc"]
@@ -6711,6 +6705,7 @@ def add_import_options(
     costs: pd.DataFrame,
     options: dict,
     gas_input_nodes: pd.DataFrame,
+    type: str,
 ):
     """
     Add green energy import options.
@@ -6725,9 +6720,9 @@ def add_import_options(
         Locations of gas input nodes split by LNG and pipeline.
     """
 
-    import_config = options["imports"]
+    import_config = options[f"{type}_imports"]
     import_options = import_config["price"]
-    logger.info(f"Adding import options:\n{pd.Series(import_options)}")
+    logger.info(f"Adding {type} import options:\n{pd.Series(import_options)}")
 
     if "methanol" in import_options:
         co2_intensity = costs.at["methanolisation", "carbondioxide-input"]
@@ -6759,7 +6754,7 @@ def add_import_options(
             p_nom=1e7,
         )
 
-    if "gas" in import_options:
+    if "gas" in import_options and type == "green":
         co2_intensity = costs.at["gas", "CO2 intensity"]
 
         p_nom = gas_input_nodes["lng"].dropna()
@@ -6780,6 +6775,25 @@ def add_import_options(
             efficiency=1 / co2_intensity,
             marginal_cost=import_options["gas"] / co2_intensity,
             p_nom=p_nom / co2_intensity,
+        )
+
+    if "gas" in import_options and type == "fossil":
+        p_nom = gas_input_nodes["lng"].dropna()
+        p_nom.rename(lambda x: x + " gas", inplace=True)  #
+        if len(spatial.gas.nodes) == 1:
+            p_nom = p_nom.sum()
+            nodes = spatial.gas.nodes
+        else:
+            nodes = p_nom.index
+
+        n.add(
+            "Generator",
+            nodes,
+            suffix=" import",
+            carrier="import gas",
+            bus=nodes,
+            marginal_cost=import_options["gas"],
+            p_nom=p_nom,
         )
 
     if "NH3" in import_options:
@@ -7273,8 +7287,11 @@ if __name__ == "__main__":
             egs_capacity_factors="path/to/capacity_factors.csv",
         )
 
-    if options["imports"]["enable"]:
-        add_import_options(n, costs, options, gas_input_nodes)
+    if options["green_imports"]["enable"]:
+        add_import_options(n, costs, options, gas_input_nodes, type = "green")
+
+    if options["fossil_imports"]["enable"]:
+        add_import_options(n, costs, options, gas_input_nodes, type = "fossil")
 
     if options["gas_distribution_grid"]:
         insert_gas_distribution_costs(n, costs, options=options)

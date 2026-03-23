@@ -42,6 +42,7 @@ plotting:
     - biogas
     - co2 stored
     - co2
+    - kerosene for aviation
     carrier_groups:
       electricity:
       - AC
@@ -107,8 +108,9 @@ plotting:
     - methanol
     - co2 stored
     - urban central heat
-    - steel
-    - hbi
+    - kerosene for aviation
+    # - steel
+    # - hbi
     AC:
       unit: TWh
       unit_conversion: 1_000_000
@@ -230,6 +232,20 @@ plotting:
       - 50
       branch_sizes:
     oil:
+      unit: TWh
+      unit_conversion: 1_000_000
+      cmap: Greys
+      vmin:
+      vmax:
+      region_unit: €/MWh
+      bus_factor: 0.002
+      branch_factor: 0.01
+      flow_factor: 100
+      bus_sizes:
+      - 200
+      - 100
+      branch_sizes:
+    kerosene for aviation:
       unit: TWh
       unit_conversion: 1_000_000
       cmap: Greys

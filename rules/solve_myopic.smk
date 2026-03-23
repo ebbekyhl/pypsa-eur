@@ -95,6 +95,7 @@ rule add_brownfield:
         cop_profiles=resources("cop_profiles_base_s_{clusters}_{planning_horizons}.nc"),
         uk_brownfield_power_plant_under_construction = resources("uk_brownfield_cleaned_powerplants_{clusters}_{opts}_{sector_opts}_2025_under_construction.csv"),
         uk_brownfield_storage = resources("uk_brownfield_cleaned_storage_{clusters}_{opts}_{sector_opts}_2025.csv"),    
+        onshore_regions = resources("regions_onshore_base_s_{clusters}.geojson"),
     output:
         network = resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}_brownfield.nc"

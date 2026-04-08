@@ -501,20 +501,64 @@ def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
         # log
         logger.info(f"Added minimum capacity factor constraint for UK {tech}: {minimum_capacity_factor}")
 
-def add_UK_deployment_rate_limits(n, deployment_rate_limits):
+def add_UK_deployment_rate_limits(n, deployment_rate_limits, base_year):
 
     investment_year = int(snakemake.wildcards.planning_horizons)
+
+    if not investment_year > base_year:
+        logger.info("Planning year equals base year where capacities are fixed, and, thus, deployment rate limits are not needed.")
+        return
 
     uk_generators = n.generators.query("bus.str.contains('GB')")
     uk_links = n.links.loc[n.links.index.str.contains("GB")]
     for tech in deployment_rate_limits.keys():
 
-        if tech in ["heat pump"]:
+        if type(deployment_rate_limits[tech]) not in [int, float]:
+            return 
+
+        elif tech in ["heat pump"]:
             # by 2025, UK has 250,000 heat pumps installed (https://www.edie.net/uk-passes-250000-heat-pump-milestone/)            
             uk_links_hp = uk_links.loc[uk_links.index.str.contains(tech)]   
             uk_links_hp_extend = uk_links_hp.query("p_nom_extendable == True")
             COP_avg = 3 # assumed average COP of heat pumps
             lhs = n.model["Link-p_nom"].loc[uk_links_hp_extend.index].sum() * COP_avg
+            rhs = deployment_rate_limits[tech] 
+
+        elif tech in ["transmission"]:
+            # Transmission lines are divided into AC and DC. The expansion limits should be applied to the total transmission volume, which is the sum of AC and DC lines. 
+            power_factor = 0.7 # conversion from line capacity in MVA to MW
+            uk_transmission_links = n.links.query("(bus0.str.contains('GB') and bus1.str.contains('GB')) and carrier == 'DC' and not index.str.contains('rev')") # including only internal lines
+            uk_transmission_lines = n.lines.query("bus0.str.contains('GB') and bus1.str.contains('GB')") # including only internal lines
+
+            # Today's total transmission volume in the UK (in MW-km)
+            dc_links_vol_today = (n.links.loc[uk_transmission_links.index].p_nom_min * uk_transmission_links.length).sum()
+            ac_lines_vol_today = power_factor * (n.lines.loc[uk_transmission_lines.index].s_nom_min * uk_transmission_lines.length).sum()
+            transmission_vol_today = dc_links_vol_today + ac_lines_vol_today
+
+            # Extendable subsets
+            ext_dc = uk_transmission_links[uk_transmission_links.p_nom_extendable]
+            ext_ac = uk_transmission_lines[uk_transmission_lines.s_nom_extendable]
+
+            # Variables
+            dc_var = n.model["Link-p_nom"].loc[ext_dc.index]
+            ac_var = n.model["Line-s_nom"].loc[ext_ac.index]
+
+            # Existing lines/links capacity
+            dc_existing = ext_dc.p_nom_min
+            ac_existing = ext_ac.s_nom_min
+
+            # Existing lines/links length
+            dc_length = ext_dc.length
+            ac_length = ext_ac.length
+
+            # Build linear expressions
+            dc_expansion = ((dc_var - dc_existing) * dc_length).sum()
+            ac_expansion = power_factor * ((ac_var - ac_existing) * ac_length).sum()
+
+            # The expansion limit is defined as a fraction of today's total transmission volume in the UK. 
+            expansion_fraction = deployment_rate_limits[tech] # fraction of today's transmission volume that can be added per 5-year period
+            lhs = dc_expansion + ac_expansion
+            rhs = expansion_fraction * transmission_vol_today
 
         else:
             if tech in ["offwind"]:
@@ -529,8 +573,8 @@ def add_UK_deployment_rate_limits(n, deployment_rate_limits):
                 continue
 
             lhs = n.model["Generator-p_nom"].loc[uk_generators_vre_extend.index].sum()
+            rhs = deployment_rate_limits[tech] 
         
-        rhs = deployment_rate_limits[tech] 
         n.model.add_constraints(lhs <= rhs, name=f"deployment_rate_limit_{tech}_{investment_year}")
         logger.info(f"Added deployment rate limit for UK {tech}: {rhs} MW / 5-year period")
 
@@ -1647,7 +1691,7 @@ def extra_functionality(
 
     if isinstance(uk_settings["uk_deployment_rate_limits"], dict):
         logger.info("Adding UK deployment rates.")
-        add_UK_deployment_rate_limits(n, uk_settings["uk_deployment_rate_limits"])
+        add_UK_deployment_rate_limits(n, uk_settings["uk_deployment_rate_limits"], base_year)
 
     if isinstance(config["local_co2"], dict):
         logger.info("Adding local CO2 constraint.")

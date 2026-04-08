@@ -115,6 +115,7 @@ uk_settings:
     uk_fixed_electricity_generation_mix: false # fix electricity generation mix to historical levels
     uk_deployment_rate_limits: 
       onwind: 15000 # equivalent to UK's entire onshore wind installments [MW] as per 2025.
+      transmission: 0.25 # max transmission expansion per 5-year timestep as fraction of today's volume
 
   # Further UK assumptions not listed here but are included further down: 
   # - CO2 emissions targets: search for "local_co2:"

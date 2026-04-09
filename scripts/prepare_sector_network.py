@@ -88,62 +88,17 @@ def remove_ie_from_network(n):
     ireland_stores = n.stores[n.stores.bus.isin(ireland_buses)].index
     n.remove("Store", ireland_stores)
 
-def add_UK_gas_storage_data(n, onshore, offshore):
-    onshore_regions =  gpd.read_file(onshore)
-    onshore_regions.set_index("name", inplace=True)
-    onshore_regions = onshore_regions.loc[onshore_regions.index.str.contains("GB")]
-
-    offshore_regions =  gpd.read_file(offshore)
-    offshore_regions.set_index("name", inplace=True)
-    offshore_regions = offshore_regions.loc[offshore_regions.index.str.contains("GB")]
-
-    gas_storage_UK = pd.read_csv("data/data_UK/UK_gas_storage_capacity.csv")
-    gas_storage_UK['points'] = gpd.points_from_xy(gas_storage_UK.lon, gas_storage_UK.lat)
-    gas_storage_UK = gpd.GeoDataFrame(gas_storage_UK, geometry='points')
-
-    # transform points (lat, lon) to the same CRS as regions
-    gas_storage_UK = gas_storage_UK.set_crs(epsg=4326)  # assuming the original CRS is WGS84
-    gas_storage_UK = gas_storage_UK.to_crs(onshore_regions.crs)
-
-    joined_onshore = gpd.sjoin(
-        gas_storage_UK,
-        onshore_regions,
-        how="left",
-        predicate="within"
-    )
-
-    joined_offshore = gpd.sjoin(
-        gas_storage_UK,
-        offshore_regions,
-        how="left",
-        predicate="within"
-    )
-
-    # get indices with nan values for onshore 
-    nan_onshore_indices = joined_onshore[joined_onshore['name'].isna()].index
-
-    # check if nan_onshore_indices are in joined_offshore
-    # If so, replace the nan values in joined_onshore with the corresponding values from joined_offshore
-    for idx in nan_onshore_indices:
-        if idx in joined_offshore.index:
-            joined_onshore.at[idx, 'name'] = joined_offshore.at[idx, 'name']
-
-    joined_onshore.set_index("name", inplace=True)
-
+def fix_gas_storage(n):
     # copy stores elements from network
     df = getattr(n, "stores")
     gas_stores = df.query("carrier == 'gas'")
-    UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
 
     # disallow gas storage capacity to be extended in all locations
     df.loc[gas_stores.index, "e_nom_extendable"] = False
 
-    # include more recent data for UK gas storage capacity
-    UK_gas_stores_capacity = joined_onshore["Capacity (MWh)"].groupby(joined_onshore.index).sum()
-    UK_gas_stores_capacity.index = UK_gas_stores_capacity.index + " gas Store"
-    intersect = UK_gas_stores_capacity.index.intersection(UK_gas_stores.index)
-    df.loc[intersect, "e_nom_min"] = UK_gas_stores_capacity.loc[intersect]
-    df.loc[UK_gas_stores.index.drop(intersect), "e_nom_min"] = 0
+    # set UK gas stores to 0 as they will be added later in the "add_existing_baseyear" script
+    UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
+    df.loc[UK_gas_stores.index, "e_nom"] = 0
 
 def scale_up_offwind_potential(n, country, factor):
     offwind_techs = ["offwind-ac", "offwind-dc"]
@@ -1856,8 +1811,28 @@ def add_electricity_grid_connection(n, costs):
 
 def add_ldes_storage(n, tech):
 
-    techs_stores_dict = {"redox flow battery":"Vanadium-Redox-Flow-store"}
-    techs_links_dict = {"redox flow battery":"Vanadium-Redox-Flow-bicharger"} 
+    techs_stores_dict = {"redox flow battery":"Vanadium-Redox-Flow-store",
+                         "compressed air": "Compressed-Air-Adiabatic-store",
+                         "molten salt": "HighT-Molten-Salt-store",
+                         "liquid air": "Liquid-Air-store"}
+    techs_links_dict = {"redox flow battery":"Vanadium-Redox-Flow-bicharger",
+                        "compressed air": "Compressed-Air-Adiabatic-bicharger",
+                        "molten salt charger": "HighT-Molten-Salt-charger",
+                        "molten salt discharger": "HighT-Molten-Salt-discharger", 
+                        "liquid air charger": "Liquid-Air-charger",
+                        "liquid air discharger": "Liquid-Air-discharger"} 
+
+    if tech in ["redox flow battery", "compressed air"]:
+        tech_charge = tech 
+        tech_discharge = tech
+
+        charge_capital_cost = 0 # included in the discharge component 
+
+    else:
+        tech_charge = tech + " charger"
+        tech_discharge = tech + " discharger"
+
+        charge_capital_cost = costs.at[techs_links_dict[tech_charge],"capital_cost"]
 
     nodes = pop_layout.index
 
@@ -1872,15 +1847,16 @@ def add_ldes_storage(n, tech):
             location=nodes,
             carrier=tech)
 
-    # Add charging and discharging links (we assume capital cost is per unit of electricity output)
+    # Add charging and discharging links (we assume capital cost is per unit of electricity output) 
     n.add("Link",
                 nodes + f" {tech} charger",
                 bus0 = nodes,
                 bus1 = nodes + f" {tech}",
                 p_nom_extendable = True,
                 carrier = f"{tech} charger",
-                efficiency = costs.at[techs_links_dict[tech],"efficiency"],
-                lifetime = costs.at[techs_links_dict[tech],'lifetime'])
+                efficiency = costs.at[techs_links_dict[tech_charge],"efficiency"],
+                capital_cost = charge_capital_cost,
+                lifetime = costs.at[techs_links_dict[tech_charge],'lifetime'])
 
     n.add("Link",
                 nodes + f" {tech} discharger",
@@ -1888,9 +1864,9 @@ def add_ldes_storage(n, tech):
                 bus1 = nodes,
                 p_nom_extendable = True,
                 carrier = f"{tech} discharger",
-                efficiency = costs.at[techs_links_dict[tech],"efficiency"],
-                capital_cost = costs.at[techs_links_dict[tech],"capital_cost"] * costs.at[techs_links_dict[tech],"efficiency"],
-                lifetime = costs.at[techs_links_dict[tech],'lifetime'])
+                efficiency = costs.at[techs_links_dict[tech_discharge],"efficiency"],
+                capital_cost = costs.at[techs_links_dict[tech_discharge],"capital_cost"] * costs.at[techs_links_dict[tech_discharge],"efficiency"],
+                lifetime = costs.at[techs_links_dict[tech_discharge],'lifetime'])
 
     # Add storage tank
     n.add("Store",
@@ -7328,10 +7304,12 @@ if __name__ == "__main__":
         countries.remove("IE")
         remove_ie_from_network(n)
 
-    if uk_settings_data["uk_new_gas_storage_data"]:
-        onshore = snakemake.input.regions_onshore
-        offshore = snakemake.input.regions_offshore
-        add_UK_gas_storage_data(n, onshore, offshore)
+    # if uk_settings_data["uk_new_gas_storage_data"]:
+    #     onshore = snakemake.input.regions_onshore
+    #     offshore = snakemake.input.regions_offshore
+    #     add_UK_gas_storage_data(n, onshore, offshore)
+
+    fix_gas_storage(n)
         
     factor = uk_settings_prepare.get("uk_scale_up_offwind_potential", None)
     if isinstance(factor, (int, float)):

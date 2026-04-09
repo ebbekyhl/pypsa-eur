@@ -393,17 +393,74 @@ def read_and_clean_OIM_UK_powerplants(uk_regions, baseyear):
 
     return df_OIM_powerplants
 
-def update_gas_storage_setting(n):
+def add_UK_gas_storage_data(n, onshore, offshore, baseyear):
     """
-    For the base year, we allow gas storage capacity in locations outside of UK 
-    to be expanded, to calibrate the model. This is to address any inadequate data 
-    in countries outside of UK, which could lead to infeasible scenarios.
+    
     """
+    onshore_regions =  gpd.read_file(onshore)
+    onshore_regions.set_index("name", inplace=True)
+    onshore_regions = onshore_regions.loc[onshore_regions.index.str.contains("GB")]
+
+    offshore_regions =  gpd.read_file(offshore)
+    offshore_regions.set_index("name", inplace=True)
+    offshore_regions = offshore_regions.loc[offshore_regions.index.str.contains("GB")]
+
+    gas_storage_UK = pd.read_csv("data/data_UK/UK_gas_storage_capacity.csv")
+    gas_storage_UK['points'] = gpd.points_from_xy(gas_storage_UK.lon, gas_storage_UK.lat)
+    gas_storage_UK = gpd.GeoDataFrame(gas_storage_UK, geometry='points')
+
+    # transform points (lat, lon) to the same CRS as regions
+    gas_storage_UK = gas_storage_UK.set_crs(epsg=4326)  # assuming the original CRS is WGS84
+    gas_storage_UK = gas_storage_UK.to_crs(onshore_regions.crs)
+
+    joined_onshore = gpd.sjoin(
+        gas_storage_UK,
+        onshore_regions,
+        how="left",
+        predicate="within"
+    )
+
+    joined_offshore = gpd.sjoin(
+        gas_storage_UK,
+        offshore_regions,
+        how="left",
+        predicate="within"
+    )
+
+    # get indices with nan values for onshore 
+    nan_onshore_indices = joined_onshore[joined_onshore['name'].isna()].index
+
+    # check if nan_onshore_indices are in joined_offshore
+    # If so, replace the nan values in joined_onshore with the corresponding values from joined_offshore
+    for idx in nan_onshore_indices:
+        if idx in joined_offshore.index:
+            joined_onshore.at[idx, 'name'] = joined_offshore.at[idx, 'name']
+
+    joined_onshore.set_index("name", inplace=True)
+
+    # copy stores elements from network
     df = getattr(n, "stores")
     gas_stores = df.query("carrier == 'gas'")
     UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
 
-    df.loc[gas_stores.drop(index = UK_gas_stores.index).index, "e_nom_extendable"] = True
+    # include more recent data for UK gas storage capacity
+    UK_gas_stores_capacity = joined_onshore["Capacity (MWh)"].groupby(joined_onshore.index).sum()
+    UK_gas_stores_capacity.index = UK_gas_stores_capacity.index + " gas Store" + f"-{baseyear}"
+    uk_gas_nodes = UK_gas_stores_capacity.index.intersection(UK_gas_stores.index)
+    uk_non_gas_nodes = UK_gas_stores.index.drop(uk_gas_nodes)
+    df.loc[uk_gas_nodes, "e_nom"] = UK_gas_stores_capacity.loc[uk_gas_nodes]
+    df.loc[uk_gas_nodes, "e_nom_min"] = UK_gas_stores_capacity.loc[uk_gas_nodes]
+    df.loc[uk_non_gas_nodes, "e_nom"] = 0
+    df.loc[uk_non_gas_nodes, "e_nom_min"] = 0
+
+    logger.info(f"Total gas storage capacity in UK of {df.loc[uk_gas_nodes, "e_nom"].sum()} added!")
+
+    # # For the base year, we allow gas storage capacity in locations outside of UK 
+    # # to be expanded, to calibrate the model. This is to address any inadequate data 
+    # # in countries outside of UK, which could lead to infeasible scenarios.
+    # UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
+    # non_UK_gas_stores = gas_stores.drop(index = UK_gas_stores.index).index
+    # df.loc[non_UK_gas_stores, "e_nom_extendable"] = False
 
 def attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions):
     oim_points = gpd.GeoDataFrame(
@@ -1403,7 +1460,12 @@ if __name__ == "__main__":
             use_electricity_distribution_grid=options["electricity_distribution_grid"],
         )
 
-    update_gas_storage_setting(n)
+    uk_settings = snakemake.params.uk_settings
+    if uk_settings["uk_new_gas_storage_data"]:
+        logger.info("Adding UK gas storage data for storage facilities already existing in the base year")
+        onshore = snakemake.input.onshore_regions
+        offshore = snakemake.input.offshore_regions
+        add_UK_gas_storage_data(n, onshore, offshore, baseyear)
 
     if options.get("cluster_heat_buses", False):
         cluster_heat_buses(n)

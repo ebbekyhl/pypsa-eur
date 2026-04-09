@@ -1827,7 +1827,10 @@ def freeze_uk_capacities(n, base_year):
                       "H2 Electrolysis", 
                       "H2 turbine", "H2 Fuel Cell", 
                       "methanolisation",
-                      "redox flow"]
+                      "redox flow", 
+                      "compressed air", 
+                      "molten salt",
+                      "liquid air"]
     for carrier in emerging_techs:
         condition = "carrier.str.contains(@carrier)" if not carrier == "CC" else "carrier.str.endswith(@carrier)"
         df = getattr(n, "links")

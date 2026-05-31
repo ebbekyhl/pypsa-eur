@@ -269,7 +269,7 @@ def load_costs(
 
     annuity_factor = calculate_annuity(costs["lifetime"], costs["discount rate"])
     annuity_factor_fom = annuity_factor + costs["FOM"] / 100.0
-    costs["capital_cost"] = annuity_factor_fom * costs["investment"] * nyears
+    costs["capital_cost"] = annuity_factor_fom * costs["investment"].astype(float) * nyears
 
     costs.at["OCGT", "fuel"] = costs.at["gas", "fuel"]
     costs.at["CCGT", "fuel"] = costs.at["gas", "fuel"]

@@ -450,7 +450,49 @@ def add_UK_fixed_electricity_generation_mix(n, base_year):
 
         logger.info(f"Added generation limits for {carrier} in UK: {c_range}% of total electricity generation")
 
-def add_UK_minimum_capacity_factors(n, capacity_factors, base_year):
+# def add_UK_greenfield_minimum_capacity_factors(n, capacity_factors):
+
+#     T = len(n.snapshots)
+#     for tech, minimum_capacity_factor in capacity_factors.items():
+
+#         minimum_capacity_factor_t = minimum_capacity_factor[tech]
+
+#         # Select UK links of that tech
+#         tech_uk = n.links[
+#             n.links.index.str.contains("GB") & (n.links.carrier == tech)
+#         ]
+
+#         # Prebuilt (brownfield) capacities only
+#         tech_uk_prebuilt = tech_uk[tech_uk.build_year < investment_year] if not (investment_year == base_year) else tech_uk[tech_uk.build_year <= investment_year] 
+
+#         # If no prebuilt capacity, skip constraint
+#         if tech_uk_prebuilt.empty:
+#             continue
+
+#         # Total prebuilt capacity (check for zero or NaN)
+#         tech_uk_cap = tech_uk_prebuilt.p_nom.sum()
+
+#         if (tech_uk_cap is None) or (tech_uk_cap == 0) or (pd.isna(tech_uk_cap)):
+#             # log about zero capacity
+#             logger.info(f"No pre-built {tech} capacity in UK, skipping constraint.")
+#             continue
+
+#         # Total production of those links over all snapshots
+#         tech_uk_prod = n.model["Link-p"].loc[:, tech_uk_prebuilt.index].sum()
+
+#         # Minimum energy requirement: CF * capacity * time
+#         min_energy = minimum_capacity_factor_t_y * tech_uk_cap * T
+
+#         lhs = -tech_uk_prod + min_energy
+
+#         # enforce: tech_uk_prod >= min_energy
+#         n.model.add_constraints(lhs <= 0, name=f"greenfield_capacity_factor_{tech}")
+
+#         # log
+#         logger.info(f"Added minimum capacity factor constraint for UK {tech}: {minimum_capacity_factor}")
+
+
+def add_UK_brownfield_minimum_capacity_factors(n, capacity_factors, base_year):
 
     # For example:
     # CCGT: 0.5 # https://wattdirection.substack.com/p/uk-combined-cycle-gas-power-stations-748
@@ -1687,7 +1729,12 @@ def extra_functionality(
     if isinstance(uk_settings["uk_brownfield_minimum_capacity_factors"], dict):
         logger.info("Adding UK brownfield minimum capacity factors.")
         capacity_factors = uk_settings["uk_brownfield_minimum_capacity_factors"]
-        add_UK_minimum_capacity_factors(n, capacity_factors, base_year)
+        add_UK_brownfield_minimum_capacity_factors(n, capacity_factors, base_year)
+
+    # if isinstance(uk_settings["uk_greenfield_minimum_capacity_factors"], dict):
+    #     logger.info("Adding UK greenfield minimum capacity factors.")
+    #     capacity_factors = uk_settings["uk_greenfield_minimum_capacity_factors"]
+    #     add_UK_greenfield_minimum_capacity_factors(n, capacity_factors)
 
     if isinstance(uk_settings["uk_deployment_rate_limits"], dict):
         logger.info("Adding UK deployment rates.")
@@ -1806,6 +1853,11 @@ def freeze_uk_wind_projects(n, dictionary):
             df.loc[element_tf_special.index, f"{att}_nom"] = df.loc[element_tf_special.index, f"{att}_nom"] + df.loc[element_tf_special.index, f"{att}_nom_min"]
             df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
 
+def remove_storage(n, carrier):
+    df = getattr(n, "stores")
+    uk_stores = n.stores.query("carrier.str.contains(@carrier) and bus.str.contains('GB')")
+    df.loc[uk_stores.index, "e_nom_extendable"] = False
+
 def freeze_uk_capacities(n, base_year):
     investment_year = int(snakemake.wildcards.planning_horizons)
     if investment_year > base_year:
@@ -1814,39 +1866,50 @@ def freeze_uk_capacities(n, base_year):
     else:
         logger.info("Freezing capacities in UK for the baseyear.")
 
-    # Fix AC and DC transmission lines everywhere
+    # Freeze AC and DC transmission lines everywhere
     transmission_dic = {"AC": ["lines", "s_nom_extendable"], 
                         "DC": ["links", "p_nom_extendable"]}
-    for carrier, element in transmission_dic.items():
+    
+    for c, element in transmission_dic.items():
         df = getattr(n, element[0])
-        df_carrier = df.query("carrier == @carrier")
+        df_carrier = df.query("carrier == @c")
         df.loc[df_carrier.index, element[1]] = False
 
-    # Fix emerging technologies everywhere
-    emerging_techs = ["CC", "DAC", 
+    # Freeze emerging technologies everywhere
+    emerging_techs = ["CC", 
+                      "DAC",
+                      "methanol",
+                      "Methanol",
                       "H2 Electrolysis", 
-                      "H2 turbine", "H2 Fuel Cell", 
+                      "H2 turbine", 
+                      "H2 Fuel Cell", 
                       "methanolisation",
                       "redox flow", 
                       "compressed air", 
                       "molten salt",
-                      "liquid air"]
-    for carrier in emerging_techs:
-        condition = "carrier.str.contains(@carrier)" if not carrier == "CC" else "carrier.str.endswith(@carrier)"
+                      "liquid air",
+                      "biomass to liquid",
+                      "solid biomass for industry heat",
+                      "Sabatier",
+                      "Fischer-Tropsch",
+                      "NH3 turbine"]
+    
+    for et in emerging_techs:
+        condition = "carrier.str.contains(@et)" if not et == "CC" else "carrier.str.endswith(@et)"
         df = getattr(n, "links")
         df_carrier = df.query(condition)
         df.loc[df_carrier.index, "p_nom_extendable"] = False
 
-    # add load shedding
+    # add load shedding everywhere
     add_load_shedding(n)
 
-    # generators
+    # UK generators
     uk_generators = n.generators.query("bus.str.contains('GB')")
     
-    # lines
+    # UK lines
     uk_lines = n.lines.query("bus0.str.contains('GB') or bus1.str.contains('GB')")
     
-    # links
+    # UK links
     carriers = ["AC", "urban central heat", "urban decentral heat", "rural heat"]
     uk_buses = n.buses.query("index.str.contains('GB') and carrier.isin(@carriers)")
     uk_links = n.links.query("bus1.isin(@uk_buses.index)")
@@ -2044,6 +2107,10 @@ if __name__ == "__main__":
 
     if isinstance(uk_settings["uk_freeze_wind_projects"], dict):
         freeze_uk_wind_projects(n, uk_settings["uk_freeze_wind_projects"])
+
+    storage_to_remove = uk_settings.get("uk_remove_storage", None)
+    if isinstance(storage_to_remove, str):
+        remove_storage(n, storage_to_remove)
 
     if not isinstance(snakemake.config["local_co2"], dict):
         countries = snakemake.params.countries

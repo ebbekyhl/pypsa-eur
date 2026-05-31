@@ -11,7 +11,8 @@ rule add_existing_baseyear:
         costs=config_provider("costs"),
         heat_pump_sources=config_provider("sector", "heat_pump_sources"),
         energy_totals_year=config_provider("energy", "energy_totals_year"),
-        uk_settings=config_provider("uk_settings", "data"),
+        uk_settings_data=config_provider("uk_settings", "data"),
+        uk_settings_prepare=config_provider("uk_settings", "prepare"),
     input:
         network=resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc"
@@ -83,6 +84,7 @@ rule add_brownfield:
         dynamic_ptes_capacity=config_provider(
             "sector", "district_heating", "ptes", "dynamic_capacity"
         ),
+        uk_settings_prepare=config_provider("uk_settings", "prepare"),
     input:
         unpack(input_profile_tech_brownfield),
         simplify_busmap=resources("busmap_base_s.csv"),

@@ -106,7 +106,7 @@ plotting:
     - gas
     - oil
     - methanol
-    - co2 stored
+    # - co2 stored
     - urban central heat
     - kerosene for aviation
     # - steel
@@ -459,6 +459,7 @@ plotting:
     compressed air: '#80c944'
     compressed air charger: '#5e8032'
     compressed air discharger: '#3c5221'
+    NH3 turbine: '#3c5221'
     molten salt: '#80c944'
     molten salt charger: '#5e8032'
     molten salt discharger: '#3c5221'

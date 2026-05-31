@@ -61,7 +61,7 @@ def add_brownfield(
     dc_i_intersect = dc_i.intersection(n_p.links.index)
     n.links.loc[dc_i_intersect, "p_nom_min"] = n_p.links.loc[dc_i_intersect, "p_nom_opt"]
 
-    for c in n_p.iterate_components(["Link", "Generator", "Store"]):
+    for c in n_p.iterate_components(["Link", "Generator", "Store", "StorageUnit"]):
         attr = "e" if c.name == "Store" else "p"
 
         # first, remove generators, links and stores that track
@@ -157,7 +157,7 @@ def add_brownfield(
             n.links.loc[gas_pipes_i, "p_nom"] = remaining_capacity
             n.links.loc[gas_pipes_i, "p_nom_max"] = remaining_capacity
 
-def add_planned_generation_capacities(n, year, file, onshore_regions_file):
+def add_planned_generation_capacities(n, year, file, onshore_regions_file, uk_settings_prepare):
     """
     Adding planned generation capacities under construction to the network.
     This includes both renewable and conventional power plants.
@@ -174,6 +174,25 @@ def add_planned_generation_capacities(n, year, file, onshore_regions_file):
     """
     # Read regions
     onshore_regions = gpd.read_file(onshore_regions_file).set_index("name").to_crs(3857)
+
+    countries_reduce_dict = uk_settings_prepare["reduce_model_in_the_east"]
+
+    if not isinstance(countries_reduce_dict, dict):
+        countries_reduce_dict = {}
+
+    # Build reverse mapping: country code -> cluster name
+    # e.g. {"HR": "Balkan", "RS": "Balkan", "EE": "Baltic", ...}
+    reverse_mapping = {}
+    for cluster_name, country_codes in countries_reduce_dict.items():
+        for code in country_codes:
+            reverse_mapping[code] = cluster_name + " 0"
+
+    if reverse_mapping:
+        onshore_regions.index.map(reverse_mapping)
+        onshore_regions["zone"] = onshore_regions.index.str[0:2].map(reverse_mapping).fillna("")
+        onshore_regions.loc[onshore_regions.query("zone == ''").index, "zone"] = onshore_regions.query("zone == ''").index
+        onshore_regions = onshore_regions.dissolve(by = "zone")
+        onshore_regions.index.name = "name"
 
     # Read data with planned power plants under construction
     df_OIM_pp_uc = pd.read_csv(file)
@@ -598,7 +617,7 @@ if __name__ == "__main__":
 
     file_powerplants = snakemake.input.uk_brownfield_power_plant_under_construction
     onshore_regions = snakemake.input.onshore_regions
-    add_planned_generation_capacities(n, year, file_powerplants, onshore_regions)
+    add_planned_generation_capacities(n, year, file_powerplants, onshore_regions, snakemake.params.uk_settings_prepare)
     file_storage = snakemake.input.uk_brownfield_storage
     add_planned_storage_capacities(n, year, file_storage)
 

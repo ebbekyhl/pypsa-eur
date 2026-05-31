@@ -35,11 +35,11 @@ foresight: myopic
 # Wildcard docs in https://pypsa-eur.readthedocs.io/en/latest/wildcards.html
 scenario:
   clusters:
-  - 110 # minimum number of clusters vary with the variable "area_threshold" under clustering
+  - 130 # minimum number of clusters vary with the variable "area_threshold" under clustering
   opts:
   - ''
   sector_opts:
-  - '6h'
+  - '3h'
   planning_horizons:
   - 2025
   - 2030
@@ -93,8 +93,8 @@ countries:
 
 uk_settings:
   data:
-    uk_energy_balance_year: 2024 # year for UK energy balance data (ECUK)
-    uk_electricity_demand_year: 2024 # whether to use specific year for UK electricity demand data (NESO)
+    uk_energy_balance_year: 2024 # year for UK energy balance data (ECUK - currently not available for 2025)
+    uk_electricity_demand_year: 2025 # UK electricity demand data (ESPENI)
     uk_new_gas_storage_data: true # whether to use new UK gas storage data (various sources)
     uk_new_powerplants_data: true # whether to use new UK powerplant data (OpenStreetMap)  
     uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov (DUKES)
@@ -103,19 +103,28 @@ uk_settings:
     uk_scale_up_offwind_potential: 2 # to align with UK government's offshore wind targets, we increase the estimated offshore wind potential in the UK by 2 
     uk_only: false # whether the study is intended to only include the UK. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
     uk_include_offshore_buses: false # whether offshore buses (not to be confused with offshore regions) are included.
-
+    electrolysis_p_min_pu: 0.95 # minimum output of electrolysis units 
+    reduce_model_in_the_east: false # whether to reduce the model in the eastern part of Europe by clustering Balkan, Baltic and East European countries into three representative regions, respectively. 
+    use_dynamic_gas_prices: false
+    gas_prices: 
+      UK: 36.0 # https://tradingeconomics.com/commodity/uk-natural-gas (2025 average)
+      EU: 34.0 # https://tradingeconomics.com/commodity/eu-natural-gas (2025 average)
+      imports: 50.0 # https://lngprice.com/ (17.92 USD / MMBtu)
   solve:
     uk_freeze_base_year_capacities: true # only in the base year: if true, only brownfield capacities are allowed in the UK, i.e., disallowing capacity expansion.
     uk_freeze_wind_projects: 
       onwind: [2030,] # we assume that UK wind projects for 2030 are already established and will not be subject to expansion decisions in the model.
       offwind: [2030,] # we assume that UK wind projects for 2030 are already established and will not be subject to expansion decisions in the model.
+    uk_greenfield_minimum_capacity_factors: # minimum capacity factors of brownfield capacities 
+      electrolysis: 0.95
     uk_brownfield_minimum_capacity_factors: # minimum capacity factors of brownfield capacities 
       CCGT: 
         2025: 0.35
     uk_fixed_electricity_generation_mix: false # fix electricity generation mix to historical levels
+    uk_remove_storage: false
     uk_deployment_rate_limits: 
       onwind: 15000 # equivalent to UK's entire onshore wind installments [MW] as per 2025.
-      transmission: 0.25 # max transmission expansion per 5-year timestep as fraction of today's volume
+      # transmission: 0.25 # max transmission expansion per 5-year timestep as fraction of today's volume
 
   # Further UK assumptions not listed here but are included further down: 
   # - CO2 emissions targets: search for "local_co2:"
@@ -126,10 +135,10 @@ uk_settings:
 LDES:
   technologies:
   - redox flow battery
-  # fischer tropsch fuels 
-  # ammonia
-  # liquid air energy storage
-  # molten salt thermal storage
+  - compressed air
+  - molten salt
+  - liquid air
+  ammonia_turbine: true
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#snapshots
 snapshots:
@@ -213,7 +222,7 @@ electricity:
     enable: false
     by_country: false
 
-  transmission_limit: v1.2 
+  transmission_limit: vopt 
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#atlite
 atlite:
@@ -906,7 +915,7 @@ sector:
     limit: false
     limit_sense: <=
     price:
-      gas: 50 # 122 # Adding a more recent value for gas import price from LNG 
+      gas: 50 # Adding a more recent value for gas import price from LNG 
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#industry
 industry:
@@ -1019,7 +1028,13 @@ costs:
     "CO2 intensity": 0
     "discount rate": 0.07
     "standing losses": 0
-  overwrites: {}
+  overwrites : {"investment": {"HighT-Molten-Salt-store": 20.0e3, # EUR / MWh
+                                "Compressed-Air-Adiabatic-store": 26.0e3, # EUR / MWh (assuming above-ground storage)
+                                },
+                "lifetime": {"Compressed-Air-Adiabatic-store": 30.0, # years (median of literature, see Fig. 12 in https://doi.org/10.1016/j.egyr.2025.11.037)
+                            "battery inverter": 15.0, # years (assuming replacement of inverters every 15 years)
+                            },
+                       }
   marginal_cost:
     solar: 0.01
     onwind: 0.015
@@ -1048,18 +1063,22 @@ clustering:
   administrative:
     GB: 3
   focus_weights:
-    GBCE: 0.0714 # Central England (1/(2+12)) 
-    GBEM: 0.0714 # East Midlands (1/(2+12))
-    GBSC: 0.2143 # Scotland (3/(2+12))          Two extra weightings in Scotland
-    GBNW: 0.0714 # North West (1/(2+12))
-    GBNE: 0.0714 # North East (1/(2+12))
-    GBWM: 0.0714 # West Midlands (1/(2+12))
-    GBEA: 0.0714 # East (1/(2+12))
-    GBSE: 0.0714 # South East (1/(2+12))
-    GBSW: 0.0714 # South West (1/(2+12))
-    GBCY: 0.0714 # Wales (1/(2+12))
-    GBGL: 0.0714 # Greater London (1/(2+12))
-    GBNI: 0.0714 # Northern Ireland (1/(2+12))
+    GBCE: 0.057306 # Central England (weighting: 1 / N) # N is the number of regions included in the focus_weights
+    GBEM: 0.057306 # East Midlands (weighting: 1 / N)
+    GBSC: 0.171919 # Scotland (weighting: 3 / N)
+    GBNW: 0.057306 # North West (weighting: 1 / N)
+    GBNE: 0.057306 # North East (weighting: 1 / N)
+    GBWM: 0.057306 # West Midlands (weighting: 1 / N)
+    GBEA: 0.057306 # East (weighting: 1 / N)
+    GBSE: 0.057306 # South East (weighting: 1 / N)
+    GBSW: 0.057306 # South West (weighting: 1 / N)
+    GBCY: 0.057306 # Wales (weighting: 1 / N)
+    GBGL: 0.057306 # Greater London (weighting: 1 / N)
+    GBNI: 0.057306 # Northern Ireland (weighting: 1 / N)
+    ES: 0.0744985 # Spain (weighting:  / N)
+    FR: 0.0744985 # France (weighting:  / N)
+    DE: 0.0487106 # Germany (weighting:  / N)
+
   copperplate_regions: []
   build_bidding_zones:
     remove_islands: true
@@ -1227,6 +1246,6 @@ solving:
     atol: 1_000_000
     rtol: 0.01
 
-  mem_mb: 110000 # 110000 for 3-hourly fully sector-coupled
+  mem_mb: 300000 # 110000 for 3-hourly fully sector-coupled
   memory_logging_frequency: 5 # in seconds
   runtime: 48h #runtime in humanfriendly style https://humanfriendly.readthedocs.io/en/latest/

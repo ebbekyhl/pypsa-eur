@@ -10,7 +10,7 @@ import logging
 import os
 from itertools import product
 from types import SimpleNamespace
-
+import cartopy.crs as ccrs
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -21,6 +21,8 @@ from networkx.algorithms import complement
 from networkx.algorithms.connectivity.edge_augmentation import k_edge_augmentation
 from pypsa.geo import haversine_pts
 from scipy.stats import beta
+
+from cluster_countries import map_countries_to_regions, calculate_centroids
 
 from scripts._helpers import (
     configure_logging,
@@ -93,12 +95,11 @@ def fix_gas_storage(n):
     df = getattr(n, "stores")
     gas_stores = df.query("carrier == 'gas'")
 
+    # set gas stores to 0 as they will be added later in the "add_existing_baseyear" script
+    df.loc[gas_stores.index, "e_nom"] = 0
+
     # disallow gas storage capacity to be extended in all locations
     df.loc[gas_stores.index, "e_nom_extendable"] = False
-
-    # set UK gas stores to 0 as they will be added later in the "add_existing_baseyear" script
-    UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
-    df.loc[UK_gas_stores.index, "e_nom"] = 0
 
 def scale_up_offwind_potential(n, country, factor):
     offwind_techs = ["offwind-ac", "offwind-dc"]
@@ -768,6 +769,10 @@ def remove_elec_base_techs(n: pypsa.Network, carriers_to_keep: dict) -> None:
         n.remove(c.name, names)
         n.carriers.drop(to_remove, inplace=True, errors="ignore")
 
+    # set UK PHS capacity to 0 as this will be added later 
+    storage_units = getattr(n, "storage_units")
+    uk_phs = storage_units.query("bus.str.contains('GB') and carrier == 'PHS'")
+    storage_units.loc[uk_phs.index, "p_nom"] = 0
 
 # TODO: PyPSA-Eur merge issue
 def remove_non_electric_buses(n):
@@ -1809,7 +1814,7 @@ def add_electricity_grid_connection(n, costs):
         "electricity grid connection", "capital_cost"
     ]
 
-def add_ldes_storage(n, tech):
+def add_ldes_storage(n, options):
 
     techs_stores_dict = {"redox flow battery":"Vanadium-Redox-Flow-store",
                          "compressed air": "Compressed-Air-Adiabatic-store",
@@ -1822,61 +1827,83 @@ def add_ldes_storage(n, tech):
                         "liquid air charger": "Liquid-Air-charger",
                         "liquid air discharger": "Liquid-Air-discharger"} 
 
-    if tech in ["redox flow battery", "compressed air"]:
-        tech_charge = tech 
-        tech_discharge = tech
+    for tech in options["technologies"]:
 
-        charge_capital_cost = 0 # included in the discharge component 
+        if tech in ["redox flow battery", "compressed air"]:
+            tech_charge = tech 
+            tech_discharge = tech
 
-    else:
-        tech_charge = tech + " charger"
-        tech_discharge = tech + " discharger"
+            charge_capital_cost = 0 # included in the discharge component 
 
-        charge_capital_cost = costs.at[techs_links_dict[tech_charge],"capital_cost"]
+        else:
+            tech_charge = tech + " charger"
+            tech_discharge = tech + " discharger"
 
-    nodes = pop_layout.index
+            charge_capital_cost = costs.at[techs_links_dict[tech_charge],"capital_cost"]
 
-    # Add carrier
-    n.add("Carrier", tech)
-    n.add("Carrier", tech + " charger")
-    n.add("Carrier", tech + " discharger")
+        nodes = pop_layout.index
 
-    # Add bus
-    n.add("Bus",
-            nodes + " " + tech,
-            location=nodes,
-            carrier=tech)
+        # Add carrier
+        n.add("Carrier", tech)
+        n.add("Carrier", tech + " charger")
+        n.add("Carrier", tech + " discharger")
 
-    # Add charging and discharging links (we assume capital cost is per unit of electricity output) 
-    n.add("Link",
-                nodes + f" {tech} charger",
-                bus0 = nodes,
-                bus1 = nodes + f" {tech}",
-                p_nom_extendable = True,
-                carrier = f"{tech} charger",
-                efficiency = costs.at[techs_links_dict[tech_charge],"efficiency"],
-                capital_cost = charge_capital_cost,
-                lifetime = costs.at[techs_links_dict[tech_charge],'lifetime'])
+        # Add bus
+        n.add("Bus",
+                nodes + " " + tech,
+                location=nodes,
+                carrier=tech)
 
-    n.add("Link",
-                nodes + f" {tech} discharger",
-                bus0 = nodes + f" {tech}",
-                bus1 = nodes,
-                p_nom_extendable = True,
-                carrier = f"{tech} discharger",
-                efficiency = costs.at[techs_links_dict[tech_discharge],"efficiency"],
-                capital_cost = costs.at[techs_links_dict[tech_discharge],"capital_cost"] * costs.at[techs_links_dict[tech_discharge],"efficiency"],
-                lifetime = costs.at[techs_links_dict[tech_discharge],'lifetime'])
+        # Add charging and discharging links (we assume capital cost is per unit of electricity output) 
+        n.add("Link",
+                    nodes + f" {tech} charger",
+                    bus0 = nodes,
+                    bus1 = nodes + f" {tech}",
+                    p_nom_extendable = True,
+                    carrier = f"{tech} charger",
+                    efficiency = costs.at[techs_links_dict[tech_charge],"efficiency"],
+                    capital_cost = charge_capital_cost,
+                    lifetime = costs.at[techs_links_dict[tech_charge],'lifetime'])
 
-    # Add storage tank
-    n.add("Store",
-                nodes + f" {tech} store",
-                bus=nodes + f" {tech}",
-                e_nom_extendable=True,
-                e_cyclic=True,
-                carrier=tech,
-                capital_cost=costs.at[techs_stores_dict[tech],"capital_cost"], 
-                lifetime = costs.at[techs_stores_dict[tech],'lifetime']) 
+        n.add("Link",
+                    nodes + f" {tech} discharger",
+                    bus0 = nodes + f" {tech}",
+                    bus1 = nodes,
+                    p_nom_extendable = True,
+                    carrier = f"{tech} discharger",
+                    efficiency = costs.at[techs_links_dict[tech_discharge],"efficiency"],
+                    capital_cost = costs.at[techs_links_dict[tech_discharge],"capital_cost"] * costs.at[techs_links_dict[tech_discharge],"efficiency"],
+                    lifetime = costs.at[techs_links_dict[tech_discharge],'lifetime'])
+
+        # Add storage tank
+        n.add("Store",
+                    nodes + f" {tech} store",
+                    bus=nodes + f" {tech}",
+                    e_nom_extendable=True,
+                    e_cyclic=True,
+                    carrier=tech,
+                    capital_cost=costs.at[techs_stores_dict[tech],"capital_cost"], 
+                    lifetime = costs.at[techs_stores_dict[tech],'lifetime']) 
+    
+    if options["ammonia_turbine"]:
+        logger.info(
+            "Adding ammonia turbine for re-electrification. Assuming OCGT technology costs."
+        )
+
+        n.add(
+            "Link",
+            nodes + " NH3 turbine",
+            bus0=spatial.ammonia.nodes,
+            bus1=nodes,
+            p_nom_extendable=True,
+            carrier="NH3 turbine",
+            efficiency=costs.at["OCGT", "efficiency"],
+            capital_cost=costs.at["OCGT", "capital_cost"]
+            * costs.at["OCGT", "efficiency"],  # NB: fixed cost is per MWel
+            marginal_cost=costs.at["OCGT", "VOM"],
+            lifetime=costs.at["OCGT", "lifetime"],
+        )
+
 
 def add_storage_and_grids(
     n,
@@ -1888,6 +1915,7 @@ def add_storage_and_grids(
     gas_input_nodes,
     spatial,
     options,
+    uk_settings,
 ):
     """
     Add storage and grid infrastructure to the network including hydrogen, gas, and battery systems.
@@ -1947,6 +1975,8 @@ def add_storage_and_grids(
 
     logger.info("Add hydrogen storage")
 
+    electrolysis_p_min_pu = uk_settings.get("electrolysis_p_min_pu", 0.0)
+
     nodes = pop_layout.index
 
     n.add("Carrier", "H2")
@@ -1963,6 +1993,7 @@ def add_storage_and_grids(
         efficiency=costs.at["electrolysis", "efficiency"],
         capital_cost=costs.at["electrolysis", "capital_cost"],
         lifetime=costs.at["electrolysis", "lifetime"],
+        p_min_pu = electrolysis_p_min_pu
     )
 
     if options["hydrogen_fuel_cell"]:
@@ -6970,6 +7001,61 @@ def make_clean_and_nonclean_classification(n):
 
             n.links = links
 
+def reduce_model_in_the_east(n, regions_onshore, dct1):
+
+    logger.info("Reducing model by aggregating specified countries")
+
+    dct1_rev = {country: region for region, countries in dct1.items() for country in countries}
+
+    regions = gpd.read_file(regions_onshore)
+    regions["country"] = regions["name"].str[0:2]
+    data_crs = ccrs.epsg(3035)
+    regions = regions.to_crs(data_crs)
+
+    dct = {region: regions.loc[regions.country.isin(countries)] for region, countries in dct1.items()}
+
+    centroids, clustered_regions = calculate_centroids(dct)
+
+    n_mapped = map_countries_to_regions(n, dct1, dct1_rev, centroids)
+
+    return n_mapped
+
+def add_dynamic_gas_prices(n):
+    gas_price_hourly = pd.read_csv("data/EU_gas_price_2025_hourly.csv", index_col = 0, parse_dates=True)
+    gas_price_hourly.index = pd.to_datetime(gas_price_hourly.index.astype(str).str.replace("2025", "2013"))
+
+    df0 = getattr(n, "generators")
+    gas_generators = df0.query("carrier == 'gas' or carrier == 'import gas'")
+    df0.loc[gas_generators.index, "marginal_cost"] = 0
+
+    df = getattr(n, "generators_t")
+    gas_prices = gas_price_hourly.loc[n.snapshots]
+    marginal_costs = df["marginal_cost"]
+
+    gas_generators_df = pd.DataFrame(columns = gas_generators.index, index = n.snapshots)
+    for c in gas_generators_df.columns:
+        gas_generators_df[c] = gas_prices["gas price [EUR/MWh]"]
+
+    marginal_costs.loc[:, gas_generators_df.columns] = gas_generators_df.values
+
+def update_gas_prices(n, gas_prices):
+    df = getattr(n, "generators")
+
+    # UK gas price
+    if "UK" in gas_prices.keys():
+        gas_UK = df.query("carrier == 'gas' and bus.str.contains('GB')")
+        df.loc[gas_UK.index, "marginal_cost"] = gas_prices["EU"]
+
+    # EU gas price
+    if "EU" in gas_prices.keys():
+        gas_EU = df.query("carrier == 'gas' and not bus.str.contains('GB')")
+        df.loc[gas_EU.index, "marginal_cost"] = gas_prices["EU"]
+
+    # imports
+    if "imports" in gas_prices.keys():
+        gas_imports = df.query("carrier == 'import gas'")
+        df.loc[gas_imports.index, "marginal_cost"] = gas_prices["imports"]
+
 if __name__ == "__main__":
     if "snakemake" not in globals():
         from scripts._helpers import mock_snakemake
@@ -7093,6 +7179,7 @@ if __name__ == "__main__":
         gas_input_nodes=gas_input_nodes,
         spatial=spatial,
         options=options,
+        uk_settings = uk_settings_prepare,
     )
 
     if options["transport"]:
@@ -7304,11 +7391,6 @@ if __name__ == "__main__":
         countries.remove("IE")
         remove_ie_from_network(n)
 
-    # if uk_settings_data["uk_new_gas_storage_data"]:
-    #     onshore = snakemake.input.regions_onshore
-    #     offshore = snakemake.input.regions_offshore
-    #     add_UK_gas_storage_data(n, onshore, offshore)
-
     fix_gas_storage(n)
         
     factor = uk_settings_prepare.get("uk_scale_up_offwind_potential", None)
@@ -7322,7 +7404,19 @@ if __name__ == "__main__":
     scale_UK_gas_network(n)
 
     LDES_settings = snakemake.params.ldes_settings
-    for storage_tech in LDES_settings["technologies"]:
-        add_ldes_storage(n, storage_tech)
+    
+    add_ldes_storage(n, LDES_settings)
+
+    regions_onshore = snakemake.input.regions_onshore
+    model_reduction = uk_settings_prepare["reduce_model_in_the_east"]
+    if isinstance(model_reduction, dict):
+        n = reduce_model_in_the_east(n, regions_onshore, model_reduction)
+
+    if uk_settings_prepare["use_dynamic_gas_prices"]:
+        add_dynamic_gas_prices(n)
+
+    gas_prices = uk_settings_prepare["gas_prices"]
+    if isinstance(gas_prices, dict):
+        update_gas_prices(n, gas_prices)
 
     n.export_to_netcdf(snakemake.output[0])

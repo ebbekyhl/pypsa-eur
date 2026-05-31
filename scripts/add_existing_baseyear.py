@@ -393,74 +393,123 @@ def read_and_clean_OIM_UK_powerplants(uk_regions, baseyear):
 
     return df_OIM_powerplants
 
-def add_UK_gas_storage_data(n, onshore, offshore, baseyear):
+def add_gas_storage_data(n, onshore, offshore, baseyear, uk_settings_data, uk_settings_prepare):
     """
     
     """
-    onshore_regions =  gpd.read_file(onshore)
-    onshore_regions.set_index("name", inplace=True)
-    onshore_regions = onshore_regions.loc[onshore_regions.index.str.contains("GB")]
+    countries_reduce_dict = uk_settings_prepare["reduce_model_in_the_east"]
 
-    offshore_regions =  gpd.read_file(offshore)
-    offshore_regions.set_index("name", inplace=True)
-    offshore_regions = offshore_regions.loc[offshore_regions.index.str.contains("GB")]
+    if not isinstance(countries_reduce_dict, dict):
+        countries_reduce_dict = {}
 
-    gas_storage_UK = pd.read_csv("data/data_UK/UK_gas_storage_capacity.csv")
-    gas_storage_UK['points'] = gpd.points_from_xy(gas_storage_UK.lon, gas_storage_UK.lat)
-    gas_storage_UK = gpd.GeoDataFrame(gas_storage_UK, geometry='points')
-
-    # transform points (lat, lon) to the same CRS as regions
-    gas_storage_UK = gas_storage_UK.set_crs(epsg=4326)  # assuming the original CRS is WGS84
-    gas_storage_UK = gas_storage_UK.to_crs(onshore_regions.crs)
-
-    joined_onshore = gpd.sjoin(
-        gas_storage_UK,
-        onshore_regions,
-        how="left",
-        predicate="within"
-    )
-
-    joined_offshore = gpd.sjoin(
-        gas_storage_UK,
-        offshore_regions,
-        how="left",
-        predicate="within"
-    )
-
-    # get indices with nan values for onshore 
-    nan_onshore_indices = joined_onshore[joined_onshore['name'].isna()].index
-
-    # check if nan_onshore_indices are in joined_offshore
-    # If so, replace the nan values in joined_onshore with the corresponding values from joined_offshore
-    for idx in nan_onshore_indices:
-        if idx in joined_offshore.index:
-            joined_onshore.at[idx, 'name'] = joined_offshore.at[idx, 'name']
-
-    joined_onshore.set_index("name", inplace=True)
+    # Build reverse mapping: country code -> cluster name
+    # e.g. {"HR": "Balkan", "RS": "Balkan", "EE": "Baltic", ...}
+    reverse_mapping = {}
+    for cluster_name, country_codes in countries_reduce_dict.items():
+        for code in country_codes:
+            reverse_mapping[code] = cluster_name + " 0"
 
     # copy stores elements from network
     df = getattr(n, "stores")
     gas_stores = df.query("carrier == 'gas'")
     UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
+    EU_gas_stores = gas_stores.drop(index = UK_gas_stores.index)
 
-    # include more recent data for UK gas storage capacity
-    UK_gas_stores_capacity = joined_onshore["Capacity (MWh)"].groupby(joined_onshore.index).sum()
-    UK_gas_stores_capacity.index = UK_gas_stores_capacity.index + " gas Store" + f"-{baseyear}"
-    uk_gas_nodes = UK_gas_stores_capacity.index.intersection(UK_gas_stores.index)
-    uk_non_gas_nodes = UK_gas_stores.index.drop(uk_gas_nodes)
-    df.loc[uk_gas_nodes, "e_nom"] = UK_gas_stores_capacity.loc[uk_gas_nodes]
-    df.loc[uk_gas_nodes, "e_nom_min"] = UK_gas_stores_capacity.loc[uk_gas_nodes]
-    df.loc[uk_non_gas_nodes, "e_nom"] = 0
-    df.loc[uk_non_gas_nodes, "e_nom_min"] = 0
+    if uk_settings_data["uk_new_gas_storage_data"]:
+        onshore_regions =  gpd.read_file(onshore)
+        onshore_regions.set_index("name", inplace=True)
+        onshore_regions = onshore_regions.loc[onshore_regions.index.str.contains("GB")]
+
+        offshore_regions =  gpd.read_file(offshore)
+        offshore_regions.set_index("name", inplace=True)
+        offshore_regions = offshore_regions.loc[offshore_regions.index.str.contains("GB")]
+
+        gas_storage_UK = pd.read_csv("data/data_UK/UK_gas_storage_capacity.csv")
+        gas_storage_UK['points'] = gpd.points_from_xy(gas_storage_UK.lon, gas_storage_UK.lat)
+        gas_storage_UK = gpd.GeoDataFrame(gas_storage_UK, geometry='points')
+
+        # transform points (lat, lon) to the same CRS as regions
+        gas_storage_UK = gas_storage_UK.set_crs(epsg=4326)  # assuming the original CRS is WGS84
+        gas_storage_UK = gas_storage_UK.to_crs(onshore_regions.crs)
+
+        joined_onshore = gpd.sjoin(
+            gas_storage_UK,
+            onshore_regions,
+            how="left",
+            predicate="within"
+        )
+
+        joined_offshore = gpd.sjoin(
+            gas_storage_UK,
+            offshore_regions,
+            how="left",
+            predicate="within"
+        )
+
+        # get indices with nan values for onshore 
+        nan_onshore_indices = joined_onshore[joined_onshore['name'].isna()].index
+
+        # check if nan_onshore_indices are in joined_offshore
+        # If so, replace the nan values in joined_onshore with the corresponding values from joined_offshore
+        for idx in nan_onshore_indices:
+            if idx in joined_offshore.index:
+                joined_onshore.at[idx, 'name'] = joined_offshore.at[idx, 'name']
+
+        joined_onshore.set_index("name", inplace=True)
+    
+        # include more recent data for UK gas storage capacity
+        UK_gas_stores_capacity = joined_onshore["Capacity (MWh)"].groupby(joined_onshore.index).sum()
+        UK_gas_stores_capacity.index = UK_gas_stores_capacity.index + " gas Store" + f"-{baseyear}"
+        uk_gas_nodes = UK_gas_stores_capacity.index.intersection(UK_gas_stores.index)
+        uk_non_gas_nodes = UK_gas_stores.index.drop(uk_gas_nodes)
+
+        df.loc[uk_gas_nodes, "e_nom"] = UK_gas_stores_capacity.loc[uk_gas_nodes]
+        df.loc[uk_gas_nodes, "e_nom_min"] = UK_gas_stores_capacity.loc[uk_gas_nodes]
+        df.loc[uk_non_gas_nodes, "e_nom"] = 0
+        df.loc[uk_non_gas_nodes, "e_nom_min"] = 0
+
+    # add gas storage capacity for the rest of Europe
+    EU_gas_stores["country"] = EU_gas_stores.index.str.split(r'\d', expand = True).get_level_values(0).str.strip()
+    EU_gas_capacity_by_country = EU_gas_stores["e_nom_min"].groupby(EU_gas_stores.country).sum()
+
+    df_new = pd.read_csv("data/data_UK/AGSI_CountryAggregatedDataset_gasDayEnd_2026-05-20.csv", sep = ";")
+    df_new = df_new.query("Type == 'country' and Status == 'C' and Name != 'Ukraine'")
+
+    df_new["Name"] = df_new["Name"].map({"Austria": "AT",
+                                        "Belgium": "BE",
+                                        "Bulgaria": "BG",
+                                        "Croatia": "HR",
+                                        "Czech Republic": "CZ",
+                                        "Denmark": "DK",
+                                        "France": "FR",
+                                        "Germany": "DE",
+                                        "Hungary": "HU",
+                                        "Italy": "IT",
+                                        "Latvia": "LV",
+                                        "Netherlands": "NL",
+                                        "Poland": "PL",
+                                        "Portugal": "PT",
+                                        "Romania": "RO",
+                                        "Slovakia": "SK",
+                                        "Spain": "ES",
+                                        "Sweden": "SE",
+                                        })
+    df_new.set_index("Name", inplace = True)
+    df_new = df_new["Technical Capacity (TWh)"]
+
+    df_new = df_new.rename(index = reverse_mapping).groupby(level=0).sum()
+    df_new.index = df_new.index.str.split("\d", expand = True).get_level_values(0).str.strip()
+
+    comparison = pd.DataFrame(EU_gas_capacity_by_country.loc[df_new.index]) / 1e6 # convert from MWh to TWh
+    comparison.loc[df_new.index, "AGSI"] = df_new
+
+    calibration_factor = comparison["AGSI"] / comparison["e_nom_min"]
+    for country in calibration_factor.index:
+        EU_gas_stores.loc[EU_gas_stores.country == country, "e_nom_min"] *= calibration_factor[country]
+
+    df.loc[EU_gas_stores.index, "e_nom"] = EU_gas_stores["e_nom_min"]
 
     logger.info(f"Total gas storage capacity in UK of {df.loc[uk_gas_nodes, "e_nom"].sum()} added!")
-
-    # # For the base year, we allow gas storage capacity in locations outside of UK 
-    # # to be expanded, to calibrate the model. This is to address any inadequate data 
-    # # in countries outside of UK, which could lead to infeasible scenarios.
-    # UK_gas_stores = gas_stores.query("bus.str.contains('GB')")
-    # non_UK_gas_stores = gas_stores.drop(index = UK_gas_stores.index).index
-    # df.loc[non_UK_gas_stores, "e_nom_extendable"] = False
 
 def attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions):
     oim_points = gpd.GeoDataFrame(
@@ -576,7 +625,8 @@ def add_existing_renewables(
     countries: list[str],
     renewable_carriers: list[str],
     df_OIM_pp: pd.DataFrame,
-    uk_settings: dict[str, bool],
+    uk_settings_data: dict[str, bool],
+    uk_settings_prepare: dict[str, bool],
 ) -> None:
     """
     Add existing renewable capacities to conventional power plant data.
@@ -599,6 +649,12 @@ def add_existing_renewables(
     None
         Modifies df_agg in-place
     """
+
+    countries_reduce_dict = uk_settings_prepare["reduce_model_in_the_east"]
+
+    if not isinstance(countries_reduce_dict, dict):
+        countries_reduce_dict = {}
+
     tech_map = {"solar": "PV", "onwind": "Onshore", "offwind-ac": "Offshore"}
 
     irena = pm.data.IRENASTAT().powerplant.convert_country_to_alpha2()
@@ -617,7 +673,7 @@ def add_existing_renewables(
         )
 
         # add more recent year based on OIM data (only available for UK)
-        if "GB" in countries and uk_settings["uk_new_powerplants_data"]:
+        if "GB" in countries and uk_settings_data["uk_new_powerplants_data"]:
             df.loc["GB", "2024"] = df_OIM_pp.query("Technology == @carrier").Capacity.sum()
 
         df.columns = df.columns.astype(int)
@@ -631,14 +687,19 @@ def add_existing_renewables(
         carrier_gens = n.generators.loc[gen_i]
         res_capacities = []
         for country, group in carrier_gens.groupby(carrier_gens.bus.map(n.buses.country)):
-            if country != "GB" or not uk_settings["uk_new_powerplants_data"]:
+            if country in countries_reduce_dict.keys():
+                subcountries = countries_reduce_dict[country]
                 fraction = group.p_nom_max / group.p_nom_max.sum()
+                res_capacities.append(cartesian(df.loc[subcountries].sum(), fraction))
+
+            elif country != "GB" or not uk_settings_data["uk_new_powerplants_data"]:
+                fraction = group.p_nom_max / group.p_nom_max.sum()
+                res_capacities.append(cartesian(df.loc[country], fraction))
             else:
                 fraction = calculate_uk_fraction(df_OIM_pp, 
                                                 carrier, 
                                                 group)
-            
-            res_capacities.append(cartesian(df.loc[country], fraction))
+                res_capacities.append(cartesian(df.loc[country], fraction))
 
         res_capacities = pd.concat(res_capacities, axis=1).T
 
@@ -662,7 +723,7 @@ def add_existing_renewables(
                     df_agg.at[name, "bus"] = bus
                     df_agg.at[name, "resource_class"] = bin_id
 
-    if "GB" in countries and uk_settings["uk_new_powerplants_data"]:
+    if "GB" in countries and uk_settings_data["uk_new_powerplants_data"]:
         df_agg.loc[df_agg[df_agg.bus.str.contains("GB")].index,
                    "Country"] = "GB"
 
@@ -780,7 +841,8 @@ def add_power_capacities_installed_before_baseyear(
     df_OIM_pp.loc[:, missing_cols] = np.nan
     df_OIM_pp.loc[:, missing_cols] = df_OIM_pp[missing_cols].astype(df_agg[missing_cols].dtypes)
 
-    uk_settings = snakemake.params["uk_settings"]
+    uk_settings_data = snakemake.params["uk_settings_data"]
+    uk_settings_prepare = snakemake.params["uk_settings_prepare"]
 
     add_existing_renewables(
         df_agg=df_agg,
@@ -789,11 +851,31 @@ def add_power_capacities_installed_before_baseyear(
         countries=countries,
         renewable_carriers=renewable_carriers,
         df_OIM_pp=df_OIM_pp,
-        uk_settings=uk_settings,
+        uk_settings_data=uk_settings_data,
+        uk_settings_prepare = uk_settings_prepare,
     )
 
+    countries_reduce_dict = uk_settings_prepare["reduce_model_in_the_east"]
+
+    if not isinstance(countries_reduce_dict, dict):
+        countries_reduce_dict = {}
+
+    # Build reverse mapping: country code -> cluster name
+    # e.g. {"HR": "Balkan", "RS": "Balkan", "EE": "Baltic", ...}
+    reverse_mapping = {}
+    for cluster_name, country_codes in countries_reduce_dict.items():
+        for code in country_codes:
+            reverse_mapping[code] = cluster_name + " 0"
+
+    def remap_index(idx: pd.Index) -> pd.Index:
+        """
+        Remap a bus index from 2-letter country codes to cluster names
+        where applicable, leaving unmapped entries unchanged.
+        """
+        return idx.map(lambda bus: reverse_mapping.get(bus[:2], bus))
+
     # replace powerplants UK
-    if uk_settings["uk_new_powerplants_data"]:
+    if uk_settings_data["uk_new_powerplants_data"]:
         df_agg = add_UK_conventional_powerplants(df_agg,df_OIM_pp,renewable_carriers,baseyear)
 
     # drop assets which are already phased out / decommissioned
@@ -848,6 +930,14 @@ def add_power_capacities_installed_before_baseyear(
         "waste CHP": "msw",
     }
 
+    if reverse_mapping:
+        df.columns = remap_index(df.columns)
+        lifetime.columns = remap_index(lifetime.columns)
+
+        # Re-aggregate: sum capacities and average lifetimes for merged columns
+        df = df.T.groupby(level=0).sum().T
+        lifetime = lifetime.T.groupby(level=0).mean().T
+
     for grouping_year, generator, resource_class in df.index:
         # capacity is the capacity in MW at each node for this
         capacity = df.loc[grouping_year, generator, resource_class]
@@ -856,7 +946,7 @@ def add_power_capacities_installed_before_baseyear(
         suffix = "-ac" if generator == "offwind" else ""
         name_suffix = f" {generator}{suffix}-{grouping_year}"
         asset_i = capacity.index + name_suffix
-        
+
         if generator in ["solar", "onwind", "offwind-ac"]:
             asset_i = capacity.index + " " + resource_class + name_suffix
             name_suffix = " " + resource_class + name_suffix
@@ -902,6 +992,8 @@ def add_power_capacities_installed_before_baseyear(
 
         else:
             bus0 = vars(spatial)[carrier[generator]].nodes
+            logger.info(f"bus0: {bus0}")
+            logger.info(f"capacity index: {capacity.index}")
             if "EU" not in vars(spatial)[carrier[generator]].locations:
                 bus0 = bus0.intersection(capacity.index + " " + carrier[generator])
 
@@ -956,11 +1048,19 @@ def add_power_capacities_installed_before_baseyear(
                                       "urban central biogas CHP",
                                       "urban central gas CHP",
                                       "waste CHP"]:
+                    
+                    logger.info("Generator not in CHPs")
+
+                    if "EU" not in "".join(bus0):
+                        bus0_matching_capacity_index = pd.Index(bus0).intersection(new_capacity.index + " " + carrier[generator])
+                    else:
+                        bus0_matching_capacity_index = bus0
+                    
                     n.add(
                         "Link",
                         new_capacity.index,
                         suffix=name_suffix,
-                        bus0=bus0,
+                        bus0=bus0_matching_capacity_index,
                         bus1=new_capacity.index,
                         bus2="co2 atmosphere",
                         carrier=generator,
@@ -977,6 +1077,8 @@ def add_power_capacities_installed_before_baseyear(
                         lifetime=lifetime_assets_new_capacity,
                     )
                 else:
+                    logger.info("Generator is in CHPs")
+
                     spatial_dic = {"urban central solid biomass CHP": spatial.biomass.df.loc[new_capacity.index]["nodes"].values,
                                     "urban central biogas CHP": spatial.gas.df.loc[new_capacity.index]["nodes"].values,
                                     "urban central gas CHP": spatial.gas.df.loc[new_capacity.index]["nodes"].values,
@@ -1007,6 +1109,7 @@ def add_power_capacities_installed_before_baseyear(
                         efficiency2=costs.at[key, "efficiency-heat"],
                         lifetime=lifetime_assets_new_capacity,
                     )
+
         # check if existing capacities are larger than technical potential
         existing_large = n.generators[
             n.generators["p_nom_min"] > n.generators["p_nom_max"]
@@ -1022,7 +1125,7 @@ def add_power_capacities_installed_before_baseyear(
 
 def add_storage_capacities_installed_before_baseyear(n, baseyear):
     """
-    This function adds exosting electricity storage capacities for UK.
+    This function adds existing electricity storage capacities for UK.
     It currently includes pumped hydro storage and battery storage.
     Parameters
     ----------
@@ -1040,13 +1143,44 @@ def add_storage_capacities_installed_before_baseyear(n, baseyear):
 
     # only consider storage already constructed and online
     df_OIM_storage_online = df_OIM_storage.query("status == 'online'")
-    battery = df_OIM_storage_online.query("Technology == 'battery'")
 
+    ####################### Battery #######################################
+    battery = df_OIM_storage_online.query("Technology == 'battery'")
     battery = battery.groupby("bus").agg({"Capacity": "sum",
-                                "DateIn": "mean",
-                                "DateOut": "mean"})
+                                        "DateIn": "mean",
+                                        "DateOut": "mean"})
 
     battery.index = battery.index + " battery discharger-" + str(baseyear)
+
+    # update p_nom_min for existing battery storage units (if they exist)
+    existing_batteries = n.links.index.intersection(battery.index)
+    battery_duration = 6 # assumed ratio between energy capacity and discharge power capacity
+    if not existing_batteries.empty:
+        
+        # Update discharging power capacity
+        df1 = getattr(n, "links")
+        uk_battery_chargers = df1.query("carrier == 'battery charger' and bus0.str.contains('GB')")
+        uk_battery_dischargers = df1.query("carrier == 'battery discharger' and bus0.str.contains('GB')")
+
+        efficiency = n.links.loc[battery.index, "efficiency"].values[0] # assuming same efficiency for all existing battery storage units
+        df1.loc[battery.index, "p_nom"] = battery["Capacity"].values        
+        df1.loc[existing_batteries.str.replace(" discharger", " charger"), "p_nom"] = battery["Capacity"].values / efficiency
+        df1.loc[uk_battery_chargers.index, "p_nom_extendable"] = False
+        df1.loc[uk_battery_dischargers.index, "p_nom_extendable"] = False
+        
+        # Update energy capacity
+        df2 = getattr(n, "stores")
+        uk_battery_storage = df2.query("carrier == 'battery' and bus.str.contains('GB')")
+        df2.loc[existing_batteries.str.replace(" discharger", ""), "e_nom"] = battery["Capacity"].values * battery_duration
+        df2.loc[uk_battery_storage.index, "e_nom_extendable"] = False
+
+        logger.info(f"Updated existing battery storage units: {existing_batteries.tolist()}")
+        logger.info("Disallowed battery storage expansion for the base year")
+
+    else:
+        logger.info("No existing battery storage units found in the network to update.")
+
+    ####################### Pumped Hydro Storage ##########################
     phs_power = df_OIM_storage_online.query("Technology == 'water-storage'")[["Capacity", "bus"]].groupby("bus").sum()
     phs_reservoir = df_OIM_storage_online.query("Technology == 'water-storage'")[["storage_capacity_mwh", "bus"]].groupby("bus").sum()
     max_hours = phs_reservoir["storage_capacity_mwh"] / phs_power["Capacity"]
@@ -1056,34 +1190,23 @@ def add_storage_capacities_installed_before_baseyear(n, baseyear):
     n_UK_phs = n_phs.loc[n_phs.index.str.contains("GB")]
 
     # overwrite PHS capacities with existing ones from OIM data
-    phs_power_df = pd.DataFrame(columns = n_UK_phs.columns, index = phs_power.index + " PHS")
+    phs_power_df = pd.DataFrame(columns = n_UK_phs.columns, 
+                                index = phs_power.index + " PHS-" + str(baseyear))
     phs_power_df.loc[:,:] = n_UK_phs.values
     phs_power_df.loc[:, "bus"] = phs_power.index
     phs_power_df.loc[:, "p_nom"] = phs_power["Capacity"].values
+    phs_power_df.loc[:, "build_year"] = 2025
+    phs_power_df.loc[:, "lifetime"] = 70
     phs_power_df.loc[:, "max_hours"] = max_hours.values
     phs_power_df.index.name = "StorageUnit"
 
     # attach to network
     n.remove("StorageUnit", n_UK_phs.index)
-    n.add("StorageUnit", phs_power_df.index, **phs_power_df.T.to_dict(orient="index"))
 
-    # update p_nom_min for existing battery storage units (if they exist)
-    existing_batteries = n.links.index.intersection(battery.index)
-    battery_duration = 6 # assume 6 hours discharge time for battery storage units
-    if not existing_batteries.empty:
-        
-        # Update discharging power capacity
-        n.links.loc[battery.index, 
-                    "p_nom_min"] = battery["Capacity"].values
-        
-        # Update energy capacity
-        n.stores.loc[existing_batteries.str.replace(" discharger", ""), 
-                     "e_nom_min"] = battery["Capacity"].values * battery_duration
+    n.add("StorageUnit", 
+          phs_power_df.index, 
+          **phs_power_df.T.to_dict(orient="index"))
 
-        logger.info(f"Updated existing battery storage units: {existing_batteries.tolist()}")
-
-    else:
-        logger.info("No existing battery storage units found in the network to update.")
     return n
 
 def get_efficiency(
@@ -1092,6 +1215,7 @@ def get_efficiency(
     nodes: pd.Index,
     efficiencies: dict[str, float],
     costs: pd.DataFrame,
+    buses_to_country: dict[str, str],
 ) -> pd.Series | float:
     """
     Computes the heating system efficiency based on the sector and carrier
@@ -1126,10 +1250,10 @@ def get_efficiency(
         efficiency = costs.at[boiler_costs_name, "efficiency"]
     elif heat_system.sector.value == "residential":
         key = f"{carrier} residential space efficiency"
-        efficiency = nodes.str[:2].map(efficiencies[key])
+        efficiency = nodes.map(buses_to_country).map(efficiencies[key])
     elif heat_system.sector.value == "services":
         key = f"{carrier} services space efficiency"
-        efficiency = nodes.str[:2].map(efficiencies[key])
+        efficiency = nodes.map(buses_to_country).map(efficiencies[key])
     else:
         raise ValueError(f"Heat system {heat_system} not defined.")
 
@@ -1150,6 +1274,7 @@ def add_heating_capacities_installed_before_baseyear(
     energy_totals_year: int,
     capacity_threshold: float,
     use_electricity_distribution_grid: bool,
+    uk_settings_prepare: dict[str, bool],
 ) -> None:
     """
     Add heating capacities installed before base year.
@@ -1185,10 +1310,52 @@ def add_heating_capacities_installed_before_baseyear(
     """
     logger.debug(f"Adding heating capacities installed before {baseyear}")
 
+    countries_reduce_dict = uk_settings_prepare["reduce_model_in_the_east"]
+
+    if not isinstance(countries_reduce_dict, dict):
+        countries_reduce_dict = {}
+
+    # Build reverse mapping: country code -> cluster name
+    # e.g. {"HR": "Balkan", "RS": "Balkan", "EE": "Baltic", ...}
+    reverse_mapping = {}
+    for cluster_name, country_codes in countries_reduce_dict.items():
+        for code in country_codes:
+            reverse_mapping[code] = cluster_name + " 0"
+
+    buses_to_country = n.buses.query("carrier == 'AC'").country.to_dict()
+ 
+    if reverse_mapping:
+        heat_pump_cop_name = pd.Series(heat_pump_cop.coords["name"].data)
+        renamed = heat_pump_cop_name.str[:2].map(reverse_mapping).dropna()
+        heat_pump_cop_name.loc[renamed.index] = renamed
+        heat_pump_cop.coords["name"] = heat_pump_cop_name
+
+        unique_names, inverse = np.unique(heat_pump_cop.coords["name"].values, return_inverse=True)
+
+        heat_pump_cop = (
+            heat_pump_cop
+            .assign_coords(name_group=("name", inverse))
+            .groupby("name_group")
+            .mean()
+            .assign_coords(name=("name_group", unique_names))  # attach string names as a coord
+            .swap_dims({"name_group": "name"})                 # make "name" the active dimension
+            .drop_vars("name_group")                           # clean up the helper coordinate
+        )
+
+        existing_capacities["name"] = existing_capacities.index
+        existing_capacities_grouped_countries = existing_capacities.loc[existing_capacities.index.str[0:2].isin(reverse_mapping.keys())]
+        existing_capacities.loc[existing_capacities_grouped_countries.index, "name"] = existing_capacities_grouped_countries.index.str[:2].map(reverse_mapping)
+        existing_capacities.set_index("name", inplace=True)
+        existing_capacities = existing_capacities.groupby(existing_capacities.index).sum()
+
     # Load heating efficiencies
     heating_efficiencies = pd.read_csv(efficiency_file, index_col=[1, 0]).loc[
         energy_totals_year
     ]
+
+    heating_efficiencies.rename(index = reverse_mapping, inplace = True)
+    heating_efficiencies.index = heating_efficiencies.index.str.split("\d", expand = True).get_level_values(0).str.strip()
+    heating_efficiencies = heating_efficiencies.groupby(level = 0).mean()
 
     ratios = []
     valid_grouping_years = []
@@ -1244,6 +1411,7 @@ def add_heating_capacities_installed_before_baseyear(
             for heat_source in heat_pump_source_types[heat_system.system_type.value]:
                 costs_name = heat_system.heat_pump_costs_name(heat_source)
 
+                logger.info(f"Adding {heat_source} source for grouping year {grouping_year}")
                 efficiency = (
                     heat_pump_cop.sel(
                         heat_system=heat_system.system_type.value,
@@ -1302,7 +1470,7 @@ def add_heating_capacities_installed_before_baseyear(
             )
 
             efficiency = get_efficiency(
-                heat_system, "gas", nodes, heating_efficiencies, costs
+                heat_system, "gas", nodes, heating_efficiencies, costs, buses_to_country
             )
 
             n.add(
@@ -1329,7 +1497,7 @@ def add_heating_capacities_installed_before_baseyear(
             )
 
             efficiency = get_efficiency(
-                heat_system, "oil", nodes, heating_efficiencies, costs
+                heat_system, "oil", nodes, heating_efficiencies, costs, buses_to_country
             )
 
             n.add(
@@ -1458,14 +1626,15 @@ if __name__ == "__main__":
                 "threshold_capacity"
             ],
             use_electricity_distribution_grid=options["electricity_distribution_grid"],
+            uk_settings_prepare=snakemake.params.uk_settings_prepare,
         )
 
-    uk_settings = snakemake.params.uk_settings
-    if uk_settings["uk_new_gas_storage_data"]:
-        logger.info("Adding UK gas storage data for storage facilities already existing in the base year")
-        onshore = snakemake.input.onshore_regions
-        offshore = snakemake.input.offshore_regions
-        add_UK_gas_storage_data(n, onshore, offshore, baseyear)
+    add_gas_storage_data(n, 
+                         snakemake.input.onshore_regions, 
+                         snakemake.input.offshore_regions, 
+                         baseyear, 
+                         snakemake.params.uk_settings_data, 
+                         snakemake.params.uk_settings_prepare)
 
     if options.get("cluster_heat_buses", False):
         cluster_heat_buses(n)

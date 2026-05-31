@@ -484,11 +484,11 @@ if config["enable"]["retrieve"]:
         return response.status_code == 200
 
     month_mapping = {-2: "Oct", -1: "Nov", 0: "Dec",
-                 1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "Maj",
-                 6: "Jun", 7: "Jul", 8: "Aug", 9: "Sep", 10: "Okt",
+                 1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May",
+                 6: "Jun", 7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct",
                  11: "Nov", 12: "Dec", 13: "Jan", 14: "Feb"}
     
-    today = datetime.now() - timedelta(20)
+    today = datetime.now()
     today_year = today.year
     today_month = month_mapping[today.month]
     previous_month = month_mapping[today.month - 1]

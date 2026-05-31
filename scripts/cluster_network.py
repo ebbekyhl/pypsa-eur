@@ -559,6 +559,9 @@ def distribute_n_clusters_to_countries(
     if isinstance(focus_weights, dict):
         total_focus = sum(list(focus_weights.values()))
 
+        logger.info(f"Using focus weights of {focus_weights} to distribute nodes")
+        logger.info(f"Using total focus weight of {total_focus} to distribute nodes")
+
         assert total_focus <= 1.0, (
             "The sum of focus weights must be less than or equal to 1."
         )

@@ -13,6 +13,12 @@ SPDX-License-Identifier: CC-BY-4.0
 [![Discord](https://img.shields.io/discord/911692131440148490?logo=discord)](https://discord.gg/AnuJBk23FU)
 [![REUSE status](https://api.reuse.software/badge/github.com/pypsa/pypsa-eur)](https://api.reuse.software/info/github.com/pypsa/pypsa-eur)
 
+# Data needs for PyPSA-Eur-UK
+
+Download all data located in this Zenodo repository: 10.5281/zenodo.20522644 
+
+Create a folder named "data_UK" containing this data and locate it in the /data/ folder in the PyPSA-Eur workflow.
+
 # PyPSA-Eur: A Sector-Coupled Open Optimisation Model of the European Energy System
 
 PyPSA-Eur is an open model dataset of the European energy system at the

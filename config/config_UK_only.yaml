@@ -17,9 +17,9 @@ remote:
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#run
 run:
   prefix: "pypsa-uk"
-  name: "all" # scenario name
+  name: "UK_only" # scenario name
   scenarios:
-    enable: true
+    enable: false
     file: config/scenarios.yaml
   disable_progressbar: false
   shared_resources:
@@ -35,11 +35,11 @@ foresight: myopic
 # Wildcard docs in https://pypsa-eur.readthedocs.io/en/latest/wildcards.html
 scenario:
   clusters:
-  - 130 # minimum number of clusters vary with the variable "area_threshold" under clustering
+  - 13 # minimum number of clusters vary with the variable "area_threshold" under clustering
   opts:
   - ''
   sector_opts:
-  - '3h'
+  - '1h'
   planning_horizons:
   - 2025
   - 2030
@@ -50,39 +50,8 @@ scenario:
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#countries
 countries:
-- AL
-- AT
-- BA
-- BE
-- BG
-- CH
-- CZ
-- DE
-- DK
-- EE
-- ES
-- FI
-- FR
 - GB # Here, "GB" refers to United Kingdom of Great Britain and Northern Ireland
-- GR
-- HR
-- HU
-- IE
-- IT
-- LT
-- LU
-- LV
-- ME
-- MK
-- NL
-- 'NO'
-- PL
-- PT
-- RO
-- RS
-- SE
-- SI
-- SK
+- IE # Ireland is later removed from the network
 
 uk_settings:
   data:
@@ -149,14 +118,14 @@ enable:
   drop_leap_day: true
 
 # Add national CO2 emissions reduction targets
-local_co2:
-  GB:
-    # 2025: 0.460 # https://www.warpnews.org/green-tech/uk-greenhouse-gas-emissions-drop-to-lowest-level-since-1872/
-    2030: 0.383 # Legislated carbon budget 
-    2035: 0.220 # The Sixth Carbon Budget
-    2040: 0.092 # Exponential decay
-    2045: 0.038 # Exponential decay
-    2050: 0.000 # Target of reaching net zero by 2050
+local_co2: false
+  # GB:
+  #   2025: 0.460 # https://www.warpnews.org/green-tech/uk-greenhouse-gas-emissions-drop-to-lowest-level-since-1872/
+  #   2030: 0.383 # Legislated carbon budget 
+  #   2035: 0.220 # The Sixth Carbon Budget
+  #   2040: 0.092 # Exponential decay
+  #   2045: 0.038 # Exponential decay
+  #   2050: 0.000 # Target of reaching net zero by 2050
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#co2-budget
 co2_budget:
@@ -1056,21 +1025,19 @@ clustering:
   administrative:
     GB: 3
   focus_weights:
-    GBCE: 0.057306 # Central England (weighting: 1 / N) # N corresponds to the sum of all numerators such that the sum of all weights is 1
-    GBEM: 0.057306 # East Midlands (weighting: 1 / N)
-    GBSC: 0.171919 # Scotland (weighting: 3 / N)
-    GBNW: 0.057306 # North West (weighting: 1 / N)
-    GBNE: 0.057306 # North East (weighting: 1 / N)
-    GBWM: 0.057306 # West Midlands (weighting: 1 / N)
-    GBEA: 0.057306 # East (weighting: 1 / N)
-    GBSE: 0.057306 # South East (weighting: 1 / N)
-    GBSW: 0.057306 # South West (weighting: 1 / N)
-    GBCY: 0.057306 # Wales (weighting: 1 / N)
-    GBGL: 0.057306 # Greater London (weighting: 1 / N)
-    GBNI: 0.057306 # Northern Ireland (weighting: 1 / N)
-    ES: 0.0744985 # Spain (weighting: 1.3 / N) 
-    FR: 0.0744985 # France (weighting: 1.3 / N)
-    DE: 0.0487106 # Germany (weighting: 0.85 / N)
+    GBCE: 0.083 # Central England (weighting: 1 / N) # N is the number of regions included in the focus_weights
+    GBEM: 0.083 # East Midlands (weighting: 1 / N)
+    GBSC: 0.083 # Scotland (weighting: 3 / N)
+    GBNW: 0.083 # North West (weighting: 1 / N)
+    GBNE: 0.083 # North East (weighting: 1 / N)
+    GBWM: 0.083 # West Midlands (weighting: 1 / N)
+    GBEA: 0.083 # East (weighting: 1 / N)
+    GBSE: 0.083 # South East (weighting: 1 / N)
+    GBSW: 0.083 # South West (weighting: 1 / N)
+    GBCY: 0.083 # Wales (weighting: 1 / N)
+    GBGL: 0.083 # Greater London (weighting: 1 / N)
+    GBNI: 0.083 # Northern Ireland (weighting: 1 / N)
+
   copperplate_regions: []
   build_bidding_zones:
     remove_islands: true

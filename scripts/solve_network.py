@@ -506,7 +506,9 @@ def add_UK_brownfield_minimum_capacity_factors(n, capacity_factors, base_year):
         if not investment_year in minimum_capacity_factor.keys():
             logger.info(f"No minimum capacity factor specified for {tech} in year {investment_year}, skipping constraint.")
             continue
-
+        
+        logger.info("Adding UK brownfield minimum capacity factors.")
+        
         minimum_capacity_factor_t_y = minimum_capacity_factor[investment_year]
 
         # Select UK links of that tech
@@ -1331,6 +1333,9 @@ def add_TES_energy_to_power_ratio_constraints(n: pypsa.Network) -> None:
             & n.stores.e_nom_extendable
         ]
 
+    if indices_charger_p_nom_extendable.empty or indices_stores_e_nom_extendable.empty:
+        return 
+
     # Ensure indices of chargers and stores match
     indices_charger_p_nom_extendable_df = pd.DataFrame(indices_charger_p_nom_extendable)
     indices_charger_p_nom_extendable_df["index_reduced"] = indices_charger_p_nom_extendable.str.split(" charger", expand = True).get_level_values(0)
@@ -1727,7 +1732,6 @@ def extra_functionality(
         add_UK_fixed_electricity_generation_mix(n, base_year)
     
     if isinstance(uk_settings["uk_brownfield_minimum_capacity_factors"], dict):
-        logger.info("Adding UK brownfield minimum capacity factors.")
         capacity_factors = uk_settings["uk_brownfield_minimum_capacity_factors"]
         add_UK_brownfield_minimum_capacity_factors(n, capacity_factors, base_year)
 
@@ -1948,6 +1952,44 @@ def freeze_uk_capacities(n, base_year):
         
         df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
 
+def remove_ie_from_network(n):
+    """ 
+    Remove Ireland from the network.
+
+    This is a quick workaround of the error when running GB as the only country. 
+    The workflow requires an IDEEES country to be present when building the 
+    network (in this case, Ireland). Before solving the network, we remove all 
+    components connected to Ireland, including buses, lines, links, generators, to 
+    model Great Britain only.
+    """
+    # Remove all buses in Ireland
+    ireland_buses = n.buses.loc[n.buses.index.str.contains("IE")].index
+    n.remove("Bus", ireland_buses)
+
+    # Remove all lines connected to these buses
+    ireland_lines = n.lines[n.lines.bus0.isin(ireland_buses) | n.lines.bus1.isin(ireland_buses)].index
+    n.remove("Line", ireland_lines)
+
+    # Remove all links connected to these buses
+    ireland_links = n.links[n.links.bus0.isin(ireland_buses) | n.links.bus1.isin(ireland_buses)].index
+    n.remove("Link", ireland_links)
+
+    # Remove all generators connected to these buses
+    ireland_generators = n.generators[n.generators.bus.isin(ireland_buses)].index
+    n.remove("Generator", ireland_generators)
+
+    # Remove all loads connected to these buses
+    ireland_loads = n.loads[n.loads.bus.isin(ireland_buses)].index
+    n.remove("Load", ireland_loads)
+
+    # Remove all storage units connected to these buses
+    ireland_storage_units = n.storage_units[n.storage_units.bus.isin(ireland_buses)].index
+    n.remove("StorageUnit", ireland_storage_units)
+
+    # Remove all stores connected to these buses
+    ireland_stores = n.stores[n.stores.bus.isin(ireland_buses)].index
+    n.remove("Store", ireland_stores)
+    
 def solve_network(
     n: pypsa.Network,
     config: dict,
@@ -2083,10 +2125,17 @@ if __name__ == "__main__":
     update_config_from_wildcards(snakemake.config, snakemake.wildcards)
 
     solve_opts = snakemake.params.solving["options"]
+    
+    uk_settings = snakemake.params.uk_settings
 
     np.random.seed(solve_opts.get("seed", 123))
 
     n = pypsa.Network(snakemake.input.network)
+
+    countries = snakemake.params.countries
+    if uk_settings["uk_only"]:
+        countries.remove("IE")
+        remove_ie_from_network(n)
 
     planning_horizons = snakemake.wildcards.get("planning_horizons", None)
 
@@ -2098,8 +2147,6 @@ if __name__ == "__main__":
         co2_sequestration_potential=snakemake.params["co2_sequestration_potential"],
         limit_max_growth=snakemake.params.get("sector", {}).get("limit_max_growth"),
     )
-
-    uk_settings = snakemake.params.uk_settings
 
     base_year = snakemake.config["scenario"]["planning_horizons"][0]
     if uk_settings["uk_freeze_base_year_capacities"]:

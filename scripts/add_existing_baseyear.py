@@ -500,6 +500,9 @@ def add_gas_storage_data(n, onshore, offshore, baseyear, uk_settings_data, uk_se
     df_new = df_new.rename(index = reverse_mapping).groupby(level=0).sum()
     df_new.index = df_new.index.str.split("\d", expand = True).get_level_values(0).str.strip()
 
+    df_new_index_intersect = df_new.index.intersection(EU_gas_capacity_by_country.index)
+    df_new = df_new.loc[df_new_index_intersect]
+
     comparison = pd.DataFrame(EU_gas_capacity_by_country.loc[df_new.index]) / 1e6 # convert from MWh to TWh
     comparison.loc[df_new.index, "AGSI"] = df_new
 

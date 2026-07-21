@@ -51,45 +51,6 @@ from scripts.prepare_network import maybe_adjust_costs_and_potentials
 spatial = SimpleNamespace()
 logger = logging.getLogger(__name__)
 
-
-def remove_ie_from_network(n):
-    """ 
-    Remove Ireland from the network.
-
-    This is a quick workaround of the error when running GB as the only country. 
-    The workflow requires an IDEEES country to be present when building the 
-    network (in this case, Ireland). Before solving the network, we remove all 
-    components connected to Ireland, including buses, lines, links, generators, to 
-    model Great Britain only.
-    """
-    # Remove all buses in Ireland
-    ireland_buses = n.buses.loc[n.buses.index.str.contains("IE")].index
-    n.remove("Bus", ireland_buses)
-
-    # Remove all lines connected to these buses
-    ireland_lines = n.lines[n.lines.bus0.isin(ireland_buses) | n.lines.bus1.isin(ireland_buses)].index
-    n.remove("Line", ireland_lines)
-
-    # Remove all links connected to these buses
-    ireland_links = n.links[n.links.bus0.isin(ireland_buses) | n.links.bus1.isin(ireland_buses)].index
-    n.remove("Link", ireland_links)
-
-    # Remove all generators connected to these buses
-    ireland_generators = n.generators[n.generators.bus.isin(ireland_buses)].index
-    n.remove("Generator", ireland_generators)
-
-    # Remove all loads connected to these buses
-    ireland_loads = n.loads[n.loads.bus.isin(ireland_buses)].index
-    n.remove("Load", ireland_loads)
-
-    # Remove all storage units connected to these buses
-    ireland_storage_units = n.storage_units[n.storage_units.bus.isin(ireland_buses)].index
-    n.remove("StorageUnit", ireland_storage_units)
-
-    # Remove all stores connected to these buses
-    ireland_stores = n.stores[n.stores.bus.isin(ireland_buses)].index
-    n.remove("Store", ireland_stores)
-
 def fix_gas_storage(n):
     # copy stores elements from network
     df = getattr(n, "stores")
@@ -6873,6 +6834,10 @@ def scale_UK_gas_network(n):
 
         if interconnections[0] != "any":
             uk_gas_pipelines = uk_gas_pipelines.loc[uk_gas_pipelines.index.str.contains(interconnections[0])]
+            if uk_gas_pipelines.empty:
+                logger.info("{interconnections[0]} not in network")
+                continue
+
         uk_gas_pipelines_rev = uk_gas_pipelines[uk_gas_pipelines.index.str.contains("reversed")]
         uk_gas_pipelines = uk_gas_pipelines.drop(uk_gas_pipelines_rev.index)
         
@@ -7385,11 +7350,6 @@ if __name__ == "__main__":
     maybe_adjust_costs_and_potentials(
         n, snakemake.params["adjustments"], investment_year
     )
-
-    countries = snakemake.params.countries
-    if uk_settings_prepare["uk_only"]:
-        countries.remove("IE")
-        remove_ie_from_network(n)
 
     fix_gas_storage(n)
         

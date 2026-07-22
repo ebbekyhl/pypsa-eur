@@ -7016,6 +7016,15 @@ def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary):
     stores.drop(index=electricity_storage, inplace=True)
     links.drop(index=storage_links, inplace=True)
 
+def distribute_generators(n, generators_co2_lvls, buses_primary):
+    components = ["generators", "links", "storage_units"]
+    for comp in components:
+        c = getattr(n, comp)
+        bus_type = "bus1" if comp == "links" else "bus"
+        ii = c.query(f"{bus_type}.isin(@buses_primary) and carrier.isin(@generators_co2_lvls.keys())")
+        ii.loc[ii.index, bus_type] = ii[bus_type] + " " + c.carrier.replace(generators_co2_lvls)
+        c.loc[ii.index, bus_type] = ii[bus_type]
+
 def reduce_model_in_the_east(n, regions_onshore, dct1):
 
     logger.info("Reducing model by aggregating specified countries")

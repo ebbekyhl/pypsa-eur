@@ -7025,6 +7025,25 @@ def distribute_generators(n, generators_co2_lvls, buses_primary):
         ii.loc[ii.index, bus_type] = ii[bus_type] + " " + c.carrier.replace(generators_co2_lvls)
         c.loc[ii.index, bus_type] = ii[bus_type]
 
+def duplicate_transmission(n, co2_intensity_lvls):
+    links = getattr(n, "links")
+
+    dc_links = links.index[links.carrier == "DC"]
+
+    for lvl in co2_intensity_lvls:
+        dc_i = links.loc[dc_links].copy()
+        dc_i.index = dc_i.index + " " + lvl
+
+        # Connect duplicated buses
+        dc_i.bus0 = dc_i.bus0 + " " + lvl
+        dc_i.bus1 = dc_i.bus1 + " " + lvl
+
+        for j in range(len(dc_i)):
+            links.loc[dc_i.index[j]] = dc_i.iloc[j]
+
+    # Remove original DC links
+    links.drop(index=dc_links, inplace=True)
+
 def reduce_model_in_the_east(n, regions_onshore, dct1):
 
     logger.info("Reducing model by aggregating specified countries")

@@ -6985,24 +6985,24 @@ def split_components_by_co2_intensity_levels(n, carriers = ["AC"]):
     # but for now we leave it as it is to test the concept.     
 
     co2_intensity_lvls = {"clean": 0, 
-                        "nonclean": 0.2, # tCO2 / MWh_th
-                        # e.g., intermediate: 0.1, # tCO2 / MWh_th 
+                          "nonclean": 0.2, # tCO2 / MWh_th
+                          # e.g., intermediate: 0.1, # tCO2 / MWh_th 
                         }
 
     # Dictionary distributing generators - should later be classified automatically based on the generator's CO2 intensity
     generators_co2_lvls = {"onwind": "clean",
-                        "offwind-ac": "clean",
-                        "offwind-dc": "clean",
-                        "offwind-float": "clean",
-                        "solar": "clean",
-                        "solar rooftop": "clean",
-                        "ror": "clean",
-                        "PHS": "clean",
-                        "hydro": "clean",
-                        "nuclear": "clean",
-                        "OCGT": "nonclean",
-                        "CCGT": "nonclean",
-                        }
+                            "offwind-ac": "clean",
+                            "offwind-dc": "clean",
+                            "offwind-float": "clean",
+                            "solar": "clean",
+                            "solar rooftop": "clean",
+                            "ror": "clean",
+                            "PHS": "clean",
+                            "hydro": "clean",
+                            "nuclear": "clean",
+                            "OCGT": "nonclean",
+                            "CCGT": "nonclean",
+                            }
 
     # ####################################################
     for carrier in carriers:
@@ -7016,6 +7016,8 @@ def split_components_by_co2_intensity_levels(n, carriers = ["AC"]):
 
         # add capacity constraint for duplicated technologies to ensure they do not exceed the original capacity
         # e.g., n.lines_t.p[clean_lines] + n.lines_t.p[nonclean_lines] <= n.lines_t.p_nom[original_lines]
+
+        # add emission or tax to importing links only
 
 def reduce_model_in_the_east(n, regions_onshore, dct1):
 
@@ -7429,5 +7431,8 @@ if __name__ == "__main__":
     gas_prices = uk_settings_prepare["gas_prices"]
     if isinstance(gas_prices, dict):
         update_gas_prices(n, gas_prices)
+
+    if uk_settings_prepare["CBAM"]:
+        split_components_by_co2_intensity_levels(n)
 
     n.export_to_netcdf(snakemake.output[0])

@@ -6946,6 +6946,76 @@ def split_buses(n, co2_intensity_lvls, buses_primary):
             p_max_pu = 1, 
             carrier=i + " connection")
 
+def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary): 
+    charge_buses = set(n.links.bus1[n.links.bus0.isin(buses_primary)])
+    discharge_buses = set(n.links.bus0[n.links.bus1.isin(buses_primary)])
+
+    electricity_storage = n.stores.index[
+        n.stores.bus.isin(charge_buses & discharge_buses)
+    ]
+
+    electricity_storage_buses = n.buses.loc[n.stores.loc[electricity_storage].bus]
+
+    # Split storage buses
+    buses = getattr(n, "buses")
+    stores = getattr(n, "stores")
+    links = getattr(n, "links")
+
+    for i in co2_intensity_lvls:
+
+        buses_i = buses.loc[electricity_storage_buses.index].rename(index = lambda x: x + " " + i)
+
+        for j in range(len(buses_i)):
+            buses.loc[buses_i.index[j]] = buses_i.iloc[j]
+
+        # connect original with new buses
+        n.add("Link", 
+            electricity_storage_buses.index + " " + i + " connection", 
+            bus0=electricity_storage_buses.index, 
+            bus1=electricity_storage_buses.index + " " + i, 
+            p_nom_extendable = True, 
+            p_min_pu = -1, # bi-directional link
+            p_max_pu = 1, 
+            carrier=i + " connection")
+        
+        # Duplicate electricity stores
+        stores_i = stores.loc[electricity_storage].copy()
+        stores_i.index = stores_i.index + " " + i
+        stores_i.bus = stores_i.bus + " " + i
+
+        for j in range(len(stores_i)):
+            stores.loc[stores_i.index[j]] = stores_i.iloc[j]
+
+        # storage links need to be duplicated as well
+        storage_buses = set(stores.loc[electricity_storage, "bus"])
+
+        storage_links = links.index[
+            (
+                links.bus0.isin(buses_primary)
+                & links.bus1.isin(storage_buses)
+            )
+            |
+            (
+                links.bus1.isin(buses_primary)
+                & links.bus0.isin(storage_buses)
+            )
+        ]
+
+        # Duplicate storage links
+        links_i = links.loc[storage_links].copy()
+        links_i.index = links_i.index + " " + i
+
+        links_i.loc[links_i.bus0.isin(storage_buses), "bus0"] += " " + i
+        links_i.loc[links_i.bus0.isin(storage_buses), "bus1"] += " " + i
+        links_i.loc[links_i.bus1.isin(storage_buses), "bus0"] += " " + i
+        links_i.loc[links_i.bus1.isin(storage_buses), "bus1"] += " " + i
+        
+        for j in range(len(links_i)):
+            links.loc[links_i.index[j]] = links_i.iloc[j]
+
+    stores.drop(index=electricity_storage, inplace=True)
+    links.drop(index=storage_links, inplace=True)
+
 def reduce_model_in_the_east(n, regions_onshore, dct1):
 
     logger.info("Reducing model by aggregating specified countries")

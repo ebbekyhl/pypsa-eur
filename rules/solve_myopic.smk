@@ -139,6 +139,8 @@ rule solve_sector_network_myopic:
         ),
         custom_extra_functionality=input_custom_extra_functionality,
         uk_settings=config_provider("uk_settings", "solve"),
+        # uk_only lives under uk_settings.prepare, not uk_settings.solve
+        uk_settings_prepare=config_provider("uk_settings", "prepare"),
     input:
         eurostat="data/eurostat/Balances-April2023",
         co2_totals = resources("co2_totals.csv"),

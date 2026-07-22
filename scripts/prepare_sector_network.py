@@ -4848,7 +4848,7 @@ def add_industry(
 
             if fuel == "H2":
                 marginal_cost = DRI_commodity * DRI_ore_input["H2"] / fuel_input["H2"]
-                n.madd(
+                n.add(
                     "Link",
                     nodes,
                     suffix=" steel H2 DRI",
@@ -4912,7 +4912,7 @@ def add_industry(
 
         logger.info(f"For EAF, adding {p_nom} of capacity.")
 
-        n.madd(
+        n.add(
             "Link",
             nodes,
             suffix=" steel EAF",
@@ -4948,7 +4948,7 @@ def add_industry(
 
         logger.info(f"For BF-BOF, adding {p_nom} of capacity.")
 
-        n.madd(
+        n.add(
                 "Link",
                 nodes,
                 suffix=" steel BF-BOF",

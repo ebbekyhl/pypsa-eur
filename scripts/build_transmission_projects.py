@@ -46,7 +46,10 @@ def add_new_buses(n, new_ports):
     # Add new buses for the ports which do not have an existing bus close by. If there are multiple ports at the same location, only one bus is added.
     duplicated = new_ports.duplicated(subset=["x", "y"], keep="first")
     to_add = new_ports[~duplicated]
-    added_buses = n.add(
+    # PyPSA 1.x n.add() returns None (pre-1.0 madd() returned the new index).
+    # The created names are the passed index with the suffix appended.
+    added_buses = to_add.index.astype(str) + " bus"
+    n.add(
         "Bus",
         name=to_add.index,
         suffix=" bus",

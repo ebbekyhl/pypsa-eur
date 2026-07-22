@@ -571,6 +571,10 @@ def calculate_uk_fraction(df_OIM_pp, carrier, group):
     # Create new dataframe with maximum potentials per bus
     group_df = pd.DataFrame(group.p_nom_max)
     group_df["bus"] = group.bus
+    # reset_index() below turns the generator index into a column named after it:
+    # PyPSA 1.x names every component index "name", earlier versions used the
+    # component name ("Generator"). Derive it instead of hardcoding either.
+    generator_col = group_df.index.name or "index"
     p_num_max_per_bus = group_df["p_nom_max"].groupby(group_df.bus).sum()
     group_df = group_df.reset_index().set_index("bus")
     group_df.loc[p_num_max_per_bus.index, "p_nom_max_per_bus"] = p_num_max_per_bus
@@ -580,7 +584,7 @@ def calculate_uk_fraction(df_OIM_pp, carrier, group):
 
     # allocate the nodal fractions of the total installed capacity 
     group_df.loc[fraction_installed.index, "fraction_UK_regions"] = fraction_installed
-    group_df.set_index("Generator", inplace=True)
+    group_df.set_index(generator_col, inplace=True)
 
     # allocate nodal fractions of the total deployment potential
     group_df.loc[:, "fraction_potential"] = fractions_potential

@@ -6,7 +6,9 @@
 plotting:
   map:
     boundaries: [-11, 30, 34, 71]
-    color_geomap:
+    # renamed in PyPSA 1.0 (was color_geomap); this whole block is splatted into
+    # n.plot(**map_opts), so the key must match the current kwarg name
+    geomap_color:
       ocean: white
       land: white
   projection:

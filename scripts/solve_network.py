@@ -649,6 +649,10 @@ def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
                                                 groupby=False
                                                 )
 
+    # PyPSA 1.x labels the component dimension "name"; earlier versions used the
+    # component name ("Link"). Selecting on the wrong label raises KeyError.
+    link_dim = "name" if "name" in expr.coords else "Link"
+
     # add local CO2 emissions constraints
     i = 0
     for region in local_co2_regions:
@@ -666,8 +670,8 @@ def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
         logger.info(f"Net CO2 emissions cap for {region}: {net_co2_allowance}")
 
         # Add expression containing all CO2 sources and sinks attached to the country
-        mask = expr.coords["Link"].str.contains(region)
-        expr_c_group = expr.sel(Link=mask, group = 0) # group 0 corresponds to links
+        mask = expr.coords[link_dim].str.contains(region)
+        expr_c_group = expr.sel({link_dim: mask, "group": 0}) # group 0 corresponds to links
 
         lhs = expr_c_group.sum()
         rhs = net_co2_allowance
@@ -692,10 +696,15 @@ def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
     net_co2_allowance = co2_1990 * limit * nyears
     logger.info(f"Collective CO2 emissions budget for {len(collective)} countries: {net_co2_allowance}")
 
-    try:
-        expr_collective_group = expr.sel(Link=~mask_merged, group = 0)
-    except:
-        expr_collective_group = expr.sel(group = 0)
+    # Exclude the regions already covered by a local constraint. If none were
+    # added, mask_merged was never assigned and the collective budget covers
+    # everything. Previously a bare except handled both this and the KeyError
+    # from the wrong dimension label, silently applying the collective budget to
+    # every region -- double-counting the ones with a local cap.
+    if i > 0:
+        expr_collective_group = expr.sel({link_dim: ~mask_merged, "group": 0})
+    else:
+        expr_collective_group = expr.sel({"group": 0})
 
     lhs = expr_collective_group.sum()
     rhs = net_co2_allowance
@@ -1337,9 +1346,16 @@ def add_TES_energy_to_power_ratio_constraints(n: pypsa.Network) -> None:
         return 
 
     # Ensure indices of chargers and stores match
-    indices_charger_p_nom_extendable_df = pd.DataFrame(indices_charger_p_nom_extendable)
+    # Name the columns explicitly: pd.DataFrame(<Index>) names the column after
+    # the index, which PyPSA 1.x calls "name" for every component (pre-1.0 used
+    # the component name, i.e. "Link"/"Store"), breaking the lookups below.
+    indices_charger_p_nom_extendable_df = pd.DataFrame(
+        {"Link": indices_charger_p_nom_extendable}
+    )
     indices_charger_p_nom_extendable_df["index_reduced"] = indices_charger_p_nom_extendable.str.split(" charger", expand = True).get_level_values(0)
-    indices_stores_e_nom_extendable_df = pd.DataFrame(indices_stores_e_nom_extendable)
+    indices_stores_e_nom_extendable_df = pd.DataFrame(
+        {"Store": indices_stores_e_nom_extendable}
+    )
     indices_stores_e_nom_extendable_df["index_reduced"] = indices_stores_e_nom_extendable.str.split("-", expand = True).get_level_values(0)
 
     indices_stores_e_nom_extendable_df = indices_stores_e_nom_extendable_df.reset_index().set_index("index_reduced")
@@ -2133,7 +2149,9 @@ if __name__ == "__main__":
     n = pypsa.Network(snakemake.input.network)
 
     countries = snakemake.params.countries
-    if uk_settings["uk_only"]:
+    # "uk_only" is configured under uk_settings.prepare, whereas uk_settings
+    # above is bound to uk_settings.solve.
+    if snakemake.params.uk_settings_prepare["uk_only"]:
         countries.remove("IE")
         remove_ie_from_network(n)
 

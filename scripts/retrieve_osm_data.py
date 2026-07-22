@@ -35,6 +35,10 @@ def retrieve_osm_data(
         "substations_way",
         "substations_relation",
     ],
+    url="https://overpass-api.de/api/interpreter",
+    max_tries=3,
+    timeout=600,
+    user_agent="",
 ):
     """
     Retrieve OSM data for the specified country and save it to the specified
@@ -55,9 +59,20 @@ def retrieve_osm_data(
             "substations_way",
             "substations_relation",
             ].
+    url : str, optional
+        The URL of the overpass API endpoint. The default is
+        "https://overpass-api.de/api/interpreter".
+    max_tries : int, optional
+        The maximum number of attempts to retrieve the data in case of failure.
+        The default is 3.
+    timeout : int, optional
+        The timeout in seconds for the overpass API requests. The default is 600.
+    user_agent : str
+        The User-Agent string to include in the request headers for fair use
+        policy compliance. Note that overpass-api.de answers requests carrying a
+        default library agent (python-requests/*, curl/*) with HTTP 406.
     """
-    # Overpass API endpoint URL
-    overpass_url = "https://overpass-api.de/api/interpreter"
+    headers = {"User-Agent": user_agent}
 
     features_dict = {
         "cables_way": 'way["power"="cable"]',
@@ -78,7 +93,7 @@ def retrieve_osm_data(
                 f"Invalid feature: {f}. Supported features: {list(features_dict.keys())}"
             )
 
-        retries = 3
+        retries = max_tries
         for attempt in range(retries):
             logger.info(
                 f" - Fetching OSM data for feature '{f}' in {country} (Attempt {attempt + 1})..."
@@ -87,7 +102,7 @@ def retrieve_osm_data(
             # Build the overpass query
             op_area = f'area["ISO3166-1"="{country}"]'
             op_query = f"""
-                [out:json];
+                [out:json][timeout:{timeout}];
                 {op_area}->.searchArea;
                 (
                 {features_dict[f]}(area.searchArea);
@@ -96,7 +111,7 @@ def retrieve_osm_data(
             """
             try:
                 # Send the request
-                response = requests.post(overpass_url, data=op_query)
+                response = requests.post(url, data=op_query, headers=headers)
                 response.raise_for_status()  # Raise HTTPError for bad responses
 
                 filepath = output[f]
@@ -145,8 +160,24 @@ if __name__ == "__main__":
     configure_logging(snakemake)
     set_scenario_config(snakemake)
 
+    overpass_api = snakemake.params.overpass_api
+
+    # Build User-Agent header
+    ua_cfg = overpass_api["user_agent"]
+    user_agent = (
+        f"{ua_cfg['project_name']} "
+        f"(Contact: {ua_cfg['email']}; Website: {ua_cfg['website']})"
+    )
+
     # Retrieve the OSM data
     country = snakemake.wildcards.country
     output = snakemake.output
 
-    retrieve_osm_data(country, output)
+    retrieve_osm_data(
+        country,
+        output,
+        url=overpass_api["url"],
+        max_tries=overpass_api["max_tries"],
+        timeout=overpass_api["timeout"],
+        user_agent=user_agent,
+    )

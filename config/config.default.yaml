@@ -1249,3 +1249,15 @@ solving:
   mem_mb: 300000 # 110000 for 3-hourly fully sector-coupled
   memory_logging_frequency: 5 # in seconds
   runtime: 48h #runtime in humanfriendly style https://humanfriendly.readthedocs.io/en/latest/
+
+# docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#overpass_api
+# A descriptive User-Agent is mandatory: overpass-api.de rejects the default
+# library agents (python-requests/*, curl/*) with HTTP 406 Not Acceptable.
+overpass_api:
+  url: "https://overpass-api.de/api/interpreter"
+  max_tries: 5
+  timeout: 600
+  user_agent:
+    project_name: "PyPSA-Eur-CBAM"
+    email: "lukas.schirren@imperial.ac.uk"
+    website: "https://github.com/PyPSA/pypsa-eur"

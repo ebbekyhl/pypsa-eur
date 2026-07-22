@@ -33,6 +33,10 @@ def retrieve_osm_boundaries(
     country,
     adm1_specials,
     output,
+    url="https://overpass-api.de/api/interpreter",
+    max_tries=3,
+    timeout=600,
+    user_agent="",
 ):
     """
     Retrieve OSM administrative boundaries for the specified country and save it to the specified
@@ -42,17 +46,28 @@ def retrieve_osm_boundaries(
     ----------
     country : str
         The country code for which the OSM data should be retrieved.
+    url : str, optional
+        The URL of the overpass API endpoint. The default is
+        "https://overpass-api.de/api/interpreter".
+    max_tries : int, optional
+        The maximum number of attempts to retrieve the data in case of failure.
+        The default is 3.
+    timeout : int, optional
+        The timeout in seconds for the overpass API requests. The default is 600.
+    user_agent : str
+        The User-Agent string to include in the request headers for fair use
+        policy compliance. Note that overpass-api.de answers requests carrying a
+        default library agent (python-requests/*, curl/*) with HTTP 406.
     """
-    # Overpass API endpoint URL
-    overpass_url = "https://overpass-api.de/api/interpreter"
-
     wait_time = 5
+
+    headers = {"User-Agent": user_agent}
 
     osm_adm_level = "4"
     if country in adm1_specials:
         osm_adm_level = adm1_specials[country]  # special case e.g. for Kosovo
 
-    retries = 3
+    retries = max_tries
     for attempt in range(retries):
         logger.info(
             f" - Fetching OSM administrative boundaries for {country} (Attempt {attempt + 1})..."
@@ -61,7 +76,7 @@ def retrieve_osm_boundaries(
         # Build the overpass query
         op_area = f'area["ISO3166-1"="{country}"]'
         op_query = f"""
-            [out:json];
+            [out:json][timeout:{timeout}];
             {op_area}->.searchArea;
             (
             relation["boundary"="administrative"]["admin_level"={osm_adm_level}]["name"](area.searchArea);
@@ -70,7 +85,7 @@ def retrieve_osm_boundaries(
         """
         try:
             # Send the request
-            response = requests.post(overpass_url, data=op_query)
+            response = requests.post(url, data=op_query, headers=headers)
             response.raise_for_status()  # Raise HTTPError for bad responses
 
             filepath = output[0]
@@ -118,8 +133,25 @@ if __name__ == "__main__":
     configure_logging(snakemake)
     set_scenario_config(snakemake)
 
+    overpass_api = snakemake.params.overpass_api
+
+    # Build User-Agent header
+    ua_cfg = overpass_api["user_agent"]
+    user_agent = (
+        f"{ua_cfg['project_name']} "
+        f"(Contact: {ua_cfg['email']}; Website: {ua_cfg['website']})"
+    )
+
     # Retrieve the OSM data
     country = snakemake.wildcards.country
     output = snakemake.output
 
-    retrieve_osm_boundaries(country, ADM1_SPECIALS, output)
+    retrieve_osm_boundaries(
+        country,
+        ADM1_SPECIALS,
+        output,
+        url=overpass_api["url"],
+        max_tries=overpass_api["max_tries"],
+        timeout=overpass_api["timeout"],
+        user_agent=user_agent,
+    )

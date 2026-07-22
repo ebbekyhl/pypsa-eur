@@ -86,7 +86,7 @@ from shapely.algorithms.polylabel import polylabel
 from shapely.geometry import Point
 from shapely.geometry import MultiPolygon, Polygon
 
-from scripts._helpers import configure_logging, set_scenario_config
+from scripts._helpers import PYPSA_V1, configure_logging, set_scenario_config
 
 PD_GE_2_2 = parse(pd.__version__) >= Version("2.2")
 
@@ -425,9 +425,18 @@ def busmap_from_shapes(
 
     else:
         shapes = shapes.set_index(cluster_names)
+        # The points below are built in GEO_CRS; shapes supplied in another
+        # projection would otherwise match nothing and fall through to the
+        # (much slower) nearest-shape loop for every single bus.
+        if shapes.crs is not None and shapes.crs != GEO_CRS:
+            shapes = shapes.to_crs(GEO_CRS)
         points = gpd.points_from_xy(**buses[["x", "y"]], crs=GEO_CRS)
         coords = gpd.GeoDataFrame(geometry=points, index=buses.index)
-        busmap = gpd.sjoin(coords, shapes, how="left")[cluster_names].rename("busmap")
+        # PyPSA names the bus index "name". When the shapes are keyed on a
+        # column of the same name, geopandas resolves the clash by suffixing the
+        # joined column to "name_right", so look it up via an unnamed axis.
+        joined = gpd.sjoin(coords.rename_axis(None), shapes, how="left")
+        busmap = joined[cluster_names].rename("busmap").rename_axis(buses.index.name)
 
         if busmap.isnull().any():
             unassigned = coords[busmap.isnull()]
@@ -1235,7 +1244,10 @@ if __name__ == "__main__":
     nc.meta = dict(snakemake.config, **dict(wildcards=dict(snakemake.wildcards)))
 
     busmap_clustering = clustering.busmap.copy()
-    busmap_clustering.index.name = "Bus"
+    # attach_load() in add_electricity.py looks this index up by column name:
+    # PyPSA 1.x names the bus index "name", earlier versions "Bus". Hardcoding
+    # "Bus" makes that read fail on 1.x with KeyError: "None of ['name'] ...".
+    busmap_clustering.index.name = "name" if PYPSA_V1 else "Bus"
     busmap_clustering.to_csv(snakemake.output.busmap, index=True)
 
     # nc.shapes = n.shapes.copy()

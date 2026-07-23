@@ -1602,6 +1602,130 @@ def add_flexible_egs_constraint(n):
     )
 
 
+def add_cbam_transmission_capacity_constraints(n: pypsa.Network, sns: pd.DatetimeIndex) -> None:
+    """
+    Restrict the CO2 intensity copies of an interconnector to the rating of the
+    single physical cable they represent.
+
+    ``prepare_sector_network.duplicate_transmission`` replicates every HVDC link
+    once per CO2 intensity class so that imported electricity keeps its emission
+    label when it crosses a border. Each copy is a fully-fledged link with its
+    own capacity, so on its own the split hands the model N times the physical
+    transfer capability of every interconnector for free -- and, under myopic
+    foresight, N times the capacity carried into the next planning horizon. The
+    copies are therefore tied together here to behave as one asset:
+
+        sum_c p_{c,t} <= p_max_pu_t * p_nom_owner    for every snapshot t
+        sum_c p_{c,t} >= p_min_pu_t * p_nom_owner    (HVDC links are bidirectional)
+        p_nom_c        = p_nom_owner                 (one capacity per cable)
+
+    where "owner" is the copy that kept the capital cost of the cable, so a
+    border expansion is decided and paid for once but usable by every class.
+    """
+    links = n.links
+
+    if "cbam_owner" not in links.columns:
+        return
+
+    dup = links[links.cbam_owner.fillna("").ne("")]
+    if dup.empty:
+        return
+
+    # Capacity-owning copies, and per class the copies of the same cables in the
+    # same order, so that the flows summed below always refer to one cable.
+    owners = dup.index[dup.index.values == dup.cbam_owner.values]
+    if owners.empty:
+        logger.warning(
+            "Duplicated DC links found but none of them owns a capacity, "
+            "skipping the joint transmission capacity constraint."
+        )
+        return
+
+    by_level = {
+        lvl: pd.Series(g.index.values, index=g.cbam_owner.values).reindex(owners)
+        for lvl, g in dup.groupby("cbam_level")
+    }
+    incomplete = [lvl for lvl, c in by_level.items() if c.isna().any()]
+    if incomplete:
+        logger.warning(
+            f"CO2 intensity levels {incomplete} do not cover every duplicated DC "
+            "link, skipping the joint transmission capacity constraint."
+        )
+        return
+
+    p = n.model["Link-p"]
+    dim = "name" if "name" in p.dims else "Link"
+    # PyPSA <1 puts the capacity variables on their own "Link-ext" dimension.
+    rename = {} if PYPSA_V1 else {"Link-ext": dim}
+
+    # Total flow per cable. linopy stacks the terms positionally and keeps the
+    # coordinates of the first summand, which are the capacity-owning copies.
+    flow = p.loc[:, by_level[dup.loc[owners[0], "cbam_level"]].values]
+    for lvl, copies in by_level.items():
+        if lvl == dup.loc[owners[0], "cbam_level"]:
+            continue
+        flow = flow + p.loc[:, copies.values]
+
+    p_max_pu = get_as_dense(n, "Link", "p_max_pu", sns)[owners]
+    p_min_pu = get_as_dense(n, "Link", "p_min_pu", sns)[owners]
+
+    def as_da(df: pd.DataFrame) -> xr.DataArray:
+        return xr.DataArray(
+            df.values,
+            dims=["snapshot", dim],
+            coords={"snapshot": sns, dim: df.columns.values},
+        )
+
+    extendable = links.p_nom_extendable[owners].values
+    ext, fix = owners[extendable], owners[~extendable]
+
+    if not ext.empty:
+        p_nom = n.model["Link-p_nom"].rename(rename).loc[ext]
+        lhs = flow.sel({dim: ext})
+        n.model.add_constraints(
+            lhs - p_nom * as_da(p_max_pu[ext]) <= 0,
+            name="Link-cbam_joint_capacity_upper_ext",
+        )
+        n.model.add_constraints(
+            lhs - p_nom * as_da(p_min_pu[ext]) >= 0,
+            name="Link-cbam_joint_capacity_lower_ext",
+        )
+
+    if not fix.empty:
+        p_nom = links.p_nom[fix]
+        lhs = flow.sel({dim: fix})
+        n.model.add_constraints(
+            lhs <= as_da(p_max_pu[fix] * p_nom),
+            name="Link-cbam_joint_capacity_upper_fix",
+        )
+        n.model.add_constraints(
+            lhs >= as_da(p_min_pu[fix] * p_nom),
+            name="Link-cbam_joint_capacity_lower_fix",
+        )
+
+    # Let every copy report the capacity of the cable it shares. Without this the
+    # capacity variables of the copies that carry no capital cost are free within
+    # their bounds, and myopic foresight would hand those arbitrary values to the
+    # next planning horizon as existing capacity.
+    others = dup.index[dup.index.values != dup.cbam_owner.values]
+    others = others[links.p_nom_extendable[others].values]
+    matched = dup.loc[others, "cbam_owner"]
+    shared = links.p_nom_extendable[matched.values].values
+    others, matched = others[shared], matched[shared]
+
+    if not others.empty:
+        p_nom = n.model["Link-p_nom"].rename(rename)
+        n.model.add_constraints(
+            p_nom.loc[others] - p_nom.loc[matched.values] == 0,
+            name="Link-cbam_shared_capacity",
+        )
+
+    logger.info(
+        f"Added joint capacity constraints for {len(owners)} duplicated DC links "
+        f"across {len(by_level)} CO2 intensity levels."
+    )
+
+
 def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex, type: str, limit_sense: str = "<=", limit: dict | None = None) -> None:
     """
     Add constraint for limiting green energy imports (synthetic and biomass).
@@ -1763,6 +1887,9 @@ def extra_functionality(
     if isinstance(config["local_co2"], dict):
         logger.info("Adding local CO2 constraint.")
         add_split_co2_constraints(n, config["local_co2"])
+
+    if snakemake.params.uk_settings_prepare.get("cbam", False):
+        add_cbam_transmission_capacity_constraints(n, snapshots)
 
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality

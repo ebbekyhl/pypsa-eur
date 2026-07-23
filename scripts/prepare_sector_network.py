@@ -7432,7 +7432,7 @@ if __name__ == "__main__":
     if isinstance(gas_prices, dict):
         update_gas_prices(n, gas_prices)
 
-    if uk_settings_prepare["CBAM"]:
+    if uk_settings_prepare["cbam"]:
         split_components_by_co2_intensity_levels(n)
 
     n.export_to_netcdf(snakemake.output[0])

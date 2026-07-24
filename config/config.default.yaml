@@ -1055,6 +1055,7 @@ costs:
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#clustering
 clustering:
+  HVAC_to_HVDC: true
   mode: busmap
   area_threshold: 1000 # km2
   single_node_regions: # force listed regions to have only one node

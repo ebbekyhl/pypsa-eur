@@ -6855,6 +6855,52 @@ def scale_UK_gas_network(n):
         else:
             logger.info(f"No scaling applied to {region} gas pipelines from {interconnections[0]}, as current capacity satisfies annual gas flow from {interconnections[0]} to {region}.")
 
+def convert_HVAC_to_HVDC(n):
+    lines = n.lines.copy()
+
+    if lines.empty:
+        print("No AC lines found in the network. Nothing to convert.")
+        return n
+
+    # ------------------------------------------------------------------ #
+    #  Find shared columns between Line and Link components               #
+    # ------------------------------------------------------------------ #
+    line_attrs = set(n.lines.columns)
+    link_attrs = set(n.links.columns if not n.links.empty else pypsa.components.Link.attrs().index)
+
+    shared_attrs = line_attrs & link_attrs  # Intersection of both attribute sets
+
+    # ------------------------------------------------------------------ #
+    #  Build forward links from shared attributes + overrides             #
+    # ------------------------------------------------------------------ #
+    forward_links = lines[list(shared_attrs)].copy()
+    forward_links["p_nom"] = lines["s_nom"] # MVA -> MW
+    forward_links["p_min_pu"]  = 0.0 # Unidirectional
+    forward_links["p_max_pu"]  = lines["s_max_pu"] 
+    forward_links["carrier"]   = "DC"
+    forward_links["dc"] = 1.0 # boolean indicating DC link
+
+    # ------------------------------------------------------------------ #
+    #  Build reverse links (bus1 -> bus0), with "_reverse" postfix        #
+    # ------------------------------------------------------------------ #
+    reverse_links = forward_links.copy()
+    reverse_links.index = lines.index + "_reverse"
+    reverse_links["bus0"] = forward_links["bus1"].values  # Swap buses
+    reverse_links["bus1"] = forward_links["bus0"].values
+
+    # ------------------------------------------------------------------ #
+    #  Combine forward + reverse                                           #
+    # ------------------------------------------------------------------ #
+    all_new_links = pd.concat([forward_links, reverse_links])
+
+    # ------------------------------------------------------------------ #
+    #  Drop AC lines and add DC links                                      #
+    # ------------------------------------------------------------------ #
+    n.remove("Line", lines.index)
+    n.add("Link", all_new_links.index, **{col: all_new_links[col] for col in all_new_links.columns})
+
+    return n
+
 def split_buses(n, co2_intensity_lvls, buses_primary):
     # Duplicate buses for the nonclean and clean energy carriers
     buses = getattr(n, "buses")
@@ -6872,7 +6918,7 @@ def split_buses(n, co2_intensity_lvls, buses_primary):
             bus0=buses_primary, 
             bus1=buses_primary + " " + i, 
             p_nom_extendable = True, 
-            p_min_pu = -1, # bi-directional link
+            p_min_pu = 0, # unidirectional link
             p_max_pu = 1, 
             carrier=i + " connection")
 
@@ -6893,18 +6939,20 @@ def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary):
 
     for i in co2_intensity_lvls:
 
+        # adding postfix to the storage buses according to the co2 intensity level
         buses_i = buses.loc[electricity_storage_buses.index].rename(index = lambda x: x + " " + i)
 
+        # duplicating storage buses for each co2 intensity level
         for j in range(len(buses_i)):
             buses.loc[buses_i.index[j]] = buses_i.iloc[j]
 
-        # connect original with new buses
+        # connect duplicated storage buses to the original storage bus
         n.add("Link", 
             electricity_storage_buses.index + " " + i + " connection", 
             bus0=electricity_storage_buses.index, 
             bus1=electricity_storage_buses.index + " " + i, 
             p_nom_extendable = True, 
-            p_min_pu = -1, # bi-directional link
+            p_min_pu = 0, # unidirectional link
             p_max_pu = 1, 
             carrier=i + " connection")
         
@@ -7470,6 +7518,9 @@ if __name__ == "__main__":
     gas_prices = uk_settings_prepare["gas_prices"]
     if isinstance(gas_prices, dict):
         update_gas_prices(n, gas_prices)
+
+    if clustering["HVAC_to_HVDC"]:
+        convert_HVAC_to_HVDC(n)
 
     if uk_settings_prepare["cbam"]:
         split_components_by_co2_intensity_levels(n)

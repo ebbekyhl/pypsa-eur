@@ -1,4 +1,4 @@
-name: pypsa-eur-new
+name: cbam
 channels:
   - conda-forge
   - bioconda

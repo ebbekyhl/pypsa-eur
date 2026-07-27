@@ -6912,14 +6912,14 @@ def split_buses(n, co2_intensity_lvls, buses_primary):
         for j in range(len(buses_i)):
             buses.loc[buses_i.index[j]] = buses_i.iloc[j]
 
-        # connect original with new buses
-        n.add("Link", 
-            buses_primary + " " + i + " connection", 
-            bus0=buses_primary, 
-            bus1=buses_primary + " " + i, 
-            p_nom_extendable = True, 
-            p_min_pu = 0, # unidirectional link
-            p_max_pu = 1, 
+        # connect the CO2-intensity layer bus to the common bus.
+        n.add("Link",
+            buses_primary + " " + i + " connection",
+            bus0=buses_primary + " " + i,   # layer
+            bus1=buses_primary,             # common
+            p_nom_extendable = True,
+            p_min_pu = 0,                   # unidirectional: layer -> common
+            p_max_pu = 1,
             carrier=i + " connection")
 
 def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary): 

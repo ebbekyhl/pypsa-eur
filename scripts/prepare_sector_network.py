@@ -6856,6 +6856,257 @@ def scale_UK_gas_network(n):
         else:
             logger.info(f"No scaling applied to {region} gas pipelines from {interconnections[0]}, as current capacity satisfies annual gas flow from {interconnections[0]} to {region}.")
 
+def convert_HVAC_to_HVDC(n):
+    lines = n.lines.copy()
+
+    if lines.empty:
+        print("No AC lines found in the network. Nothing to convert.")
+        return n
+
+    # ------------------------------------------------------------------ #
+    #  Find shared columns between Line and Link components               #
+    # ------------------------------------------------------------------ #
+    line_attrs = set(n.lines.columns)
+    link_attrs = set(n.links.columns if not n.links.empty else pypsa.components.Link.attrs().index)
+
+    shared_attrs = line_attrs & link_attrs  # Intersection of both attribute sets
+
+    # ------------------------------------------------------------------ #
+    #  Build forward links from shared attributes + overrides             #
+    # ------------------------------------------------------------------ #
+    forward_links = lines[list(shared_attrs)].copy()
+    forward_links["p_nom"] = lines["s_nom"] # MVA -> MW
+    forward_links["p_min_pu"]  = 0.0 # Unidirectional
+    forward_links["p_max_pu"]  = lines["s_max_pu"] 
+    forward_links["carrier"]   = "DC"
+    forward_links["dc"] = 1.0 # boolean indicating DC link
+
+    # ------------------------------------------------------------------ #
+    #  Build reverse links (bus1 -> bus0), with "_reverse" postfix        #
+    # ------------------------------------------------------------------ #
+    reverse_links = forward_links.copy()
+    reverse_links.index = lines.index + "_reverse"
+    reverse_links["bus0"] = forward_links["bus1"].values  # Swap buses
+    reverse_links["bus1"] = forward_links["bus0"].values
+
+    # ------------------------------------------------------------------ #
+    #  Combine forward + reverse                                           #
+    # ------------------------------------------------------------------ #
+    all_new_links = pd.concat([forward_links, reverse_links])
+
+    # ------------------------------------------------------------------ #
+    #  Drop AC lines and add DC links                                      #
+    # ------------------------------------------------------------------ #
+    n.remove("Line", lines.index)
+    n.add("Link", all_new_links.index, **{col: all_new_links[col] for col in all_new_links.columns})
+
+    return n
+
+def split_buses(n, co2_intensity_lvls, buses_primary):
+    # Duplicate buses for the nonclean and clean energy carriers
+    buses = getattr(n, "buses")
+
+    for i in co2_intensity_lvls:
+
+        buses_i = n.buses.loc[buses_primary].rename(index = lambda x: x + " " + i)
+
+        for j in range(len(buses_i)):
+            buses.loc[buses_i.index[j]] = buses_i.iloc[j]
+
+        # connect original with new buses
+        n.add("Link", 
+            buses_primary + " " + i + " connection", 
+            bus0=buses_primary, 
+            bus1=buses_primary + " " + i, 
+            p_nom_extendable = True, 
+            p_min_pu = 0, # unidirectional link
+            p_max_pu = 1, 
+            carrier=i + " connection")
+
+def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary): 
+    charge_buses = set(n.links.bus1[n.links.bus0.isin(buses_primary)])
+    discharge_buses = set(n.links.bus0[n.links.bus1.isin(buses_primary)])
+
+    electricity_storage = n.stores.index[
+        n.stores.bus.isin(charge_buses & discharge_buses)
+    ]
+
+    electricity_storage_buses = n.buses.loc[n.stores.loc[electricity_storage].bus]
+
+    # Split storage buses
+    buses = getattr(n, "buses")
+    stores = getattr(n, "stores")
+    links = getattr(n, "links")
+
+    for i in co2_intensity_lvls:
+
+        # adding postfix to the storage buses according to the co2 intensity level
+        buses_i = buses.loc[electricity_storage_buses.index].rename(index = lambda x: x + " " + i)
+
+        # duplicating storage buses for each co2 intensity level
+        for j in range(len(buses_i)):
+            buses.loc[buses_i.index[j]] = buses_i.iloc[j]
+
+        # connect duplicated storage buses to the original storage bus
+        n.add("Link", 
+            electricity_storage_buses.index + " " + i + " connection", 
+            bus0=electricity_storage_buses.index, 
+            bus1=electricity_storage_buses.index + " " + i, 
+            p_nom_extendable = True, 
+            p_min_pu = 0, # unidirectional link
+            p_max_pu = 1, 
+            carrier=i + " connection")
+        
+        # Duplicate electricity stores
+        stores_i = stores.loc[electricity_storage].copy()
+        stores_i.index = stores_i.index + " " + i
+        stores_i.bus = stores_i.bus + " " + i
+
+        for j in range(len(stores_i)):
+            stores.loc[stores_i.index[j]] = stores_i.iloc[j]
+
+        # storage links need to be duplicated as well
+        storage_buses = set(stores.loc[electricity_storage, "bus"])
+
+        storage_links = links.index[
+            (
+                links.bus0.isin(buses_primary)
+                & links.bus1.isin(storage_buses)
+            )
+            |
+            (
+                links.bus1.isin(buses_primary)
+                & links.bus0.isin(storage_buses)
+            )
+        ]
+
+        # Duplicate storage links
+        links_i = links.loc[storage_links].copy()
+        links_i.index = links_i.index + " " + i
+
+        links_i.loc[links_i.bus0.isin(storage_buses), "bus0"] += " " + i
+        links_i.loc[links_i.bus0.isin(storage_buses), "bus1"] += " " + i
+        links_i.loc[links_i.bus1.isin(storage_buses), "bus0"] += " " + i
+        links_i.loc[links_i.bus1.isin(storage_buses), "bus1"] += " " + i
+        
+        for j in range(len(links_i)):
+            links.loc[links_i.index[j]] = links_i.iloc[j]
+
+    stores.drop(index=electricity_storage, inplace=True)
+    links.drop(index=storage_links, inplace=True)
+
+def distribute_generators(n, generators_co2_lvls, buses_primary):
+    components = ["generators", "links", "storage_units"]
+    for comp in components:
+        c = getattr(n, comp)
+        bus_type = "bus1" if comp == "links" else "bus"
+        ii = c.query(f"{bus_type}.isin(@buses_primary) and carrier.isin(@generators_co2_lvls.keys())")
+        ii.loc[ii.index, bus_type] = ii[bus_type] + " " + c.carrier.replace(generators_co2_lvls)
+        c.loc[ii.index, bus_type] = ii[bus_type]
+
+def duplicate_transmission(n, co2_intensity_lvls):
+    """
+    Duplicate the HVDC network once per CO2 intensity level.
+
+    Every copy connects the bus layer of its own emission class, which is what
+    makes the CO2 intensity of electricity observable at the importing side of a
+    border. The copies are, however, only accounting layers of one physical
+    cable: the copy of the first level owns the capacity of the original link
+    and is the only one charged for it. The remaining copies are marked through
+    the columns "cbam_owner" and "cbam_level", which
+    ``solve_network.add_cbam_transmission_capacity_constraints`` picks up to make
+    the flows of all copies share that single capacity.
+    """
+    links = getattr(n, "links")
+
+    dc_links = links.index[links.carrier == "DC"]
+
+    if dc_links.empty:
+        logger.warning("No DC links found, skipping duplication of transmission.")
+        return
+
+    # Bookkeeping columns tying each copy back to the cable it shares. Empty for
+    # every link that is not part of the CO2 intensity split.
+    for col in ["cbam_owner", "cbam_level"]:
+        if col not in links.columns:
+            links[col] = ""
+
+    lvls = list(co2_intensity_lvls)
+    capacity_owner = (dc_links + " " + lvls[0]).values
+
+    for k, lvl in enumerate(lvls):
+        dc_i = links.loc[dc_links].copy()
+        dc_i.index = dc_i.index + " " + lvl
+
+        # Connect duplicated buses
+        dc_i.bus0 = dc_i.bus0 + " " + lvl
+        dc_i.bus1 = dc_i.bus1 + " " + lvl
+
+        dc_i["cbam_owner"] = capacity_owner
+        dc_i["cbam_level"] = lvl
+
+        # A border expansion must only be paid for once. Charging every copy
+        # would multiply the cost of a cable by the number of emission classes.
+        if k > 0:
+            dc_i["capital_cost"] = 0.0
+
+        for j in range(len(dc_i)):
+            links.loc[dc_i.index[j]] = dc_i.iloc[j]
+
+    # Remove original DC links
+    links.drop(index=dc_links, inplace=True)
+
+    logger.info(
+        f"Duplicated {len(dc_links)} DC links across {len(lvls)} CO2 intensity "
+        f"levels {lvls}. Their joint rating is enforced in solve_network."
+    )
+
+def split_components_by_co2_intensity_levels(n, carriers = ["AC"]):
+    # CO2 buses in network
+    co2_buses = n.buses.query("carrier == 'co2'").index
+
+    # CO2 emissions classifications
+    # NB! We currently have two classications, meaning that we have one category of energy which is assumed to be
+    # without CO2 emissions and another with CO2 emissions. For this reason, the elements
+    # in the CO2-emitting category share the same CO2-intensity. To improve this, it could be further split,
+    # but for now we leave it as it is to test the concept.     
+
+    co2_intensity_lvls = {"clean": 0, 
+                          "nonclean": 0.2, # tCO2 / MWh_th
+                          # e.g., intermediate: 0.1, # tCO2 / MWh_th 
+                        }
+
+    # Dictionary distributing generators - should later be classified automatically based on the generator's CO2 intensity
+    generators_co2_lvls = {"onwind": "clean",
+                            "offwind-ac": "clean",
+                            "offwind-dc": "clean",
+                            "offwind-float": "clean",
+                            "solar": "clean",
+                            "solar rooftop": "clean",
+                            "ror": "clean",
+                            "PHS": "clean",
+                            "hydro": "clean",
+                            "nuclear": "clean",
+                            "OCGT": "nonclean",
+                            "CCGT": "nonclean",
+                            }
+
+    # ####################################################
+    for carrier in carriers:
+        # Identify buses with the given carrier
+        buses_primary = n.buses[n.buses["carrier"] == carrier].index
+
+        split_buses(n, co2_intensity_lvls, buses_primary)
+        split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary)
+        distribute_generators(n, generators_co2_lvls, buses_primary)
+        duplicate_transmission(n, co2_intensity_lvls)
+
+        # The capacity constraint keeping the duplicated DC links within the rating
+        # of the physical cable is added at solve time, see
+        # solve_network.add_cbam_transmission_capacity_constraints.
+
+        # add emission or tax to importing links only
+
 def reduce_model_in_the_east(n, regions_onshore, dct1):
 
     logger.info("Reducing model by aggregating specified countries")
@@ -7291,5 +7542,11 @@ if __name__ == "__main__":
     gas_prices = uk_settings_prepare["gas_prices"]
     if isinstance(gas_prices, dict):
         update_gas_prices(n, gas_prices)
+
+    if clustering["HVAC_to_HVDC"]:
+        convert_HVAC_to_HVDC(n)
+
+    if uk_settings_prepare["cbam"]:
+        split_components_by_co2_intensity_levels(n)
 
     n.export_to_netcdf(snakemake.output[0])

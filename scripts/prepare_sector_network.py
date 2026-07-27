@@ -6856,116 +6856,6 @@ def scale_UK_gas_network(n):
         else:
             logger.info(f"No scaling applied to {region} gas pipelines from {interconnections[0]}, as current capacity satisfies annual gas flow from {interconnections[0]} to {region}.")
 
-def make_clean_and_nonclean_classification(n):
-
-    # Carriers considered
-    carriers = ["AC", "H2"]
-
-    # CO2 buses in network
-    co2_buses = n.buses.query("carrier == 'co2'").index
-
-    # Terminologies
-    nonclean_name = "dirty"
-    clean_name = "clean"
-    # NB! We currently have two classications, meaning that we have one category of energy which is 
-    # without CO2 emissions, and another one which is with CO2 emissions. For this reason, the elements
-    # in the CO2-emitting category share the same CO2-intensity. To avoid this, it could be further split
-    # but for now, we leave it at this to test the concept.     
-
-    ####################################################
-    for carrier in carriers:
-        
-        ##########################################################################################
-        ################################ Update bus names ########################################
-        #########################################################################################
-        buses_primary = n.buses[n.buses["carrier"] == carrier].index
-
-        # if carrier == 'AC':
-        #     buses_secondary = n.buses.query("carrier.str.contains('low voltage')").index
-        # else:
-        #     buses_secondary = []
-
-        # add copy of ac_buses as new buses to the network
-        n.add("Bus", buses_primary + " " + nonclean_name, carrier=carrier)
-        n.add("Bus", buses_primary + " " + clean_name, carrier=carrier)
-
-        # create new links between original and nonclean + between original and clean 
-        n.add("Link", 
-            buses_primary + " " + nonclean_name + " connection", 
-            bus0=buses_primary, 
-            bus1=buses_primary + " " + nonclean_name, 
-            p_nom_extendable = True, 
-            p_min_pu = -1, 
-            p_max_pu = 1, 
-            carrier=nonclean_name + " connection")
-
-        n.add("Link",
-            buses_primary + " " + clean_name + " connection", 
-            bus0=buses_primary, 
-            bus1=buses_primary + " " + clean_name, 
-            p_nom_extendable = True, 
-            p_min_pu = -1, 
-            p_max_pu = 1, 
-                    carrier=clean_name + " connection")
-
-        ##########################################################################################
-        ####################################### AC ###############################################
-        #########################################################################################
-        if carrier == "AC":
-            # Generation
-            nonclean_generators = n.links.query("bus1.isin(@buses_primary)").query("bus2.isin(@co2_buses) and efficiency2 > 0")
-            clean_generators_links = n.links.query("bus1.isin(@buses_primary)").query("bus2.isin(@co2_buses) and efficiency2 == 0")
-            clean_generators_gen = n.generators.query("bus.isin(@buses_primary)")
-
-            # if len(buses_secondary) > 0:
-            #     clean_generators_gen_lv = n.generators.query("bus.isin(@buses_secondary)")
-
-            # update generation with correct suffix - splitting into clean and nonclean
-            clean_generators_links.loc[:, "bus1"] = clean_generators_links["bus1"] + " " + clean_name
-            clean_generators_gen.loc[:, "bus"] = clean_generators_gen["bus"] + " " + clean_name
-            nonclean_generators.loc[:, "bus1"] = nonclean_generators["bus1"] + " " + nonclean_name
-
-            # NB! There are additional generators to be added (e.g., from the low voltage buses). But, for now, we go with the primary buses to test it.
-            # One could also ask, how about the discharged electricity from storage? Is that clean or nonclean?
-
-            # Add transmission: 
-            # Adding split cross-border transmission lines for clean and nonclean exports. For the nonclean cross-border exports, we add a CO2 intensity
-            # resembling the source of H2 produdction.
-
-        ##########################################################################################
-        ####################################### H2 ###############################################
-        #########################################################################################
-        if carrier == "H2":
-            links = n.links.copy()
-            
-            # Generation
-            h2_electrolysis = links.query("bus1.isin(@buses_primary)").query("carrier == 'H2 Electrolysis'")
-            clean_h2_electrolysis = h2_electrolysis.copy()
-            nonclean_h2_electrolysis = h2_electrolysis.copy()
-
-            # add new electrolysis links with new terminology, while removing the original electrolysis links
-            links.drop(index = h2_electrolysis.index, inplace=True)
-            clean_h2_electrolysis.loc[:, "bus1"] = clean_h2_electrolysis["bus1"] + " " + clean_name
-            nonclean_h2_electrolysis.loc[:, "bus1"] = nonclean_h2_electrolysis["bus1"] + " " + nonclean_name
-            links = pd.concat([links, clean_h2_electrolysis, nonclean_h2_electrolysis])
-
-            # add new SMR with new terminology, while removing the original SMR links
-            h2_smr = links.query("bus1.isin(@buses_primary)").query("carrier.str.contains('SMR')")
-            h2_smr_clean = h2_smr.query("carrier == 'SMR CC'") # again, since we are limited by only having two classifications, we put SMR CC in the clean category (but this needs to be updated later)
-            h2_smr_nonclean = h2_smr.query("carrier == 'SMR'") 
-            links.drop(index = h2_smr.index, inplace=True)
-            h2_smr_clean.loc[:, "bus1"] = h2_smr_clean["bus1"] + " " + clean_name
-            h2_smr_nonclean.loc[:, "bus1"] = h2_smr_nonclean["bus1"] + " " + nonclean_name
-            links = pd.concat([links, h2_smr_clean, h2_smr_nonclean])
-            
-            # add also methanol steam reforming and ammonia cracker
-
-            # Add transmission: 
-            # Adding split cross-border transmission lines for clean and nonclean exports. For the nonclean cross-border exports, we add a CO2 intensity
-            # resembling the source of electricity production.
-
-            n.links = links
-
 def reduce_model_in_the_east(n, regions_onshore, dct1):
 
     logger.info("Reducing model by aggregating specified countries")
@@ -7020,6 +6910,25 @@ def update_gas_prices(n, gas_prices):
     if "imports" in gas_prices.keys():
         gas_imports = df.query("carrier == 'import gas'")
         df.loc[gas_imports.index, "marginal_cost"] = gas_prices["imports"]
+
+def fix_transmission_lines(n, year, fixed_years): 
+    lines = getattr(n, "lines")
+    links = getattr(n, "links")
+
+    UK_lines = lines.query("(bus0.str.contains('GB') or bus1.str.contains('GB'))")
+    UK_links = links.query("carrier == 'DC' and (bus0.str.contains('GB') or bus1.str.contains('GB'))")
+
+    future_UK_lines = UK_lines.query("build_year > @year")
+    future_UK_links = UK_links.query("build_year > @year")
+    
+    # set future UK lines and links to 0 as they are not built yet:
+    lines.loc[future_UK_lines.index, "s_nom"] = 0
+    links.loc[future_UK_links.index, "p_nom"] = 0
+
+    # for certain years in the pathway optimization, transmission expansion is not endogenous.
+    if year in fixed_years:
+        lines.loc[UK_lines.index, "s_nom_extendable"] = False
+        links.loc[UK_links.index, "p_nom_extendable"] = False
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -7352,6 +7261,10 @@ if __name__ == "__main__":
     )
 
     fix_gas_storage(n)
+
+    transmission_fixed_years = uk_settings_prepare.get("transmission_fixed_years", None)
+    if isinstance(transmission_fixed_years, list):
+        fix_transmission_lines(n, investment_year, transmission_fixed_years)
         
     factor = uk_settings_prepare.get("uk_scale_up_offwind_potential", None)
     if isinstance(factor, (int, float)):

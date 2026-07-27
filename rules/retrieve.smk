@@ -658,6 +658,9 @@ if config["enable"]["retrieve"] and (
         log:
             "logs/retrieve_osm_data_{country}.log",
         threads: 1
+        resources:
+            # serialise overpass requests; parallel queries trigger HTTP 429/504
+            overpass=1,
         params:
             overpass_api=config_provider("overpass_api"),
         conda:
@@ -702,6 +705,9 @@ if config["enable"]["retrieve"]:
         log:
             "logs/retrieve_osm_boundaries_{country}_adm1.log",
         threads: 1
+        resources:
+            # serialise overpass requests; parallel queries trigger HTTP 429/504
+            overpass=1,
         params:
             overpass_api=config_provider("overpass_api"),
         conda:

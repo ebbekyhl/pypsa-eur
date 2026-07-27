@@ -68,6 +68,8 @@ def retrieve_osm_boundaries(
         osm_adm_level = adm1_specials[country]  # special case e.g. for Kosovo
 
     retries = max_tries
+    last_exception = None
+    response = None
     for attempt in range(retries):
         logger.info(
             f" - Fetching OSM administrative boundaries for {country} (Attempt {attempt + 1})..."
@@ -95,6 +97,7 @@ def retrieve_osm_boundaries(
             logger.info(" - Done.")
             break  # Exit the retry loop on success
         except (json.JSONDecodeError, requests.exceptions.RequestException) as e:
+            last_exception = e
             logger.error(
                 f"Error for retrieving administrative boundaries in country {country}: {e}"
             )
@@ -105,13 +108,10 @@ def retrieve_osm_boundaries(
                 wait_time += 15
                 logger.info(f"Waiting {wait_time} seconds before retrying...")
                 time.sleep(wait_time)
-            else:
-                logger.error(
-                    f"Failed to retrieve administrative boundaries in country {country} after {retries} attempts."
-                )
         except Exception as e:
             # For now, catch any other exceptions and log them. Treat this
             # the same as a RequestException and try to run again two times.
+            last_exception = e
             logger.error(
                 f"Unexpected error in retrieving administrative boundaries in country {country}: {e}"
             )
@@ -119,10 +119,14 @@ def retrieve_osm_boundaries(
                 wait_time += 10
                 logger.info(f"Waiting {wait_time} seconds before retrying...")
                 time.sleep(wait_time)
-            else:
-                logger.error(
-                    f"Failed to retrieve administrative boundaries for country {country} after {retries} attempts."
-                )
+    else:
+        # All attempts exhausted without a successful download. Raise so that
+        # snakemake reports the actual API error instead of a misleading
+        # MissingOutputException on the (never written) output file.
+        raise RuntimeError(
+            f"Failed to retrieve administrative boundaries for country {country} "
+            f"after {retries} attempts: {last_exception}"
+        ) from last_exception
 
 
 if __name__ == "__main__":

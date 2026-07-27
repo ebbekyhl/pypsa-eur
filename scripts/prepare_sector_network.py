@@ -7003,18 +7003,23 @@ def distribute_generators(n, generators_co2_lvls, buses_primary):
         ii.loc[ii.index, bus_type] = ii[bus_type] + " " + c.carrier.replace(generators_co2_lvls)
         c.loc[ii.index, bus_type] = ii[bus_type]
 
-def duplicate_transmission(n, co2_intensity_lvls):
+def duplicate_transmission(n, co2_intensity_lvls, shared_capacity=True):
     """
     Duplicate the HVDC network once per CO2 intensity level.
 
     Every copy connects the bus layer of its own emission class, which is what
     makes the CO2 intensity of electricity observable at the importing side of a
     border. The copies are, however, only accounting layers of one physical
-    cable: the copy of the first level owns the capacity of the original link
-    and is the only one charged for it. The remaining copies are marked through
-    the columns "cbam_owner" and "cbam_level", which
+    cable: with "shared_capacity", the copy of the first level owns the capacity
+    of the original link and is the only one charged for it. The remaining copies
+    are marked through the columns "capacity_owner" and "co2_class", which
     ``solve_network.add_cbam_transmission_capacity_constraints`` picks up to make
     the flows of all copies share that single capacity.
+
+    Setting "shared_capacity" to False leaves every copy a fully independent
+    link, which multiplies the transfer capability and the investment cost of
+    each interconnector by the number of emission classes. Only useful to
+    quantify what the joint capacity constraint changes.
     """
     links = getattr(n, "links")
 
@@ -7026,12 +7031,15 @@ def duplicate_transmission(n, co2_intensity_lvls):
 
     # Bookkeeping columns tying each copy back to the cable it shares. Empty for
     # every link that is not part of the CO2 intensity split.
-    for col in ["cbam_owner", "cbam_level"]:
-        if col not in links.columns:
-            links[col] = ""
+    #   co2_class      - emission layer of the copy ("clean" / "nonclean")
+    #   capacity_owner - link whose single capacity all copies of a cable share
+    if shared_capacity:
+        for col in ["capacity_owner", "co2_class"]:
+            if col not in links.columns:
+                links[col] = ""
 
     lvls = list(co2_intensity_lvls)
-    capacity_owner = (dc_links + " " + lvls[0]).values
+    owner_names = (dc_links + " " + lvls[0]).values
 
     for k, lvl in enumerate(lvls):
         dc_i = links.loc[dc_links].copy()
@@ -7041,13 +7049,14 @@ def duplicate_transmission(n, co2_intensity_lvls):
         dc_i.bus0 = dc_i.bus0 + " " + lvl
         dc_i.bus1 = dc_i.bus1 + " " + lvl
 
-        dc_i["cbam_owner"] = capacity_owner
-        dc_i["cbam_level"] = lvl
+        if shared_capacity:
+            dc_i["capacity_owner"] = owner_names
+            dc_i["co2_class"] = lvl
 
-        # A border expansion must only be paid for once. Charging every copy
-        # would multiply the cost of a cable by the number of emission classes.
-        if k > 0:
-            dc_i["capital_cost"] = 0.0
+            # A border expansion must only be paid for once. Charging every copy
+            # would multiply the cost of a cable by the number of emission classes.
+            if k > 0:
+                dc_i["capital_cost"] = 0.0
 
         for j in range(len(dc_i)):
             links.loc[dc_i.index[j]] = dc_i.iloc[j]
@@ -7057,10 +7066,10 @@ def duplicate_transmission(n, co2_intensity_lvls):
 
     logger.info(
         f"Duplicated {len(dc_links)} DC links across {len(lvls)} CO2 intensity "
-        f"levels {lvls}. Their joint rating is enforced in solve_network."
+        f"levels {lvls}. Joint rating enforced in solve_network: {shared_capacity}."
     )
 
-def split_components_by_co2_intensity_levels(n, carriers = ["AC"]):
+def split_components_by_co2_intensity_levels(n, carriers = ["AC"], shared_capacity = True):
     # CO2 buses in network
     co2_buses = n.buses.query("carrier == 'co2'").index
 
@@ -7098,7 +7107,7 @@ def split_components_by_co2_intensity_levels(n, carriers = ["AC"]):
         split_buses(n, co2_intensity_lvls, buses_primary)
         split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary)
         distribute_generators(n, generators_co2_lvls, buses_primary)
-        duplicate_transmission(n, co2_intensity_lvls)
+        duplicate_transmission(n, co2_intensity_lvls, shared_capacity)
 
         # The capacity constraint keeping the duplicated DC links within the rating
         # of the physical cable is added at solve time, see
@@ -7523,6 +7532,11 @@ if __name__ == "__main__":
         convert_HVAC_to_HVDC(n)
 
     if uk_settings_prepare["cbam"]:
-        split_components_by_co2_intensity_levels(n)
+        split_components_by_co2_intensity_levels(
+            n,
+            shared_capacity=uk_settings_prepare.get(
+                "cbam_shared_transmission_capacity", True
+            ),
+        )
 
     n.export_to_netcdf(snakemake.output[0])

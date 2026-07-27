@@ -96,6 +96,7 @@ uk_settings:
     uk_scale_up_offwind_potential: 2 # to align with UK government's offshore wind targets, we increase the estimated offshore wind potential in the UK by 2 
     uk_include_offshore_buses: false # whether offshore buses (not to be confused with offshore regions) are included.
     electrolysis_p_min_pu: 0.95 # minimum output of electrolysis units 
+    transmission_fixed_years: false
     reduce_model_in_the_east: false # whether to reduce the model in the eastern part of Europe by clustering Balkan, Baltic and East European countries into three representative regions, respectively. 
     use_dynamic_gas_prices: false
     gas_prices: 
@@ -434,7 +435,7 @@ transmission_projects:
   - confirmed
     #- planned_not_yet_permitted
     #- under_consideration
-  new_link_capacity: zero #keep or zero
+  new_link_capacity: keep #keep or zero
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#transformers
 transformers:

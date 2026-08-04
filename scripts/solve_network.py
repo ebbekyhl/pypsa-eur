@@ -248,8 +248,17 @@ def add_solar_potential_constraints(n: pypsa.Network, config: dict) -> None:
             lambda x: (x * factor) if carrier in x.name else x, axis=1
         )
 
-    location = pd.Series(n.buses.index, index=n.buses.index)
-    ggrouper = n.generators.loc[solar].bus
+    # Group by the region (primary) bus, not the raw generator bus. Under the
+    # CBAM CO2 split, "solar" is moved onto the "<region> clean" layer bus while
+    # "solar-hsat" stays on the primary bus (it is absent from
+    # generators_co2_lvls). Grouping on the raw bus would then place the two on
+    # different labels, so the RHS subtraction misaligns to NaN and caps solar at
+    # 0. n.buses.location maps every layer bus back to its region bus and is a
+    # no-op for non-CBAM runs (a bus is its own location).
+    location = n.buses.location.where(
+        n.buses.location != "", pd.Series(n.buses.index, index=n.buses.index)
+    )
+    ggrouper = n.generators.loc[solar].bus.map(location)
     rhs = (
         n.generators.loc[solar_today, "p_nom_max"]
         .groupby(n.generators.loc[solar_today].bus.map(location))

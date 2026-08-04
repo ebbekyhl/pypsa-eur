@@ -236,7 +236,13 @@ def add_planned_generation_capacities(n, year, file, onshore_regions_file, uk_se
             planned_capacity= df_tech_in_grouped["Capacity"].copy()
 
             # in the case that some capacity is located in a cell where the technology is not feasible, then move it to the neighboring region
-            onshore_regions_available = onshore_regions.loc[n.generators.query("carrier == @tech").bus]
+            # Under the CBAM CO2 split the generator bus is the "<region> clean"
+            # layer bus, whereas onshore_regions is keyed by the region bus;
+            # n.buses.location maps the layer bus back to its region (no-op for
+            # non-CBAM runs).
+            onshore_regions_available = onshore_regions.loc[
+                n.generators.query("carrier == @tech").bus.map(n.buses.location)
+            ]
             not_contained = planned_capacity.index.difference(n.generators.query("carrier == @tech").index)
             if len(not_contained) > 0:
                 not_contained_index = list(pd.DataFrame(not_contained)[0].str.split(f"{res_level} {tech}", expand = True)[0].str.strip())

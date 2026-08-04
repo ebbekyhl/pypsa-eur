@@ -552,49 +552,40 @@ def attach_to_buses(df_OIM_pp, uk_offshore_regions, uk_regions):
 
     return df_OIM_pp
 
-def calculate_uk_fraction(df_OIM_pp, carrier, group):
+def calculate_uk_fraction(n, df_OIM_pp, carrier, group):
 
     """
-    This function is used to calculate nodal fractions of the total installed capacity, as fractions of the total deployment potential. 
+    This function is used to calculate nodal fractions of the total installed capacity, as fractions of the total deployment potential.
     This is needed to address how renewable energy sources are represented in PyPSA-Eur.
     """
 
-    # Numerator (capacity per bus)
-    fraction_num = df_OIM_pp.query("Technology == @carrier").set_index("bus").sort_index().groupby("bus").Capacity.sum()
-    
-    # Denominator (total capacity)
-    fraction_denom = fraction_num.sum()
-    
-    # Calculate the nodal fractions of the total installed capacity 
-    fraction_installed = fraction_num / fraction_denom
+    # Installed OIM capacity per region bus, as a share of the national total.
+    # OIM capacities are keyed by the region (primary) bus name.
+    fraction_num = df_OIM_pp.query("Technology == @carrier").groupby("bus").Capacity.sum()
+    fraction_installed = fraction_num / fraction_num.sum()
 
-    # Create new dataframe with maximum potentials per bus
+    # p_nom_max per generator, indexed by generator name
     group_df = pd.DataFrame(group.p_nom_max)
     group_df["bus"] = group.bus
-    # reset_index() below turns the generator index into a column named after it:
-    # PyPSA 1.x names every component index "name", earlier versions used the
-    # component name ("Generator"). Derive it instead of hardcoding either.
-    generator_col = group_df.index.name or "index"
-    p_num_max_per_bus = group_df["p_nom_max"].groupby(group_df.bus).sum()
-    group_df = group_df.reset_index().set_index("bus")
-    group_df.loc[p_num_max_per_bus.index, "p_nom_max_per_bus"] = p_num_max_per_bus
 
-    # Calculate nodal fractions of the total deployment potential
-    fractions_potential = (group_df["p_nom_max"] / group_df["p_nom_max_per_bus"]).values
+    # The CBAM feature splits AC buses into CO2-intensity layers ("<region> clean"
+    # / "<region> nonclean") and moves renewables onto a layer bus, so the
+    # generator bus no longer equals the region bus that OIM capacities are keyed
+    # on. n.buses.location maps every layer bus back to its region bus and is a
+    # no-op for non-CBAM runs (where a bus is its own location).
+    group_df["region_bus"] = group_df["bus"].map(n.buses.location).fillna(group_df["bus"])
 
-    # allocate the nodal fractions of the total installed capacity 
-    group_df.loc[fraction_installed.index, "fraction_UK_regions"] = fraction_installed
-    group_df.set_index(generator_col, inplace=True)
+    # Nodal fraction of the total deployment potential (within the generator bus)
+    p_nom_max_per_bus = group_df.groupby("bus")["p_nom_max"].transform("sum")
+    group_df["fraction_potential"] = group_df["p_nom_max"] / p_nom_max_per_bus
 
-    # allocate nodal fractions of the total deployment potential
-    group_df.loc[:, "fraction_potential"] = fractions_potential
+    # Regional fraction of the total installed capacity, matched on the region bus
+    group_df["fraction_UK_regions"] = group_df["region_bus"].map(fraction_installed)
 
-    # Now, the total fraction is the product of both fractions
-    group_df.loc[:, "fraction"] = group_df["fraction_UK_regions"] * group_df["fraction_potential"]
+    # Total fraction is the product of both fractions
+    group_df["fraction"] = group_df["fraction_UK_regions"] * group_df["fraction_potential"]
 
-    fraction = group_df["fraction"]
-
-    return fraction
+    return group_df["fraction"]
 
 def add_build_year_to_new_assets(n: pypsa.Network, baseyear: int) -> None:
     """
@@ -703,8 +694,9 @@ def add_existing_renewables(
                 fraction = group.p_nom_max / group.p_nom_max.sum()
                 res_capacities.append(cartesian(df.loc[country], fraction))
             else:
-                fraction = calculate_uk_fraction(df_OIM_pp, 
-                                                carrier, 
+                fraction = calculate_uk_fraction(n,
+                                                df_OIM_pp,
+                                                carrier,
                                                 group)
                 res_capacities.append(cartesian(df.loc[country], fraction))
 
@@ -982,17 +974,39 @@ def add_power_capacities_installed_before_baseyear(
             p_max_pu = n.generators_t.p_max_pu[capacity.index + name_suffix_by]
 
             if not new_build.empty:
+                # Under the CBAM CO2-intensity split, renewables live on a bus
+                # layer ("<region> clean"), not the region (primary) bus that
+                # new_capacity is keyed on. Attach the new brownfield renewables
+                # to the same layer bus as the existing generators of this
+                # carrier, and align the p_max_pu columns on the region bus via
+                # n.buses.location. Both are a no-op for non-CBAM runs, where a
+                # bus is its own location.
+                existing_gens = n.generators[n.generators.carrier == generator + suffix]
+                region_to_layer_bus = (
+                    pd.Series(
+                        existing_gens.bus.values,
+                        index=existing_gens.bus.map(n.buses.location),
+                    )
+                    .groupby(level=0)
+                    .first()
+                )
+                new_buses = (
+                    new_capacity.index.to_series()
+                    .map(region_to_layer_bus)
+                    .fillna(new_capacity.index.to_series())
+                )
+                gen_to_region = n.generators.bus.map(n.buses.location)
                 n.add(
                     "Generator",
                     new_capacity.index,
                     suffix=name_suffix,
-                    bus=new_capacity.index,
+                    bus=new_buses.values,
                     carrier=generator,
                     p_nom=new_capacity,
                     marginal_cost=marginal_cost,
                     capital_cost=capital_cost,
                     efficiency=costs.at[cost_key, "efficiency"],
-                    p_max_pu=p_max_pu.rename(columns=n.generators.bus),
+                    p_max_pu=p_max_pu.rename(columns=gen_to_region),
                     build_year=grouping_year,
                     lifetime=costs.at[cost_key, "lifetime"],
                 )

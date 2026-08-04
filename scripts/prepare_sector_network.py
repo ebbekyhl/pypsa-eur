@@ -6922,77 +6922,70 @@ def split_buses(n, co2_intensity_lvls, buses_primary):
             p_max_pu = 1,
             carrier=i + " connection")
 
-def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary): 
-    charge_buses = set(n.links.bus1[n.links.bus0.isin(buses_primary)])
-    discharge_buses = set(n.links.bus0[n.links.bus1.isin(buses_primary)])
+def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary):
+    """
+    Assign electricity storage to the clean CO2-intensity layer.
 
-    electricity_storage = n.stores.index[
-        n.stores.bus.isin(charge_buses & discharge_buses)
-    ]
+    Storage that charges from and discharges to the AC network (battery, redox
+    flow, compressed air, molten salt, liquid air) is treated like a clean
+    generator: its charger draws from, and its discharger returns to, the clean
+    AC layer bus ("<node> clean"). The store itself is left as a single asset, so
+    it stays extendable/buildable and can charge and discharge normally. Because
+    the clean AC layer only carries genuinely-clean electricity, a battery buffers
+    clean power and can even support clean exports, with no risk of relabeling
+    nonclean electricity as clean.
 
-    electricity_storage_buses = n.buses.loc[n.stores.loc[electricity_storage].bus]
+    Conversion carriers that merely resemble electricity storage because they have
+    an AC charger + discharger (H2 via electrolysis/fuel cell, NH3) are left
+    untouched here. Their CO2 labeling is the subject of the dedicated hydrogen
+    carbon-labeling design (see doc/cbam_h2_carbon_labeling_design.md) and is
+    intentionally out of scope for the MVP.
 
-    # Split storage buses
-    buses = getattr(n, "buses")
-    stores = getattr(n, "stores")
+    NB. This runs after split_buses, so the "<node> clean" layer buses already
+    exist. buses_primary is the original set of AC buses (before layering).
+    """
     links = getattr(n, "links")
 
-    for i in co2_intensity_lvls:
+    # The clean (zero-emission) layer, robust to ordering / renaming of levels.
+    clean_level = min(co2_intensity_lvls, key=co2_intensity_lvls.get)
 
-        # adding postfix to the storage buses according to the co2 intensity level
-        buses_i = buses.loc[electricity_storage_buses.index].rename(index = lambda x: x + " " + i)
+    # Storage buses = buses that both receive from and feed back into the AC grid
+    # AND actually carry a Store. The store requirement is essential: with the
+    # HVAC->HVDC conversion every AC bus is both a source and a sink of DC links
+    # (forward + reverse), so charge_buses & discharge_buses alone would wrongly
+    # include ordinary AC transmission buses and we would suffix DC link endpoints.
+    charge_buses = set(links.bus1[links.bus0.isin(buses_primary)])
+    discharge_buses = set(links.bus0[links.bus1.isin(buses_primary)])
+    store_buses = set(n.stores.bus)
+    storage_buses = (charge_buses & discharge_buses) & store_buses
 
-        # duplicating storage buses for each co2 intensity level
-        for j in range(len(buses_i)):
-            buses.loc[buses_i.index[j]] = buses_i.iloc[j]
+    # Conversion carriers handled by the hydrogen design, not here.
+    conversion_carriers = {"H2", "NH3"}
+    elec_storage_buses = {
+        b for b in storage_buses
+        if n.buses.at[b, "carrier"] not in conversion_carriers
+    }
 
-        # connect duplicated storage buses to the original storage bus
-        n.add("Link", 
-            electricity_storage_buses.index + " " + i + " connection", 
-            bus0=electricity_storage_buses.index, 
-            bus1=electricity_storage_buses.index + " " + i, 
-            p_nom_extendable = True, 
-            p_min_pu = 0, # unidirectional link
-            p_max_pu = 1, 
-            carrier=i + " connection")
-        
-        # Duplicate electricity stores
-        stores_i = stores.loc[electricity_storage].copy()
-        stores_i.index = stores_i.index + " " + i
-        stores_i.bus = stores_i.bus + " " + i
+    if not elec_storage_buses:
+        logger.info("No electricity storage buses to assign to the clean layer.")
+        return
 
-        for j in range(len(stores_i)):
-            stores.loc[stores_i.index[j]] = stores_i.iloc[j]
+    # Identify charger and discharger links before retargeting any endpoints.
+    chargers = links.index[
+        links.bus0.isin(buses_primary) & links.bus1.isin(elec_storage_buses)
+    ]
+    dischargers = links.index[
+        links.bus0.isin(elec_storage_buses) & links.bus1.isin(buses_primary)
+    ]
 
-        # storage links need to be duplicated as well
-        storage_buses = set(stores.loc[electricity_storage, "bus"])
+    # Move the AC-side endpoint from the common bus to the clean layer bus.
+    links.loc[chargers, "bus0"] = links.loc[chargers, "bus0"] + " " + clean_level
+    links.loc[dischargers, "bus1"] = links.loc[dischargers, "bus1"] + " " + clean_level
 
-        storage_links = links.index[
-            (
-                links.bus0.isin(buses_primary)
-                & links.bus1.isin(storage_buses)
-            )
-            |
-            (
-                links.bus1.isin(buses_primary)
-                & links.bus0.isin(storage_buses)
-            )
-        ]
-
-        # Duplicate storage links
-        links_i = links.loc[storage_links].copy()
-        links_i.index = links_i.index + " " + i
-
-        links_i.loc[links_i.bus0.isin(storage_buses), "bus0"] += " " + i
-        links_i.loc[links_i.bus0.isin(storage_buses), "bus1"] += " " + i
-        links_i.loc[links_i.bus1.isin(storage_buses), "bus0"] += " " + i
-        links_i.loc[links_i.bus1.isin(storage_buses), "bus1"] += " " + i
-        
-        for j in range(len(links_i)):
-            links.loc[links_i.index[j]] = links_i.iloc[j]
-
-    stores.drop(index=electricity_storage, inplace=True)
-    links.drop(index=storage_links, inplace=True)
+    logger.info(
+        f"Assigned {len(elec_storage_buses)} electricity storage buses to the "
+        f"'{clean_level}' layer ({len(chargers)} chargers, {len(dischargers)} dischargers)."
+    )
 
 def distribute_generators(n, generators_co2_lvls, buses_primary):
     components = ["generators", "links", "storage_units"]

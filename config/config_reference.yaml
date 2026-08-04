@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Contributors to PyPSA-Eur <https://github.com/pypsa/pypsa-eur>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+# Reference run: no CO2 intensity split at all.
+# Overlay on config/config.default.yaml, everything not listed here is inherited.
+
+run:
+  name: "reference"
+
+uk_settings:
+  prepare:
+    cbam: false

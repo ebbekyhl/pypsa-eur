@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Contributors to PyPSA-Eur <https://github.com/pypsa/pypsa-eur>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+# CO2 intensity split without the joint transmission capacity constraint, i.e.
+# the behaviour at commit 26fb608d. Every emission class gets a full copy of
+# each interconnector, so the transfer capability and the investment cost of
+# every HVDC link are multiplied by the number of classes.
+# Only meaningful as a comparison against config_cbam.yaml.
+# Overlay on config/config.default.yaml.
+
+run:
+  name: "CBAM_noconstraint"
+
+uk_settings:
+  prepare:
+    cbam: true
+    cbam_shared_transmission_capacity: false

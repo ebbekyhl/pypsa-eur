@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Contributors to PyPSA-Eur <https://github.com/pypsa/pypsa-eur>
+#
+# SPDX-License-Identifier: CC0-1.0
+
+# CO2 intensity split with the joint transmission capacity constraint, so the
+# copies of an interconnector share the rating and the cost of one cable.
+# Overlay on config/config.default.yaml.
+
+run:
+  name: "CBAM"
+
+uk_settings:
+  prepare:
+    cbam: true
+    cbam_shared_transmission_capacity: true

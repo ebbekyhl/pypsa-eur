@@ -6924,30 +6924,39 @@ def split_buses(n, co2_intensity_lvls, buses_primary):
 
 def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary):
     """
-    Assign electricity storage to the clean CO2-intensity layer.
+    Duplicate electricity storage once per CO2-intensity layer.
 
     Storage that charges from and discharges to the AC network (battery, redox
-    flow, compressed air, molten salt, liquid air) is treated like a clean
-    generator: its charger draws from, and its discharger returns to, the clean
-    AC layer bus ("<node> clean"). The store itself is left as a single asset, so
-    it stays extendable/buildable and can charge and discharge normally. Because
-    the clean AC layer only carries genuinely-clean electricity, a battery buffers
-    clean power and can even support clean exports, with no risk of relabeling
-    nonclean electricity as clean.
+    flow, compressed air, molten salt, liquid air) is copied onto EVERY layer:
+    each layer gets its own complete, functional store whose charger draws from,
+    and whose discharger returns to, that layer's AC bus ("<node> clean",
+    "<node> nonclean"). A clean battery therefore only ever touches the clean
+    layer and a nonclean battery only the nonclean layer, so the CO2 label is
+    preserved through storage - clean power is buffered and released as clean,
+    nonclean as nonclean, with no cross-layer blending and no way to relabel one
+    class as the other. Every layer's store/charger/discharger is independent and
+    extendable, so both clean AND nonclean electricity can be stored (a single
+    clean-only store would give the clean layer time-shifting flexibility the
+    nonclean layer lacks and bias flows towards clean).
+
+    New per-layer names carry the level suffix, e.g. "<node> battery clean" /
+    "<node> battery clean charger". add_existing_baseyear / add_brownfield pin
+    existing battery capacity onto the clean copy (see those scripts).
 
     Conversion carriers that merely resemble electricity storage because they have
     an AC charger + discharger (H2 via electrolysis/fuel cell, NH3) are left
     untouched here. Their CO2 labeling is the subject of the dedicated hydrogen
-    carbon-labeling design (see doc/cbam_h2_carbon_labeling_design.md) and is
-    intentionally out of scope for the MVP.
+    carbon-labeling design (see doc/cbam_h2_carbon_labeling_design.md); leaving
+    them common-bus lets clean and nonclean blend through H2/NH3 conversion, an
+    accepted limitation for now.
 
-    NB. This runs after split_buses, so the "<node> clean" layer buses already
-    exist. buses_primary is the original set of AC buses (before layering).
+    NB. This runs after split_buses, so the "<node> <level>" AC layer buses
+    already exist. buses_primary is the original set of AC buses (before
+    layering).
     """
+    buses = getattr(n, "buses")
+    stores = getattr(n, "stores")
     links = getattr(n, "links")
-
-    # The clean (zero-emission) layer, robust to ordering / renaming of levels.
-    clean_level = min(co2_intensity_lvls, key=co2_intensity_lvls.get)
 
     # Storage buses = buses that both receive from and feed back into the AC grid
     # AND actually carry a Store. The store requirement is essential: with the
@@ -6956,21 +6965,21 @@ def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary):
     # include ordinary AC transmission buses and we would suffix DC link endpoints.
     charge_buses = set(links.bus1[links.bus0.isin(buses_primary)])
     discharge_buses = set(links.bus0[links.bus1.isin(buses_primary)])
-    store_buses = set(n.stores.bus)
+    store_buses = set(stores.bus)
     storage_buses = (charge_buses & discharge_buses) & store_buses
 
     # Conversion carriers handled by the hydrogen design, not here.
     conversion_carriers = {"H2", "NH3"}
-    elec_storage_buses = {
+    elec_storage_buses = pd.Index([
         b for b in storage_buses
         if n.buses.at[b, "carrier"] not in conversion_carriers
-    }
-
-    if not elec_storage_buses:
-        logger.info("No electricity storage buses to assign to the clean layer.")
+    ])
+    if elec_storage_buses.empty:
+        logger.info("No electricity storage buses to duplicate across CO2 layers.")
         return
 
-    # Identify charger and discharger links before retargeting any endpoints.
+    # Original stores and charger/discharger links on those storage buses.
+    elec_stores = stores.index[stores.bus.isin(elec_storage_buses)]
     chargers = links.index[
         links.bus0.isin(buses_primary) & links.bus1.isin(elec_storage_buses)
     ]
@@ -6978,13 +6987,44 @@ def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary):
         links.bus0.isin(elec_storage_buses) & links.bus1.isin(buses_primary)
     ]
 
-    # Move the AC-side endpoint from the common bus to the clean layer bus.
-    links.loc[chargers, "bus0"] = links.loc[chargers, "bus0"] + " " + clean_level
-    links.loc[dischargers, "bus1"] = links.loc[dischargers, "bus1"] + " " + clean_level
+    for lvl in co2_intensity_lvls:
+        # Per-layer storage bus: "<store bus> <lvl>".
+        sbuses = buses.loc[elec_storage_buses].rename(index=lambda x: x + " " + lvl)
+        for j in range(len(sbuses)):
+            buses.loc[sbuses.index[j]] = sbuses.iloc[j]
 
+        # Per-layer store on that bus.
+        s = stores.loc[elec_stores].copy()
+        s.index = s.index + " " + lvl
+        s.bus = s.bus + " " + lvl
+        for j in range(len(s)):
+            stores.loc[s.index[j]] = s.iloc[j]
+
+        # Per-layer charger: AC layer bus -> layer store bus.
+        c = links.loc[chargers].copy()
+        c.index = c.index + " " + lvl
+        c.bus0 = c.bus0 + " " + lvl   # "<node>"        -> "<node> <lvl>"        (AC layer)
+        c.bus1 = c.bus1 + " " + lvl   # "<node> battery"-> "<node> battery <lvl>"(store)
+        for j in range(len(c)):
+            links.loc[c.index[j]] = c.iloc[j]
+
+        # Per-layer discharger: layer store bus -> AC layer bus.
+        d = links.loc[dischargers].copy()
+        d.index = d.index + " " + lvl
+        d.bus0 = d.bus0 + " " + lvl   # store
+        d.bus1 = d.bus1 + " " + lvl   # AC layer
+        for j in range(len(d)):
+            links.loc[d.index[j]] = d.iloc[j]
+
+    # Drop the originals (common-bus store, charger, discharger, and store bus).
+    stores.drop(index=elec_stores, inplace=True)
+    links.drop(index=list(chargers) + list(dischargers), inplace=True)
+    buses.drop(index=elec_storage_buses, inplace=True)
+
+    n_lvls = len(list(co2_intensity_lvls))
     logger.info(
-        f"Assigned {len(elec_storage_buses)} electricity storage buses to the "
-        f"'{clean_level}' layer ({len(chargers)} chargers, {len(dischargers)} dischargers)."
+        f"Duplicated {len(elec_stores)} electricity stores across {n_lvls} CO2 "
+        f"layers ({len(chargers)} chargers, {len(dischargers)} dischargers each)."
     )
 
 def distribute_generators(n, generators_co2_lvls, buses_primary):
@@ -7062,7 +7102,112 @@ def duplicate_transmission(n, co2_intensity_lvls, shared_capacity=True):
         f"levels {lvls}. Joint rating enforced in solve_network: {shared_capacity}."
     )
 
-def split_components_by_co2_intensity_levels(n, carriers = ["AC"], shared_capacity = True):
+def split_and_duplicate_hydrogen(n, co2_intensity_lvls):
+    """
+    Split hydrogen by CO2 class, mirroring the ELECTRICITY layer pattern - not
+    the storage pattern - because the H2 bus is a multi-sector hub, not a simple
+    store. The common "<node> H2" bus is KEPT (local demand and multi-port
+    consumers like Haber-Bosch draw from it); class buses "<node> H2 clean" /
+    "<node> H2 nonclean" are added, and only the electricity-coupled producers /
+    consumers plus the store move onto the class buses. See
+    doc/cbam_h2_carbon_labeling_design.md.
+
+    - Electrolysis: duplicated per class, drawing from the matching AC layer
+      ("<node> clean"/"<node> nonclean") -> green H2 only if the electricity was
+      clean (the crucial coupling).
+    - SMR -> nonclean H2, SMR CC -> clean H2 (blue counts as clean, decision D2).
+    - H2 Fuel Cell / H2 turbine: duplicated per class, returning to the matching
+      AC layer, so a class's electricity loop stays on-class.
+    - H2 store: one per class on the class bus (chargeable AND dischargeable).
+    - Connection links class -> common (unidirectional), so mixed local demand
+      (industry load, Haber-Bosch, methanolisation, Fischer-Tropsch, Sabatier,
+      methanol steam reforming, ammonia cracker) draws from common, while nothing
+      flows common -> class (leakage guard).
+
+    Runs after split_buses, so the "<node> <level>" AC layer buses already exist.
+    Pipelines are not present in the MVP (H2_network off) and are not handled.
+    NB. NH3 is intentionally left unsplit (Phase 2 in the design doc): it is made
+    by Haber-Bosch from AC + H2, so "split by electricity layer" does not apply.
+    """
+    buses = getattr(n, "buses")
+    links = getattr(n, "links")
+    stores = getattr(n, "stores")
+
+    # H2 hub buses = carrier-"H2" buses that carry an H2 store (skip storeless/EU).
+    store_buses = set(stores.bus)
+    h2_hubs = pd.Index([b for b in buses.index[buses.carrier == "H2"] if b in store_buses])
+    if h2_hubs.empty:
+        logger.info("No H2 hub buses with a store; skipping hydrogen split.")
+        return
+
+    clean = min(co2_intensity_lvls, key=co2_intensity_lvls.get)      # "clean"
+    nonclean = max(co2_intensity_lvls, key=co2_intensity_lvls.get)   # "nonclean"
+
+    # Capture component indices up front (the frames grow as we add copies).
+    electrolysis_i = links.index[(links.carrier == "H2 Electrolysis") & links.bus1.isin(h2_hubs)]
+    fuelcell_i = links.index[links.carrier.isin(["H2 Fuel Cell", "H2 turbine"]) & links.bus0.isin(h2_hubs)]
+    smr_i = links.index[(links.carrier == "SMR") & links.bus1.isin(h2_hubs)]
+    smr_cc_i = links.index[(links.carrier == "SMR CC") & links.bus1.isin(h2_hubs)]
+    h2_stores_i = stores.index[stores.bus.isin(h2_hubs)]
+
+    # 1. Per-class H2 bus + store, and a class -> common connection link.
+    for lvl in co2_intensity_lvls:
+        cb = buses.loc[h2_hubs].rename(index=lambda x: x + " " + lvl)
+        for j in range(len(cb)):
+            buses.loc[cb.index[j]] = cb.iloc[j]
+
+        s = stores.loc[h2_stores_i].copy()
+        s.index = s.index + " " + lvl
+        s.bus = s.bus + " " + lvl
+        for j in range(len(s)):
+            stores.loc[s.index[j]] = s.iloc[j]
+
+        n.add("Link",
+              h2_hubs + " " + lvl + " H2 connection",
+              bus0=h2_hubs + " " + lvl,
+              bus1=h2_hubs,
+              p_nom_extendable=True, p_min_pu=0, p_max_pu=1,
+              carrier=lvl + " H2 connection")
+
+    # n.add() above reassigns n.links to a new frame, so re-fetch the live one
+    # before the in-place edits below (the cached reference is now stale).
+    links = getattr(n, "links")
+
+    # 2. Electrolysis: duplicate per class onto matching AC + H2 class buses.
+    for lvl in co2_intensity_lvls:
+        e = links.loc[electrolysis_i].copy()
+        e.index = e.index + " " + lvl
+        e.bus0 = e.bus0 + " " + lvl   # common AC -> AC layer
+        e.bus1 = e.bus1 + " " + lvl   # common H2 -> H2 class
+        for j in range(len(e)):
+            links.loc[e.index[j]] = e.iloc[j]
+
+    # 3. Fuel cell / turbine: duplicate per class (H2 class -> matching AC layer).
+    for lvl in co2_intensity_lvls:
+        f = links.loc[fuelcell_i].copy()
+        f.index = f.index + " " + lvl
+        f.bus0 = f.bus0 + " " + lvl   # common H2 -> H2 class
+        f.bus1 = f.bus1 + " " + lvl   # common AC -> AC layer
+        for j in range(len(f)):
+            links.loc[f.index[j]] = f.iloc[j]
+
+    # 4. SMR -> nonclean H2, SMR CC -> clean H2 (retarget only the H2 endpoint).
+    links.loc[smr_i, "bus1"] = links.loc[smr_i, "bus1"] + " " + nonclean
+    links.loc[smr_cc_i, "bus1"] = links.loc[smr_cc_i, "bus1"] + " " + clean
+
+    # 5. Drop originals that were duplicated (store + electrolysis + fuel cell);
+    #    KEEP the common H2 bus for local/multi-port demand.
+    stores.drop(index=h2_stores_i, inplace=True)
+    links.drop(index=list(electrolysis_i) + list(fuelcell_i), inplace=True)
+
+    n_lvls = len(list(co2_intensity_lvls))
+    logger.info(
+        f"Split {len(h2_hubs)} H2 hubs across {n_lvls} CO2 layers: "
+        f"{len(electrolysis_i)} electrolysers and {len(fuelcell_i)} fuel cells/turbines "
+        f"duplicated, {len(smr_i)} SMR->nonclean, {len(smr_cc_i)} SMR CC->clean."
+    )
+
+def split_components_by_co2_intensity_levels(n, carriers = ["AC"], shared_capacity = True, split_hydrogen = True):
     # CO2 buses in network
     co2_buses = n.buses.query("carrier == 'co2'").index
 
@@ -7107,6 +7252,11 @@ def split_components_by_co2_intensity_levels(n, carriers = ["AC"], shared_capaci
         # solve_network.add_cbam_transmission_capacity_constraints.
 
         # add emission or tax to importing links only
+
+    # Hydrogen carbon labelling (runs once, after the AC layers exist so
+    # electrolysers/fuel cells can be tied to the matching electricity layer).
+    if split_hydrogen:
+        split_and_duplicate_hydrogen(n, co2_intensity_lvls)
 
 def reduce_model_in_the_east(n, regions_onshore, dct1):
 
@@ -7530,6 +7680,7 @@ if __name__ == "__main__":
             shared_capacity=uk_settings_prepare.get(
                 "cbam_shared_transmission_capacity", True
             ),
+            split_hydrogen=uk_settings_prepare.get("cbam_split_hydrogen", True),
         )
 
     n.export_to_netcdf(snakemake.output[0])

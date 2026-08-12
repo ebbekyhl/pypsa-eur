@@ -1171,7 +1171,12 @@ def add_storage_capacities_installed_before_baseyear(n, baseyear):
                                         "DateIn": "mean",
                                         "DateOut": "mean"})
 
-    battery.index = battery.index + " battery discharger-" + str(baseyear)
+    # Under the CBAM split each battery is duplicated per CO2 layer; existing
+    # capacity is pinned onto the clean copy ("<node> battery discharger clean").
+    # Detect the split from the network so the same code also works for the
+    # non-CBAM reference run (where there is no layer suffix).
+    lvl_suffix = " clean" if n.links.index.str.contains(" battery discharger clean").any() else ""
+    battery.index = battery.index + f" battery discharger{lvl_suffix}-" + str(baseyear)
 
     # update p_nom_min for existing battery storage units (if they exist)
     existing_batteries = n.links.index.intersection(battery.index)

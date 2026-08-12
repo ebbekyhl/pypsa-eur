@@ -373,8 +373,14 @@ def add_planned_storage_capacities(n, year, file):
         if tech in ["battery"]:
             battery_duration = 6 # assume 6 hours discharge time for battery storage units
 
+            # Under the CBAM split each battery is duplicated per CO2 layer;
+            # planned capacity is pinned onto the clean copy. Detect the split
+            # from the network so this also works for the non-CBAM reference run.
+            lvl_suffix = " clean" if n.links.index.str.contains(" battery discharger clean").any() else ""
+            df_tech_in_index = df_tech_in.index + f" battery discharger{lvl_suffix}-" + str(year)
+
             # Update power capacity
-            n.links.loc[df_tech_in_index, 
+            n.links.loc[df_tech_in_index,
                         "p_nom_min"] = df_tech_in["Capacity"].values
             
             # Update energy capacity

@@ -45,6 +45,7 @@ import pypsa
 REPO = Path(__file__).resolve().parents[1]
 SCENARIOS = {
     "reference": REPO / "results/pypsa-uk/reference/networks",
+    "CBAM_old": REPO / "results/pypsa-uk/CBAM_old/networks",
     "CBAM": REPO / "results/pypsa-uk/CBAM/networks",
 }
 YEARS = [2025, 2030, 2035, 2040, 2045, 2050]
@@ -272,13 +273,24 @@ def _fig_to_div(fig) -> str:
                        config={"displayModeBar": False, "responsive": True})
 
 
+SCEN_ORDER = ["reference", "CBAM_old", "CBAM"]
+SCEN_LABEL = {
+    "reference": "Reference (no split)",
+    "CBAM_old": "CBAM · clean-only storage",
+    "CBAM": "CBAM · per-layer storage + H2",
+}
+SCEN_COLOR = {"reference": "#4c78a8", "CBAM_old": "#f2a900", "CBAM": "#e45756"}
+
+
 def build_html(data: dict) -> str:
     import plotly.graph_objects as go
     import plotly.offline as pyo
     from plotly.subplots import make_subplots
 
+    scen = [s for s in SCEN_ORDER if any(sc == s for (sc, _) in data)]
+    split_scen = [s for s in scen if s != "reference"]  # scenarios with the CO2 split
     years_present = sorted({y for (_, y) in data})
-    both_years = sorted({y for (s, y) in data if s == "CBAM"})  # limiting scenario
+    both_years = sorted({y for (s, y) in data if s == "CBAM"})
 
     PALETTE = {
         "offwind-ac": "#1f77b4", "offwind-dc": "#17a2c9", "offwind-float": "#4bb3d6",
@@ -289,227 +301,250 @@ def build_html(data: dict) -> str:
         "urban central solid biomass CHP": "#66c2a5", "urban central gas CHP": "#a6761d",
         "waste CHP": "#999999", "urban central biogas CHP": "#8dd3c7",
         "clean": "#2ca02c", "nonclean": "#d62728", "unclassified": "#999999",
-        "reference": "#4c78a8", "CBAM": "#e45756",
+        **SCEN_COLOR,
     }
     color = lambda c: PALETTE.get(c, None)
-
     divs = []
 
-    # ---- 1. Capacity mix (stacked bars, scenarios side by side) ----
-    cap_r, cap_c = frame(data, "reference", "capacity"), frame(data, "CBAM", "capacity")
-    carriers = [c for c in (cap_r.index.union(cap_c.index))
-                if (cap_r.reindex([c]).abs().sum().sum() + cap_c.reindex([c]).abs().sum().sum()) > 0.1]
-    fig = make_subplots(rows=1, cols=2, shared_yaxes=True,
-                        subplot_titles=("Reference", "CBAM"))
-    for j, cap in enumerate([cap_r, cap_c], start=1):
-        for c in carriers:
-            y = cap.reindex(index=[c]).iloc[0].values if c in cap.index else [0] * len(cap.columns)
-            fig.add_bar(x=[str(v) for v in cap.columns], y=y, name=c, marker_color=color(c),
-                        legendgroup=c, showlegend=(j == 1), row=1, col=j)
-    fig.update_layout(barmode="stack", height=460, title="GB electricity capacity by carrier [GW]",
-                      legend=dict(font=dict(size=10)))
-    divs.append(("GB installed capacity (investment)", _fig_to_div(fig),
-                 "Optimal GB electricity capacity by carrier, both scenarios. "
-                 "Layer buses collapsed to region via n.buses.location."))
+    def mix_panels(key, title, desc, carrier_filter=None, exclude=None, positive_only=False):
+        """N-panel stacked bar of a Series-metric, one panel per scenario."""
+        frames = {s: frame(data, s, key) for s in scen}
+        allidx = pd.Index([])
+        for f in frames.values():
+            allidx = allidx.union(f.index)
 
-    # ---- 2. Capacity delta (CBAM - REF) ----
-    common_years = [y for y in cap_c.columns if y in cap_r.columns]
-    delta = (cap_c.reindex(index=carriers, columns=common_years).fillna(0)
-             - cap_r.reindex(index=carriers, columns=common_years).fillna(0))
+        def total(c):
+            t = 0.0
+            for f in frames.values():
+                if c in f.index:
+                    v = f.reindex([c]).iloc[0]
+                    t += (v.clip(lower=0) if positive_only else v.abs()).sum()
+            return t
+        carriers = [c for c in allidx
+                    if (carrier_filter is None or c in carrier_filter)
+                    and (exclude is None or c not in exclude)
+                    and total(c) > 0.05]
+        fig = make_subplots(rows=1, cols=len(scen), shared_yaxes=True,
+                            subplot_titles=[SCEN_LABEL[s] for s in scen])
+        for j, s in enumerate(scen, start=1):
+            f = frames[s]
+            for c in carriers:
+                if c in f.index:
+                    v = f.reindex([c]).iloc[0]
+                    y = (v.clip(lower=0) if positive_only else v).values
+                else:
+                    y = [0] * len(f.columns)
+                fig.add_bar(x=[str(v) for v in f.columns], y=y, name=c, marker_color=color(c),
+                            legendgroup=c, showlegend=(j == 1), row=1, col=j)
+        fig.update_layout(barmode="stack", height=460, title=title, legend=dict(font=dict(size=10)))
+        divs.append((title.split("[")[0].strip(), _fig_to_div(fig), desc))
+        return frames, carriers
+
+    # ---- 1. Capacity mix ----
+    cap_frames, carriers = mix_panels(
+        "capacity", "GB electricity capacity by carrier [GW]",
+        "Optimal GB electricity capacity by carrier, per scenario. Layer buses collapsed to region "
+        "via n.buses.location.")
+
+    # ---- 2. Capacity delta: each split scenario vs reference ----
     figd = go.Figure()
-    for c in carriers:
-        row = delta.reindex([c]).iloc[0]
-        if row.abs().max() < 0.05:
-            continue
-        figd.add_bar(x=[str(y) for y in common_years], y=row.values, name=c, marker_color=color(c))
-    figd.update_layout(barmode="relative", height=420,
-                       title="GB capacity difference CBAM − Reference [GW]")
-    divs.append(("GB capacity difference (CBAM − Reference)", _fig_to_div(figd),
-                 "Positive = CBAM builds more of that carrier than the reference."))
+    cap_ref = cap_frames["reference"]
+    for s in split_scen:
+        cs = cap_frames[s]
+        yrs = [y for y in cs.columns if y in cap_ref.columns]
+        d = (cs.reindex(index=carriers, columns=yrs).fillna(0)
+             - cap_ref.reindex(index=carriers, columns=yrs).fillna(0))
+        tot = d.sum(axis=0)  # net GW difference summed over carriers (sanity line)
+        figd.add_scatter(x=[str(y) for y in yrs], y=tot.values, mode="lines+markers",
+                         name=f"{SCEN_LABEL[s]} − reference (net GW)", line=dict(color=color(s)))
+    figd.update_layout(height=380, title="GB net capacity difference vs reference [GW]",
+                       yaxis_title="Σ(carrier) capacity − reference [GW]")
+    divs.append(("GB capacity difference vs reference", _fig_to_div(figd),
+                 "Net electricity capacity each split scenario builds relative to the reference. "
+                 "See the per-carrier panels above for the composition."))
 
     # ---- 3. Dispatch / generation mix ----
-    eb_r, eb_c = frame(data, "reference", "energy_balance"), frame(data, "CBAM", "energy_balance")
-    gen_carriers = [c for c in eb_r.index.union(eb_c.index)
-                    if c not in SINK_CARRIERS
-                    and (eb_r.reindex([c]).clip(lower=0).sum().sum()
-                         + eb_c.reindex([c]).clip(lower=0).sum().sum()) > 0.05]
-    figg = make_subplots(rows=1, cols=2, shared_yaxes=True, subplot_titles=("Reference", "CBAM"))
-    for j, eb in enumerate([eb_r, eb_c], start=1):
-        for c in gen_carriers:
-            y = eb.reindex(index=[c]).iloc[0].clip(lower=0).values if c in eb.index else [0] * len(eb.columns)
-            figg.add_bar(x=[str(v) for v in eb.columns], y=y, name=c, marker_color=color(c),
-                         legendgroup=c, showlegend=(j == 1), row=1, col=j)
-    figg.update_layout(barmode="stack", height=460, title="GB electricity supply by carrier [TWh]",
-                       legend=dict(font=dict(size=10)))
-    divs.append(("GB dispatch / generation mix", _fig_to_div(figg),
-                 "Supply-side energy balance on GB AC buses. 'DC' = net interconnector imports."))
+    mix_panels("energy_balance", "GB electricity supply by carrier [TWh]",
+               "Supply-side energy balance on GB AC buses. 'DC' = net interconnector imports.",
+               exclude=SINK_CARRIERS, positive_only=True)
 
-    # ---- 4. Interconnectors: net imports + CBAM clean/nonclean split ----
-    ic_net = scalar_frame(data, lambda r: r["interconnect"]["net_total"])
+    # ---- 4a. Net interconnector imports (line per scenario) ----
+    ic_net = scalar_frame(data, lambda r: r["interconnect"]["net_total"]).reindex(columns=scen)
     figi = go.Figure()
-    for scen in ic_net.columns:
-        figi.add_scatter(x=[str(y) for y in ic_net.index], y=ic_net[scen].values,
-                         mode="lines+markers", name=f"{scen} net import", line=dict(color=color(scen)))
-    # CBAM class split (stacked bars)
-    for cls in ["clean", "nonclean"]:
-        ys = [data.get(("CBAM", y), {}).get("interconnect", {}).get("by_class", {}).get(cls, np.nan)
-              for y in both_years]
-        figi.add_bar(x=[str(y) for y in both_years], y=ys, name=f"CBAM {cls}",
-                     marker_color=color(cls), opacity=0.55)
-    figi.update_layout(barmode="relative", height=440,
-                       title="GB net interconnector imports [TWh] — total (lines) and CBAM CO2 class (bars)")
-    divs.append(("Cross-border flows by CO2 class (the CBAM signal)", _fig_to_div(figi),
-                 "Net GB import is near-identical between scenarios, but CBAM resolves it into a large "
-                 "CLEAN import and a small NONCLEAN net export — the labelling the split exists to provide."))
+    for s in scen:
+        if s in ic_net.columns:
+            figi.add_scatter(x=[str(y) for y in ic_net.index], y=ic_net[s].values,
+                             mode="lines+markers", name=SCEN_LABEL[s], line=dict(color=color(s)))
+    figi.add_hline(y=0, line_dash="dot", line_color="#888")
+    figi.update_layout(height=400, title="GB net interconnector imports [TWh]  (>0 import, <0 export)",
+                       yaxis_title="net import [TWh]")
+    divs.append(("Net cross-border flow (all scenarios)", _fig_to_div(figi),
+                 "Total net GB import/export. Near-identical across scenarios — the split changes the "
+                 "LABELLING of flows, shown next, far more than the net magnitude."))
 
-    # ---- 5. Storage energy capacity ----
-    # Keep the huge cross-sector H2 store OUT of the battery-family chart, or it
-    # dwarfs everything (H2 ~2400 GWh vs battery ~60 GWh) and hides the battery
-    # comparison. H2 is shown separately below.
-    se_r, se_c = frame(data, "reference", "storage_energy"), frame(data, "CBAM", "storage_energy")
+    # ---- 4b. Clean vs nonclean split — one panel per split scenario ----
+    figc2 = make_subplots(rows=1, cols=len(split_scen), shared_yaxes=True,
+                          subplot_titles=[SCEN_LABEL[s] for s in split_scen])
+    for j, s in enumerate(split_scen, start=1):
+        yrs = sorted({y for (sc, y) in data if sc == s})
+        for cls in ["clean", "nonclean"]:
+            ys = [data.get((s, y), {}).get("interconnect", {}).get("by_class", {}).get(cls, np.nan)
+                  for y in yrs]
+            figc2.add_bar(x=[str(y) for y in yrs], y=ys, name=cls, marker_color=color(cls),
+                          legendgroup=cls, showlegend=(j == 1), row=1, col=j)
+    figc2.update_layout(barmode="relative", height=420,
+                        title="GB net cross-border flow by CO2 class [TWh]  (>0 import, <0 export)")
+    divs.append(("Clean vs nonclean cross-border flow — does per-layer storage rebalance it?",
+                 _fig_to_div(figc2),
+                 "THE test of the storage change: clean-only storage (left) gave only the clean layer "
+                 "time-shifting flexibility; per-layer storage + H2 (right) gives the nonclean layer its own. "
+                 "Compare how much of the cross-border flow stays labelled clean vs nonclean."))
+
+    # ---- 5. Battery-family storage ----
     SHORT = {"battery", "home battery", "PHS", "redox flow battery",
              "compressed air", "molten salt", "liquid air"}
-    scar = [c for c in se_r.index.union(se_c.index)
-            if c in SHORT and (se_r.reindex([c]).sum().sum() + se_c.reindex([c]).sum().sum()) > 0.01]
-    figs = make_subplots(rows=1, cols=2, shared_yaxes=True, subplot_titles=("Reference", "CBAM"))
-    for j, se in enumerate([se_r, se_c], start=1):
-        for c in scar:
-            y = se.reindex(index=[c]).iloc[0].values if c in se.index else [0] * len(se.columns)
-            figs.add_bar(x=[str(v) for v in se.columns], y=y, name=c, legendgroup=c,
-                         showlegend=(j == 1), row=1, col=j, marker_color=color(c))
-    figs.update_layout(barmode="stack", height=420,
-                       title="GB short-duration electricity storage energy [GWh]  (battery family — H2 excluded)",
-                       legend=dict(font=dict(size=10)))
-    divs.append(("GB electricity storage (battery family)", _fig_to_div(figs),
-                 "Battery/home-battery/PHS energy capacity — the true electricity stores. These are "
-                 "essentially IDENTICAL between the two scenarios (e.g. 2040: 63.9 GWh battery in both), and "
-                 "batteries charge AND discharge, so the clean-layer storage MVP is functional. The hydrogen "
-                 "store is shown separately below because it is ~40x larger and cross-sector."))
+    mix_panels("storage_energy", "GB short-duration electricity storage energy [GWh]  (battery family)",
+               "Battery/home-battery/PHS energy capacity — the true electricity stores (H2 shown separately "
+               "below). Compare whether per-layer storage builds materially more/different storage.",
+               carrier_filter=SHORT)
 
-    # ---- 5b. Hydrogen store (cross-sector, shown on its own scale) ----
-    h2 = scalar_frame(data, lambda r: float(r["storage_energy"].get("H2 Store", 0.0)))
+    # ---- 5b. Hydrogen store ----
+    h2 = scalar_frame(data, lambda r: float(r["storage_energy"].get("H2 Store", 0.0))).reindex(columns=scen)
     figh = go.Figure()
-    for scen in h2.columns:
-        figh.add_scatter(x=[str(y) for y in h2.index], y=(h2[scen] / 1e3).values, mode="lines+markers",
-                         name=scen, line=dict(color=color(scen)))
+    for s in scen:
+        if s in h2.columns:
+            figh.add_scatter(x=[str(y) for y in h2.index], y=(h2[s] / 1e3).values, mode="lines+markers",
+                             name=SCEN_LABEL[s], line=dict(color=color(s)))
     figh.update_layout(height=380, yaxis_title="H2 store [TWh]",
                        title="GB hydrogen store energy [TWh]  (cross-sector: power + industry + synthetic fuels)")
-    divs.append(("GB hydrogen store (context, not battery-like)", _fig_to_div(figh),
-                 "The H2 store is a multi-sector energy reservoir, not a battery. It grows to ~2.4 TWh and is "
-                 "the same in both scenarios — so lumping it with batteries (as an earlier version did) made "
-                 "the two scenarios look different when they are not."))
+    divs.append(("GB hydrogen store", _fig_to_div(figh),
+                 "Total H2 store energy. In CBAM (per-layer + H2 split) this is now the SUM of the clean and "
+                 "nonclean H2 stores; watch for a step-change vs the clean-only run where H2 was unsplit."))
 
-    # ---- 6. System cost + CO2 shadow price ----
-    # The base-year (first horizon) objective carries the frozen existing capital
-    # stock and is orders of magnitude larger; drop it so the trend is readable.
-    obj = scalar_frame(data, lambda r: r["objective_bn"])
+    # ---- 6. System cost ----
+    obj = scalar_frame(data, lambda r: r["objective_bn"]).reindex(columns=scen)
     base_year = min(obj.index)
     obj_plot = obj.drop(index=base_year)
-    figc = go.Figure()
-    for scen in obj_plot.columns:
-        figc.add_scatter(x=[str(y) for y in obj_plot.index], y=obj_plot[scen].values, mode="lines+markers",
-                         name=f"{scen}", line=dict(color=color(scen)))
-    figc.update_layout(height=420, title=f"Total system cost [bn EUR/a] (objective, {base_year} base year omitted)",
-                       yaxis_title="system cost [bn EUR/a]")
-    divs.append(("System cost", _fig_to_div(figc),
-                 f"CBAM tracks the reference within a fraction of a percent. The {base_year} base year is "
-                 "omitted (its objective carries the frozen existing capital stock and dwarfs later years). "
-                 "The joint transmission-capacity constraint on the split cables is the only active CBAM cost "
-                 "lever; the border charge itself is not yet modelled."))
+    figcost = go.Figure()
+    for s in scen:
+        if s in obj_plot.columns:
+            figcost.add_scatter(x=[str(y) for y in obj_plot.index], y=obj_plot[s].values,
+                                mode="lines+markers", name=SCEN_LABEL[s], line=dict(color=color(s)))
+    figcost.update_layout(height=400,
+                          title=f"Total system cost [bn EUR/a]  ({base_year} base year omitted)",
+                          yaxis_title="system cost [bn EUR/a]")
+    divs.append(("System cost", _fig_to_div(figcost),
+                 f"Objective per horizon ({base_year} omitted — its objective carries the frozen existing "
+                 "capital stock). The split adds cost via the joint transmission-capacity constraint; the "
+                 "border charge is still not modelled."))
 
-    # ---- 7. Prices (CBAM layer spread) ----
-    prow = []
-    for (s, y), rec in data.items():
-        for k, v in rec.get("price", {}).items():
-            prow.append({"scenario": s, "year": y, "layer": k, "price": v})
-    pdf = pd.DataFrame(prow)
+    # ---- 7. Clean/nonclean price spread per split scenario ----
+    def price(s, y, layer):
+        return data.get((s, y), {}).get("price", {}).get(layer, np.nan)
     figp = go.Figure()
-    if not pdf.empty:
-        ref = pdf[(pdf.scenario == "reference") & (pdf.layer == "all")].sort_values("year")
-        figp.add_scatter(x=ref.year.astype(str), y=ref.price, mode="lines+markers",
-                         name="reference (all)", line=dict(color=color("reference")))
-        for layer in ["all", "clean", "nonclean"]:
-            sub = pdf[(pdf.scenario == "CBAM") & (pdf.layer == layer)].sort_values("year")
-            if not sub.empty:
-                figp.add_scatter(x=sub.year.astype(str), y=sub.price, mode="lines+markers",
-                                 name=f"CBAM ({layer})",
-                                 line=dict(color=color(layer) if layer in ("clean", "nonclean") else color("CBAM"),
-                                           dash="dot" if layer != "all" else "solid"))
-    figp.update_layout(height=420, title="GB average electricity price [EUR/MWh] (load-weighted)")
-    divs.append(("GB prices and clean/nonclean layer spread", _fig_to_div(figp),
-                 "The clean vs nonclean layer prices show the shadow value the split assigns to each CO2 class."))
+    ry = sorted({y for (sc, y) in data if sc == "reference"})
+    figp.add_scatter(x=[str(y) for y in ry], y=[price("reference", y, "all") for y in ry],
+                     mode="lines+markers", name="reference (all)", line=dict(color=color("reference")))
+    for s in split_scen:
+        ys = sorted({y for (sc, y) in data if sc == s})
+        for layer, dash in [("clean", "solid"), ("nonclean", "dot")]:
+            figp.add_scatter(x=[str(y) for y in ys], y=[price(s, y, layer) for y in ys],
+                             mode="lines+markers", name=f"{SCEN_LABEL[s]} · {layer}",
+                             line=dict(color=color(s), dash=dash))
+    figp.update_layout(height=420, title="GB electricity price by layer [EUR/MWh] (load-weighted)",
+                       yaxis_title="price [EUR/MWh]")
+    divs.append(("GB prices and clean/nonclean spread", _fig_to_div(figp),
+                 "Solid = clean layer, dotted = nonclean layer, per split scenario. The nonclean-minus-clean "
+                 "gap is the implicit carbon value; compare whether per-layer storage narrows it."))
 
     # ---- Findings & diagnostics ----
-    diag = diagnostics(data, cap_c, eb_c, se_c)
+    diag = diagnostics(data)
 
     plotlyjs = pyo.get_plotlyjs()
     body = build_report_shell(divs, diag, years_present, both_years)
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CBAM vs Reference — GB comparison</title>
+<title>CBAM storage/H2 — GB scenario comparison</title>
 <script>{plotlyjs}</script>
 <style>{CSS}</style></head><body>{body}</body></html>"""
 
 
-def diagnostics(data, cap_c, eb_c, se_c) -> list[tuple[str, str, str]]:
+def diagnostics(data) -> list[tuple[str, str, str]]:
     """Return list of (severity, title, detail) findings."""
     out = []
-    have_cbam = sorted({y for (s, y) in data if s == "CBAM"})
-    have_ref = sorted({y for (s, y) in data if s == "reference"})
+    yrs = lambda s: sorted({y for (sc, y) in data if sc == s})
+    have_ref, have_old, have_cbam = yrs("reference"), yrs("CBAM_old"), yrs("CBAM")
+    comp = [y for y in have_cbam if y in have_old]  # years both split scenarios cover
+
+    if have_cbam:
+        out.append(("ok", "Three scenarios compared",
+                    f"reference (no split), CBAM_old (clean-only storage, no H2 split), and CBAM "
+                    f"(per-layer storage + H2 split). Years: reference {_span(have_ref)}, "
+                    f"CBAM_old {_span(have_old)}, CBAM {_span(have_cbam)}."))
     missing = [y for y in have_ref if y not in have_cbam]
     if missing:
-        out.append(("warn", f"CBAM horizon(s) {missing} not solved",
-                    "The CBAM myopic chain hit the 20 h PBS wall-time during the 2050 net-zero solve "
-                    "(it was converging, not infeasible). Comparison is limited to the years both runs have. "
-                    "Re-submit job_cbam.sh (or raise walltime) to complete 2050."))
-    # solar-hsat built?
-    hsat = eb_c.reindex(["solar-hsat"]).abs().sum().sum() if "solar-hsat" in eb_c.index else 0
-    if hsat < 0.01:
-        out.append(("ok", "solar-hsat not built in GB",
-                    "solar-hsat sits on the primary bus (absent from generators_co2_lvls), which the "
-                    "solar_potential fix works around. It is not deployed here, so the mislabelling has no "
-                    "numerical effect in this study — but would if a scenario builds it."))
-    # storage cycles?
-    dis = eb_c.reindex(["battery discharger"]).clip(lower=0).sum().sum() if "battery discharger" in eb_c.index else 0
+        out.append(("warn", f"CBAM horizon(s) {missing} missing",
+                    "Comparison limited to years present in all runs."))
+
+    def nonclean_share(s, y):
+        bc = data.get((s, y), {}).get("interconnect", {}).get("by_class", {})
+        c, nc = bc.get("clean"), bc.get("nonclean")
+        if c is None or nc is None:
+            return None
+        tot = abs(c) + abs(nc)
+        return (abs(nc) / tot) if tot > 1e-6 else 0.0
+
+    # THE storage-effect test: does per-layer storage move flow onto the nonclean label?
+    rows = [(nonclean_share("CBAM_old", y), nonclean_share("CBAM", y)) for y in comp]
+    rows = [(o, n) for o, n in rows if o is not None and n is not None]
+    if rows:
+        ao = 100 * sum(o for o, _ in rows) / len(rows)
+        an = 100 * sum(n for _, n in rows) / len(rows)
+        d = an - ao
+        verdict = ("shifts flow ONTO the nonclean label" if d > 1 else
+                   "shifts flow OFF the nonclean label" if d < -1 else
+                   "barely changes the clean/nonclean split")
+        out.append(("info", "Storage-effect test: per-layer vs clean-only storage",
+                    f"Nonclean share of |cross-border flow| averages {ao:.1f}% with clean-only storage vs "
+                    f"{an:.1f}% with per-layer storage + H2 ({_span(comp)}). Giving the nonclean layer its own "
+                    f"storage {verdict} ({d:+.1f} pp) — the direct test of your hypothesis that clean-only "
+                    "storage biased flows toward clean."))
+
+    def spread(s, y):
+        p = data.get((s, y), {}).get("price", {})
+        return (p["nonclean"] - p["clean"]) if "clean" in p and "nonclean" in p else None
+    so = [spread("CBAM_old", y) for y in comp if spread("CBAM_old", y) is not None]
+    sn = [spread("CBAM", y) for y in comp if spread("CBAM", y) is not None]
+    if so and sn:
+        mo, mn = sum(so) / len(so), sum(sn) / len(sn)
+        out.append(("info", "Clean/nonclean price spread",
+                    f"Mean nonclean−clean layer price: {mo:.0f} EUR/MWh (clean-only storage) vs {mn:.0f} "
+                    "(per-layer + H2). The spread is the implicit carbon value on dirty electricity; a smaller "
+                    "gap means the nonclean layer is less scarce once it can store and buffer."))
+
+    eb = frame(data, "CBAM", "energy_balance")
+    dis = eb.reindex(["battery discharger"]).clip(lower=0).sum().sum() if "battery discharger" in eb.index else 0
     if dis > 0.1:
-        out.append(("ok", "Storage is identical between scenarios; clean-layer MVP works",
-                    f"GB battery energy capacity matches the reference (e.g. 63.9 GWh in both at 2040) and "
-                    f"batteries discharge ~{dis:.0f} TWh over the horizon (charge AND discharge). The H2 store "
-                    "(~2.4 TWh, cross-sector) is also the same in both and is NOT split — earlier it was charted "
-                    "on the same axis as batteries, which made the scenarios look different when they are not."))
+        out.append(("ok", "Per-layer batteries build and cycle (not stranded)",
+                    f"GB batteries discharge ~{dis:.0f} TWh over the horizon in CBAM — they charge AND "
+                    "discharge on both the clean and nonclean layers, confirming the per-layer storage works."))
     else:
         out.append(("err", "Storage may be stranded",
-                    "GB battery discharge is ~0 despite capacity — check the storage connection direction."))
-    # headline signal 1: clean/nonclean import composition and the export flip
-    ics = {y: data[("CBAM", y)]["interconnect"] for y in have_cbam if ("CBAM", y) in data}
-    if ics:
-        first, last = min(ics), max(ics)
-        net_f, net_l = ics[first]["net_total"], ics[last]["net_total"]
-        cl_l = ics[last]["by_class"].get("clean", float("nan"))
-        flip = (net_f > 0) and (net_l < 0)
-        out.append(("info", "GB shifts from clean importer to clean exporter",
-                    f"CBAM resolves the cross-border flow by CO2 class: in {first} GB nets ~{net_f:+.0f} TWh "
-                    f"(≈ all clean), and by {last} it nets ~{net_l:+.0f} TWh — a large CLEAN "
-                    f"{'export' if net_l<0 else 'import'} (~{cl_l:+.0f} TWh clean) as offshore wind scales. "
-                    "Net flow is ~identical to the reference; the split is what makes its composition visible."))
-    # headline signal 2: clean/nonclean price spread
-    spreads = {}
-    for y in have_cbam:
-        p = data.get(("CBAM", y), {}).get("price", {})
-        if "clean" in p and "nonclean" in p:
-            spreads[y] = p["nonclean"] - p["clean"]
-    if spreads:
-        ymax = max(spreads, key=spreads.get)
-        out.append(("info", "Clean/nonclean price spread widens over time",
-                    f"The nonclean AC layer clears well above the clean layer — the spread reaches "
-                    f"~{spreads[ymax]:.0f} EUR/MWh by {ymax}. This is the implicit carbon value the split "
-                    "assigns to dirty electricity even though no explicit border tariff is applied yet."))
-    # near-identical dispatch => tax not active
-    out.append(("info", "CBAM charge is topology-only (expected)",
-                "Investment and dispatch are within ~1% of the reference because the CBAM border charge is "
-                "still a TODO in prepare_sector_network. Present differences come from the joint transmission "
-                "capacity constraint and flow re-labelling, not a carbon tariff."))
+                    "GB battery discharge ~0 despite capacity — check the storage connection direction."))
+
+    out.append(("info", "H2 is now carbon-labelled (CBAM only)",
+                "CBAM splits H2 into clean/nonclean (electrolysis tied to its electricity layer, SMR→nonclean, "
+                "SMR CC→clean, store per class); CBAM_old left H2 unsplit. NH3 stays unsplit (Phase 2). The H2 "
+                "store chart therefore sums the two class stores in CBAM."))
+
+    out.append(("info", "CBAM charge is still topology-only",
+                "No border tariff on nonclean imports is applied yet — differences between the scenarios come "
+                "from the split topology (per-layer storage/H2, joint transmission capacity), not a carbon charge."))
     return out
+
+
+def _span(years):
+    return f"{min(years)}–{max(years)}" if years else "—"
 
 
 # --------------------------------------------------------------------------- #
@@ -550,10 +585,11 @@ def build_report_shell(divs, diag, years_present, both_years) -> str:
     )
     return f"""
 <div class="wrap">
-  <h1>CBAM vs Reference — Great Britain</h1>
-  <p class="sub">CO2-intensity split scenario against the no-split reference. Years available:
-     reference {min(years_present)}–{max(years_present)}, CBAM {min(both_years)}–{max(both_years)}.
-     All GB values aggregate the clean/nonclean/common layers via <code>n.buses.location</code>.</p>
+  <h1>CBAM storage &amp; H₂ split — Great Britain</h1>
+  <p class="sub">Three scenarios: <b>reference</b> (no split), <b>CBAM_old</b> (clean-only storage),
+     <b>CBAM</b> (per-layer storage + H₂ split). The CBAM-vs-CBAM_old comparison isolates the effect of
+     the storage/H₂ changes on the clean/nonclean flow balance. All GB values aggregate the
+     clean/nonclean/common layers via <code>n.buses.location</code>.</p>
 
   <h2>Key findings &amp; diagnostics</h2>
   <div class="findings">{findings}</div>

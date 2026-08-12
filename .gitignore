@@ -8,6 +8,7 @@ master
 .ipynb_checkpoints
 __pycache__
 *dconf
+gurobi.lic
 gurobi.log
 .vscode
 *.orig
@@ -58,6 +59,8 @@ d1gam3xoknrgr2.cloudfront.net/
 
 *.nc
 
+*.sh
+
 *~
 
 *.pyc
@@ -69,6 +72,11 @@ d1gam3xoknrgr2.cloudfront.net/
 *.geojson
 
 *.ipynb
+
+*.md
+
+*.e*
+*.o*
 
 merger-todos.md
 

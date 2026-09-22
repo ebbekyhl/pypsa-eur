@@ -21,6 +21,7 @@ from networkx.algorithms import complement
 from networkx.algorithms.connectivity.edge_augmentation import k_edge_augmentation
 from pypsa.geo import haversine_pts
 from scipy.stats import beta
+from shapely.ops import unary_union
 
 from cluster_countries import map_countries_to_regions, calculate_centroids
 
@@ -1424,6 +1425,7 @@ def add_generation(
 
 def add_ammonia(
     n: pypsa.Network,
+    options: dict,
     costs: pd.DataFrame,
     pop_layout: pd.DataFrame,
     spatial: SimpleNamespace,
@@ -1528,6 +1530,22 @@ def add_ammonia(
         lifetime=costs.at["NH3 (l) storage tank incl. liquefaction", "lifetime"],
     )
 
+    if options["ammonia_transport"]:
+        ammonia_transport = create_network_topology(
+            n, "ammonia transport ", bidirectional=True
+        )
+        n.add(
+            "Link",
+            ammonia_transport.index,
+            bus0=ammonia_transport.bus0 + " NH3",
+            bus1=ammonia_transport.bus1 + " NH3",
+            p_nom_extendable=False,
+            p_nom=5e4,
+            length=ammonia_transport.length,
+            marginal_cost=options["ammonia_transport_cost"]
+            * ammonia_transport.length,
+            carrier="ammonia transport",
+        )
 
 def insert_electricity_distribution_grid(
     n: pypsa.Network,
@@ -1865,13 +1883,13 @@ def add_ldes_storage(n, options):
             lifetime=costs.at["OCGT", "lifetime"],
         )
 
-
 def add_storage_and_grids(
     n,
     costs,
     pop_layout,
     h2_cavern_file,
     cavern_types,
+    depleted_gas_fields_file,
     clustered_gas_network_file,
     gas_input_nodes,
     spatial,
@@ -1893,6 +1911,8 @@ def add_storage_and_grids(
         Path to CSV file containing hydrogen cavern storage potentials
     cavern_types : list
         List of underground storage types to consider
+    depleted_gas_fields_file : str
+        Path to CSV file containing depleted gas field storage potentials        
     clustered_gas_network_file : str, optional
         Path to CSV file containing gas network data
     gas_input_nodes : pd.DataFrame
@@ -1994,7 +2014,6 @@ def add_storage_and_grids(
         )
 
     h2_caverns = pd.read_csv(h2_cavern_file, index_col=0)
-
     if (
         not h2_caverns.empty
         and options["hydrogen_underground_storage"]
@@ -2002,22 +2021,19 @@ def add_storage_and_grids(
     ):
         h2_caverns = h2_caverns[cavern_types].sum(axis=1)
 
-        # only use sites with at least 2 TWh potential
-        h2_caverns = h2_caverns[h2_caverns > 2]
-
         # convert TWh to MWh
         h2_caverns = h2_caverns * 1e6
 
         # clip at 1000 TWh for one location
         h2_caverns.clip(upper=1e9, inplace=True)
 
-        logger.info("Add hydrogen underground storage")
+        logger.info("Add hydrogen salt cavern storage")
 
         h2_capital_cost = costs.at["hydrogen storage underground", "capital_cost"]
 
         n.add(
             "Store",
-            h2_caverns.index + " H2 Store",
+            h2_caverns.index + " H2 salt cavern store",
             bus=h2_caverns.index + " H2",
             e_nom_extendable=True,
             e_nom_max=h2_caverns.values,
@@ -2027,14 +2043,40 @@ def add_storage_and_grids(
             lifetime=costs.at["hydrogen storage underground", "lifetime"],
         )
 
-    # hydrogen stored overground (where not already underground)
+    h2_depleted_gas_fields = pd.read_csv(depleted_gas_fields_file, index_col=0) 
+    if (
+        not h2_depleted_gas_fields.empty
+        and options["hydrogen_depleted_gas_fields"]
+    ):
+        # convert TWh to MWh
+        h2_depleted_gas_fields = h2_depleted_gas_fields * 1e6
+
+        # clip at 1000 TWh for one location
+        h2_depleted_gas_fields.clip(upper=1e9, inplace=True)
+
+        logger.info("Add hydrogen offshore depleted gas field storage")
+ 
+        h2_capital_cost = costs.at["hydrogen storage underground", "capital_cost"]
+
+        n.add(
+            "Store",
+            h2_depleted_gas_fields.index + " H2 depleted gas store",
+            bus=h2_depleted_gas_fields.index + " H2",
+            e_nom_extendable=True,
+            e_nom_max=h2_depleted_gas_fields.values,
+            e_cyclic=True,
+            carrier="H2 Store",
+            capital_cost=h2_depleted_gas_fields,
+            lifetime=costs.at["hydrogen storage underground", "lifetime"],
+        )
+
+    # hydrogen stored overground
     tech = "hydrogen storage tank type 1 including compressor"
-    nodes_overground = h2_caverns.index.symmetric_difference(nodes)
 
     n.add(
         "Store",
-        nodes_overground + " H2 Store",
-        bus=nodes_overground + " H2",
+        nodes + " H2 steel tanks store",
+        bus=nodes + " H2",
         e_nom_extendable=True,
         e_cyclic=True,
         carrier="H2 Store",
@@ -6918,12 +6960,12 @@ def fix_transmission_lines(n, year, fixed_years):
     UK_lines = lines.query("(bus0.str.contains('GB') or bus1.str.contains('GB'))")
     UK_links = links.query("carrier == 'DC' and (bus0.str.contains('GB') or bus1.str.contains('GB'))")
 
-    future_UK_lines = UK_lines.query("build_year > @year")
-    future_UK_links = UK_links.query("build_year > @year")
+    future_AC_lines = lines.query("build_year > @year")
+    future_DC_links = links.query("carrier == 'DC' and build_year > @year")
     
     # set future UK lines and links to 0 as they are not built yet:
-    lines.loc[future_UK_lines.index, "s_nom"] = 0
-    links.loc[future_UK_links.index, "p_nom"] = 0
+    lines.loc[future_AC_lines.index, "s_nom"] = 0
+    links.loc[future_DC_links.index, "p_nom"] = 0
 
     # for certain years in the pathway optimization, transmission expansion is not endogenous.
     if year in fixed_years:
@@ -7049,6 +7091,7 @@ if __name__ == "__main__":
         pop_layout=pop_layout,
         h2_cavern_file=snakemake.input.h2_cavern,
         cavern_types=snakemake.params.sector["hydrogen_underground_storage_locations"],
+        depleted_gas_fields_file = snakemake.input.depleted_gas_fields,
         clustered_gas_network_file=snakemake.input.clustered_gas_network,
         gas_input_nodes=gas_input_nodes,
         spatial=spatial,
@@ -7123,7 +7166,7 @@ if __name__ == "__main__":
         )
 
     if options["ammonia"]:
-        add_ammonia(n, costs, pop_layout, spatial, cf_industry)
+        add_ammonia(n, options, costs, pop_layout, spatial, cf_industry)
 
     if options["methanol"]:
         add_methanol(n, costs, options=options, spatial=spatial, pop_layout=pop_layout)
@@ -7229,6 +7272,9 @@ if __name__ == "__main__":
 
     if options["fossil_imports"]["enable"]:
         add_import_options(n, costs, options, gas_input_nodes, type = "fossil")
+
+    if options["other_imports"]["enable"]:
+        add_import_options(n, costs, options, gas_input_nodes, type = "other")
 
     if options["gas_distribution_grid"]:
         insert_gas_distribution_costs(n, costs, options=options)

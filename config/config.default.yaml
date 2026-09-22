@@ -25,7 +25,7 @@ run:
   shared_resources:
     policy: false
     exclude: []
-  shared_cutouts: false # <------- true, unless weather years are different between runs
+  shared_cutouts: true # <------- true, unless weather years are different between runs
   use_shadow_directory: true
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#foresight
@@ -86,7 +86,7 @@ countries:
 
 uk_settings:
   data:
-    uk_energy_balance_year: 2024 # year for UK energy balance data (ECUK - currently not available for 2025)
+    uk_energy_balance_year: 2024 # year for UK energy balance data, updates "build_energy_totals.py" (ECUK Table U2 - currently not available for 2025. Next update is end of September 2026.)
     uk_electricity_demand_year: 2025 # UK electricity demand data (ESPENI)
     uk_new_gas_storage_data: true # whether to use new UK gas storage data (various sources)
     uk_new_powerplants_data: true # whether to use new UK powerplant data (OpenStreetMap)  
@@ -96,7 +96,7 @@ uk_settings:
     uk_scale_up_offwind_potential: 2 # to align with UK government's offshore wind targets, we increase the estimated offshore wind potential in the UK by 2 
     uk_include_offshore_buses: false # whether offshore buses (not to be confused with offshore regions) are included.
     electrolysis_p_min_pu: 0.95 # minimum output of electrolysis units 
-    transmission_fixed_years: false
+    transmission_fixed_years: [2025, 2030,] 
     reduce_model_in_the_east: false # whether to reduce the model in the eastern part of Europe by clustering Balkan, Baltic and East European countries into three representative regions, respectively. 
     use_dynamic_gas_prices: false
     gas_prices: 
@@ -792,6 +792,7 @@ sector:
   co2_network_cost_factor: 1
   cc_fraction: 0.9
   hydrogen_underground_storage: true
+  hydrogen_depleted_gas_fields: false
   hydrogen_underground_storage_locations:
   - onshore    # more than 50 km from sea
   - nearshore      # within 50 km of sea
@@ -799,7 +800,7 @@ sector:
   methanol:
     regional_methanol_demand: true
     transport: true
-    transport_cost: 0.027 # assumed price in "Minimal methanol paper" by P Glaum et al. €/MWh/km
+    transport_cost: 0.027 # €/MWh/km, assumed price in "Minimal methanol paper" by P Glaum et al.
     methanol_reforming: true 
     methanol_reforming_cc: true 
     methanol_to_kerosene: true
@@ -815,6 +816,8 @@ sector:
     biogas_to_methanol: true 
   replace_medium_heat: false
   ammonia: regional
+  ammonia_transport: true
+  ammonia_transport_cost: 0.027 # €/MWh/km, we assume same price as methanol, from P Glaum et al. 
   min_part_load_fischer_tropsch: 0.5
   min_part_load_methanolisation: 0.3
   min_part_load_methanation: 0.3
@@ -909,7 +912,13 @@ sector:
     limit: false
     limit_sense: <=
     price:
-      gas: 50 # Adding a more recent value for gas import price from LNG 
+      gas: 50 # EUR/MWh, adding a more recent value for gas import price from LNG 
+  other_imports:
+    enable: true
+    limit: false
+    limit_sense: <=
+    price: 
+      NH3: 125 # EUR/MWh (0.89 USD per kg ammonia, according to https://businessanalytiq.com/procurementanalytics/index/ammonia-price-index/ 22 september 2026)
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#industry
 industry:
@@ -1024,6 +1033,8 @@ costs:
     "standing losses": 0
   overwrites : {"investment": {"HighT-Molten-Salt-store": 20.0e3, # EUR / MWh
                                 "Compressed-Air-Adiabatic-store": 26.0e3, # EUR / MWh (assuming above-ground storage)
+                                "HVAC overhead": 620, # EUR/MW/km (matching increased transmission cost reportings, documented in PyPSA costs 22 Sep 2026)
+                                "H2 (g) pipeline": 380, # EUR/MW/km (matching increased transmission cost reportings, documented in PyPSA costs 22 Sep 2026)
                                 },
                 "lifetime": {"Compressed-Air-Adiabatic-store": 30.0, # years (median of literature, see Fig. 12 in https://doi.org/10.1016/j.egyr.2025.11.037)
                             "battery inverter": 15.0, # years (assuming replacement of inverters every 15 years)
@@ -1242,3 +1253,13 @@ solving:
   mem_mb: 300000 # 110000 for 3-hourly fully sector-coupled
   memory_logging_frequency: 5 # in seconds
   runtime: 48h #runtime in humanfriendly style https://humanfriendly.readthedocs.io/en/latest/
+
+# docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#overpass_api
+overpass_api:
+  url: "https://overpass-api.de/api/interpreter"
+  max_tries: 5
+  timeout: 600
+  user_agent:
+    project_name: "PyPSA-Eur"
+    email: "contact@pypsa.org"
+    website: "https://github.com/PyPSA/pypsa-eur"

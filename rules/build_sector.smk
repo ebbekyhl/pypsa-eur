@@ -748,6 +748,24 @@ rule build_salt_cavern_potentials:
     script:
         "../scripts/build_salt_cavern_potentials.py"
 
+rule build_depleted_gas_field_potentials:
+    input:
+        depleted_gas_fields="data/data_UK/secret/UK_depleted_gas_fields.csv",
+        regions_onshore=resources("regions_onshore_base_s_{clusters}.geojson"),
+        regions_offshore=resources("regions_offshore_base_s_{clusters}.geojson"),
+    output:
+        clustered_depleted_gas_fields=resources("depleted_gas_field_potentials_s_{clusters}.csv"),
+    threads: 1
+    resources:
+        mem_mb=2000,
+    log:
+        logs("build_depleted_gas_field_potentials_s_{clusters}.log"),
+    benchmark:
+        benchmarks("build_depleted_gas_field_potentials_s_{clusters}")
+    conda:
+        "../envs/environment.yaml"
+    script:
+        "../scripts/build_depleted_gas_field_potentials.py"
 
 rule build_ammonia_production:
     input:
@@ -884,6 +902,7 @@ rule build_industrial_distribution_key:
         hotmaps="data/Industrial_Database.csv",
         gem_gspt="data/gem/Global-Steel-Plant-Tracker-April-2024-Standard-Copy-V1.xlsx",
         ammonia="data/ammonia_plants.csv",
+        uk_fertiliser="data/data_UK/uk_fertiliser_producers.csv",
         cement_supplement="data/cement-plants-noneu.csv",
         refineries_supplement="data/refineries-noneu.csv",
     output:
@@ -1368,6 +1387,7 @@ rule prepare_sector_network:
             else resources("costs_{planning_horizons}.csv")
         ),
         h2_cavern=resources("salt_cavern_potentials_s_{clusters}.csv"),
+        depleted_gas_fields=resources("depleted_gas_field_potentials_s_{clusters}.csv"),
         busmap_s=resources("busmap_base_s.csv"),
         busmap=resources("busmap_base_s_{clusters}.csv"),
         clustered_pop_layout=resources("pop_layout_base_s_{clusters}.csv"),

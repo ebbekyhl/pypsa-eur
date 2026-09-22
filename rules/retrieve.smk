@@ -354,38 +354,24 @@ if config["enable"]["retrieve"]:
 
 if config["enable"]["retrieve"]:
 
+    # Retrieved from the PyPSA archive mirror rather than the marineregions.org
+    # download form: that form now rejects the scripted POST (it returns the HTML
+    # form again, which then fails to unpack). The mirror serves the identical
+    # v12_20231025 archive. See https://data.pypsa.org/workflows/eur/eez/
     rule retrieve_eez:
+        input:
+            zip_file=storage(
+                "https://data.pypsa.org/workflows/eur/eez/v12_20231025/World_EEZ_v12_20231025_LR.zip"
+            ),
         params:
             zip="data/eez/World_EEZ_v12_20231025_LR.zip",
         output:
             gpkg="data/eez/World_EEZ_v12_20231025_LR/eez_v12_lowres.gpkg",
+        retries: 2
         run:
-            import os
-            import requests
-            from uuid import uuid4
-
-            name = str(uuid4())[:8]
-            org = str(uuid4())[:8]
-
-            response = requests.post(
-                "https://www.marineregions.org/download_file.php",
-                params={"name": "World_EEZ_v12_20231025_LR.zip"},
-                data={
-                    "name": name,
-                    "organisation": org,
-                    "email": f"{name}@{org}.org",
-                    "country": "Germany",
-                    "user_category": "academia",
-                    "purpose_category": "Research",
-                    "agree": "1",
-                },
-            )
-
-            with open(params["zip"], "wb") as f:
-                f.write(response.content)
-            output_folder = Path(params["zip"]).parent
-            unpack_archive(params["zip"], output_folder)
-            os.remove(params["zip"])
+            shcopy(input.zip_file, params.zip)
+            unpack_archive(params.zip, Path(params.zip).parent)
+            os.remove(params.zip)
 
 
 
@@ -403,6 +389,9 @@ if config["enable"]["retrieve"]:
             response = requests.get(
                 "https://api.worldbank.org/v2/en/indicator/SP.URB.TOTL.IN.ZS?downloadformat=csv",
             )
+            # Fail loudly: without this an HTML error page is written as data and
+            # the rule still counts as successful (see retrieve_jrc_ardeco).
+            response.raise_for_status()
 
             with open(params["zip"], "wb") as f:
                 f.write(response.content)
@@ -436,6 +425,10 @@ if config["enable"]["retrieve"]:
             response = requests.get(
                 "https://setis.ec.europa.eu/document/download/786a884f-0b33-4789-b744-28004b16bd1a_en?filename=co2jrc_openformats.zip",
             )
+            # Fail loudly: without this an HTML error page is written as data and
+            # the rule still counts as successful (see retrieve_jrc_ardeco).
+            response.raise_for_status()
+
             with open(params["zip"], "wb") as f:
                 f.write(response.content)
             output_folder = Path(params["zip"]).parent
@@ -454,6 +447,9 @@ if config["enable"]["retrieve"]:
             # mirror of https://globalenergymonitor.org/wp-content/uploads/2024/05/Europe-Gas-Tracker-2024-05.xlsx
             url = "https://tubcloud.tu-berlin.de/s/LMBJQCsN6Ez5cN2/download/Europe-Gas-Tracker-2024-05.xlsx"
             response = requests.get(url)
+            # Fail loudly: without this an HTML error page is written as data and
+            # the rule still counts as successful (see retrieve_jrc_ardeco).
+            response.raise_for_status()
             with open(output[0], "wb") as f:
                 f.write(response.content)
 
@@ -470,6 +466,9 @@ if config["enable"]["retrieve"]:
             # mirror or https://globalenergymonitor.org/wp-content/uploads/2024/04/Global-Steel-Plant-Tracker-April-2024-Standard-Copy-V1.xlsx
             url = "https://tubcloud.tu-berlin.de/s/Aqebo3rrQZWKGsG/download/Global-Steel-Plant-Tracker-April-2024-Standard-Copy-V1.xlsx"
             response = requests.get(url)
+            # Fail loudly: without this an HTML error page is written as data and
+            # the rule still counts as successful (see retrieve_jrc_ardeco).
+            response.raise_for_status()
             with open(output[0], "wb") as f:
                 f.write(response.content)
 
@@ -659,6 +658,8 @@ if config["enable"]["retrieve"] and (
         log:
             "logs/retrieve_osm_data_{country}.log",
         threads: 1
+        params:
+            overpass_api=config_provider("overpass_api"),
         conda:
             "../envs/environment.yaml"
         script:
@@ -701,6 +702,8 @@ if config["enable"]["retrieve"]:
         log:
             "logs/retrieve_osm_boundaries_{country}_adm1.log",
         threads: 1
+        params:
+            overpass_api=config_provider("overpass_api"),
         conda:
             "../envs/environment.yaml"
         script:
@@ -741,24 +744,28 @@ if config["enable"]["retrieve"]:
 
 if config["enable"]["retrieve"]:
 
+    # Retrieved from the PyPSA archive mirror rather than the JRC ARDECO API.
+    # The API host moved (urban.jrc.ec.europa.eu -> territorial.ec.europa.eu) and
+    # currently answers 500 for SNPTD. The previous rule wrote the response body
+    # unconditionally, so the HTML error page landed in the .csv outputs and the
+    # job still counted as successful; build_shapes then died on
+    # KeyError: 'LEVEL_ID'. storage() fails loudly on a bad response instead.
+    # See https://data.pypsa.org/workflows/eur/jrc_ardeco/
     rule retrieve_jrc_ardeco:
+        input:
+            ardeco_gdp=storage(
+                "https://data.pypsa.org/workflows/eur/jrc_ardeco/2021/ARDECO-SUVGDP.2021.table.csv"
+            ),
+            ardeco_pop=storage(
+                "https://data.pypsa.org/workflows/eur/jrc_ardeco/2021/ARDECO-SNPTD.2021.table.csv"
+            ),
         output:
             ardeco_gdp="data/jrc-ardeco/ARDECO-SUVGDP.2021.table.csv",
             ardeco_pop="data/jrc-ardeco/ARDECO-SNPTD.2021.table.csv",
+        retries: 2
         run:
-            import requests
-
-            urls = {
-                "ardeco_gdp": "https://urban.jrc.ec.europa.eu/ardeco-api-v2/rest/export/SUVGDP?version=2021&format=csv-table",
-                "ardeco_pop": "https://urban.jrc.ec.europa.eu/ardeco-api-v2/rest/export/SNPTD?version=2021&format=csv-table",
-            }
-
-            for key, url in urls.items():
-                response = requests.get(url)
-                output_path = output[key] if key in urls else None
-                if output_path:
-                    with open(output_path, "wb") as f:
-                        f.write(response.content)
+            for key in input.keys():
+                shcopy(input[key], output[key])
 
 
 

@@ -1862,6 +1862,30 @@ def remove_storage(n, carrier):
     uk_stores = n.stores.query("carrier.str.contains(@carrier) and bus.str.contains('GB')")
     df.loc[uk_stores.index, "e_nom_extendable"] = False
 
+def add_heating_constraint_uk(n, year):
+    uk_electrified_heating = n.links.query("carrier.str.contains('resistive') or carrier.str.contains('heat pump')  and bus1.str.contains('GB')").index
+
+    # Calculate the total heat load in the UK
+    uk_heat_load = n.loads.query("carrier.str.contains('heat') and bus.str.contains('GB')")
+    fixed_loads = uk_heat_load.query("p_set > 0")
+    dynamic_loads = uk_heat_load.drop(fixed_loads.index)
+    missing_columns = dynamic_loads.index.difference(n.loads_t.p_set.columns)
+    dynamic_loads.drop(index = missing_columns, inplace=True)
+    dynamic_load_sum = n.loads_t.p_set[dynamic_loads.index].sum().sum()
+    fixed_load_sum = n.loads.p_set[fixed_loads.index].sum().sum() * len(n.snapshots)
+    total_heat_load = dynamic_load_sum + fixed_load_sum
+
+    # Impose upper limit of electrified heating, corresponding to 2025 values
+    maximum_electric_heating = 0.10 * total_heat_load
+
+    uk_electrified_heating_t = n.model["Link-p"].loc[:, uk_electrified_heating].sum()
+
+    # uk_electrified_heating_t >= maximum_electric_heating
+    # 0 >= maximum_electric_heating - uk_electrified_heating_t
+
+    lhs = - uk_electrified_heating_t + maximum_electric_heating
+    n.model.add_constraints(lhs <= 0, name=f"maximum_electric_heating_UK_{year}")
+
 def freeze_uk_capacities(n, base_year):
     investment_year = int(snakemake.wildcards.planning_horizons)
     if investment_year > base_year:
@@ -1896,7 +1920,10 @@ def freeze_uk_capacities(n, base_year):
                       "solid biomass for industry heat",
                       "Sabatier",
                       "Fischer-Tropsch",
-                      "NH3 turbine"]
+                      "NH3 turbine",
+                      "Haber-Bosch",
+                      "ammonia cracker"
+                      ]
     
     for et in emerging_techs:
         condition = "carrier.str.contains(@et)" if not et == "CC" else "carrier.str.endswith(@et)"
@@ -1951,6 +1978,8 @@ def freeze_uk_capacities(n, base_year):
         df.loc[element_tf_special.index, f"{att}_nom"] = df.loc[element_tf_special.index, f"{att}_nom"] + df.loc[element_tf_special.index, f"{att}_nom_min"]
         
         df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
+
+    add_heating_constraint_uk(n, investment_year)
 
 def remove_ie_from_network(n):
     """ 

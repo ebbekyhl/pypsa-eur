@@ -162,6 +162,26 @@ def prepare_ammonia_database(regions):
     """
     df = pd.read_csv(snakemake.input.ammonia, index_col=0)
 
+    ################################################################
+    # drop data for the UK
+    df = df.query("Country != 'United Kingdom'")
+
+    # Read UK data
+    df_uk = pd.read_csv(snakemake.input.uk_fertiliser, index_col=0)
+
+    conversion = 0.5 # assuming 500 gram ammonia per kg of fertiliser. This depends on which fertiliser product (ammonium nitrate or urea) is being produced.
+
+    df_uk["Ammonia [kt/a]"] = df_uk["Production (tonnes/year)"] * conversion * 1e-3 
+    df_uk["Latitude"] = df_uk["lat"]
+    df_uk["Longitude"] = df_uk["lon"]
+    df_uk["Country"] = "United Kingdom"
+    df_uk["Source"] = df_uk["Sources"]
+    df_uk["Date"] = "22-09-2026"
+
+    matching_columns = df.columns.intersection(df_uk.columns)
+    df = pd.concat([df, df_uk[matching_columns]])
+
+    ################################################################
     geometry = gpd.points_from_xy(df.Longitude, df.Latitude)
     gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
 

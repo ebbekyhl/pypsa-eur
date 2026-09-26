@@ -382,22 +382,30 @@ def add_planned_storage_capacities(n, year, file):
 
             max_hours = df_tech_in_reservoir["storage_capacity_mwh"] / df_tech_in["Capacity"]
 
-            storage_units = n.storage_units.copy()
-            n_phs = storage_units.query("carrier == 'PHS'")
-            
-            # add new pumped hydro storage units
-            n_UK_phs = n_phs.loc[n_phs.index.str.contains("GB")].iloc[0]
-            
-            uk_phs_df = pd.DataFrame(columns = n_UK_phs.index,
-                                    index = df_tech_in_index)
-            
-            uk_phs_df.loc[:, :] = n_UK_phs.values
-            uk_phs_df.loc[:, "bus"] = df_tech_in.index
-            uk_phs_df.loc[:, "p_nom"] = df_tech_in["Capacity"].values
-            uk_phs_df.loc[:, "max_hours"] = max_hours.values
+            storage_units = getattr(n, "storage_units")
+            phs = storage_units.query("carrier == 'PHS'")
 
-            storage_units = pd.concat([storage_units, uk_phs_df], ignore_index=False).sort_index()
-            n.storage_units = storage_units
+            # add new pumped hydro storage units in the UK
+            new_phs_df = phs.iloc[0:len(df_tech_in_index)].reset_index()
+            new_phs_df.loc[:, "StorageUnit"] = df_tech_in_index
+            new_phs_df.loc[:, "bus"] = df_tech_in.index
+            new_phs_df.loc[:, "p_nom"] = df_tech_in["Capacity"].values
+            new_phs_df.loc[:, "max_hours"] = max_hours.values
+            new_phs_df.set_index("StorageUnit", inplace=True)
+
+            n.add("StorageUnit",
+                new_phs_df.index,
+                bus=new_phs_df["bus"],
+                carrier=new_phs_df["carrier"],
+                p_nom=new_phs_df["p_nom"],
+                build_year = year,
+                lifetime = new_phs_df["lifetime"],
+                capital_cost=new_phs_df["capital_cost"],
+                max_hours=new_phs_df["max_hours"],
+                efficiency_store = new_phs_df["efficiency_store"],
+                efficiency_dispatch = new_phs_df["efficiency_dispatch"],
+                cyclic_state_of_charge = True,
+                )
 
             logger.info("planned PHS capacity added")
 

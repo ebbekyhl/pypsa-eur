@@ -190,6 +190,8 @@ def prepare_ammonia_database(regions):
     gdf.rename(columns={"name": "bus"}, inplace=True)
     gdf["country"] = gdf.bus.str[:2]
 
+    gdf.to_csv(snakemake.output.uk_ammonia_demand)
+
     return gdf
 
 

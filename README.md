@@ -15,7 +15,7 @@ SPDX-License-Identifier: CC-BY-4.0
 
 # Data needs for PyPSA-Eur-UK
 
-Download all data located in this Zenodo repository: 10.5281/zenodo.20522644 
+Download all data located in this [Zenodo repository](https://doi.org/10.5281/zenodo.20522643)
 
 Create a folder named "data_UK" containing this data and locate it in the /data/ folder in the PyPSA-Eur workflow.
 

@@ -581,6 +581,7 @@ plotting:
     ammonia: '#46caf0'
     ammonia store: '#00ace0'
     ammonia cracker: '#87d0e6'
+    ammonia transport: '#46caf0'
     Haber-Bosch: '#076987'
     # syngas
     Sabatier: '#9850ad'

@@ -906,6 +906,9 @@ rule build_industrial_distribution_key:
         cement_supplement="data/cement-plants-noneu.csv",
         refineries_supplement="data/refineries-noneu.csv",
     output:
+        uk_ammonia_demand=resources(
+            "uk_ammonia_demand_base_s_{clusters}.csv"
+            ),
         industrial_distribution_key=resources(
             "industrial_distribution_key_base_s_{clusters}.csv"
         ),
@@ -1388,6 +1391,8 @@ rule prepare_sector_network:
         ),
         h2_cavern=resources("salt_cavern_potentials_s_{clusters}.csv"),
         depleted_gas_fields=resources("depleted_gas_field_potentials_s_{clusters}.csv"),
+        uk_ammonia_demand=resources("uk_ammonia_demand_base_s_{clusters}.csv"),
+        planned_hydrogen_projects = "data/data_UK/planned_hydrogen_projects.xlsx",
         busmap_s=resources("busmap_base_s.csv"),
         busmap=resources("busmap_base_s_{clusters}.csv"),
         clustered_pop_layout=resources("pop_layout_base_s_{clusters}.csv"),
@@ -1462,6 +1467,12 @@ rule prepare_sector_network:
         resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc"
         ),
+        keadby_h2_demand = resources(
+                                    "keadby_h2_demand_{clusters}_{opts}_{sector_opts}_{planning_horizons}.csv"
+                                    ),
+        billingham_h2_demand = resources(
+                                    "billingham_h2_demand_{clusters}_{opts}_{sector_opts}_{planning_horizons}.csv"
+                                    ),
     threads: 1
     resources:
         mem_mb=2000,

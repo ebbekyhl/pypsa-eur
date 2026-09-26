@@ -331,8 +331,9 @@ def read_and_clean_OIM_UK_powerplants(uk_regions, baseyear):
     df_OIM_powerplants.loc[pp_units.index, "Set"] = "PP"
 
     # Add storage identifier
-    df_OIM_powerplants_pp = df_OIM_powerplants.query("facility == 'storage'")
+    df_OIM_powerplants_pp = df_OIM_powerplants.query("facility == 'storage' or Technology.str.contains('storage')")
     df_OIM_powerplants.loc[df_OIM_powerplants_pp.index, "Set"] = "S"
+    df_OIM_powerplants.loc[df_OIM_powerplants_pp.index, "facility"] = "storage"
 
     # final clean-up of Fueltype column
     df_OIM_powerplants.loc[:, "Fueltype"] =df_OIM_powerplants["Fueltype"].astype(str).replace({"nuclear": "Nuclear",
@@ -828,7 +829,7 @@ def add_power_capacities_installed_before_baseyear(
     # reading power plants already constructed
     df_OIM_pp_online = df_OIM_pp_all_w_buses.query("facility == 'power plant'").query("status == 'online'")
     df_OIM_pp_uc = df_OIM_pp_all_w_buses.query("facility == 'power plant'").query("status == 'under construction'")
-    df_OIM_storage = df_OIM_pp_all_w_buses.query("facility == 'storage'")
+    df_OIM_storage = df_OIM_pp_all_w_buses.query("facility == 'storage' or Technology.str.contains('storage')")
 
     df_OIM_pp_uc.to_csv(snakemake.output.uk_brownfield_power_plant_under_construction, index=False)
     df_OIM_storage.to_csv(snakemake.output.uk_brownfield_storage, index=False)

@@ -139,6 +139,7 @@ rule solve_sector_network_myopic:
         ),
         custom_extra_functionality=input_custom_extra_functionality,
         uk_settings=config_provider("uk_settings", "solve"),
+        uk_settings_prepare=config_provider("uk_settings", "prepare"),
     input:
         eurostat="data/eurostat/Balances-April2023",
         co2_totals = resources("co2_totals.csv"),
@@ -146,6 +147,12 @@ rule solve_sector_network_myopic:
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}_brownfield.nc"
         ),
         costs=resources("costs_{planning_horizons}.csv"),
+        keadby_h2_demand = resources(
+                                    "keadby_h2_demand_{clusters}_{opts}_{sector_opts}_{planning_horizons}.csv"
+                                    ),
+        billingham_h2_demand = resources(
+                                    "billingham_h2_demand_{clusters}_{opts}_{sector_opts}_{planning_horizons}.csv"
+                                    ),
     output:
         network=RESULTS
         + "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc",

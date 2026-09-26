@@ -450,48 +450,6 @@ def add_UK_fixed_electricity_generation_mix(n, base_year):
 
         logger.info(f"Added generation limits for {carrier} in UK: {c_range}% of total electricity generation")
 
-# def add_UK_greenfield_minimum_capacity_factors(n, capacity_factors):
-
-#     T = len(n.snapshots)
-#     for tech, minimum_capacity_factor in capacity_factors.items():
-
-#         minimum_capacity_factor_t = minimum_capacity_factor[tech]
-
-#         # Select UK links of that tech
-#         tech_uk = n.links[
-#             n.links.index.str.contains("GB") & (n.links.carrier == tech)
-#         ]
-
-#         # Prebuilt (brownfield) capacities only
-#         tech_uk_prebuilt = tech_uk[tech_uk.build_year < investment_year] if not (investment_year == base_year) else tech_uk[tech_uk.build_year <= investment_year] 
-
-#         # If no prebuilt capacity, skip constraint
-#         if tech_uk_prebuilt.empty:
-#             continue
-
-#         # Total prebuilt capacity (check for zero or NaN)
-#         tech_uk_cap = tech_uk_prebuilt.p_nom.sum()
-
-#         if (tech_uk_cap is None) or (tech_uk_cap == 0) or (pd.isna(tech_uk_cap)):
-#             # log about zero capacity
-#             logger.info(f"No pre-built {tech} capacity in UK, skipping constraint.")
-#             continue
-
-#         # Total production of those links over all snapshots
-#         tech_uk_prod = n.model["Link-p"].loc[:, tech_uk_prebuilt.index].sum()
-
-#         # Minimum energy requirement: CF * capacity * time
-#         min_energy = minimum_capacity_factor_t_y * tech_uk_cap * T
-
-#         lhs = -tech_uk_prod + min_energy
-
-#         # enforce: tech_uk_prod >= min_energy
-#         n.model.add_constraints(lhs <= 0, name=f"greenfield_capacity_factor_{tech}")
-
-#         # log
-#         logger.info(f"Added minimum capacity factor constraint for UK {tech}: {minimum_capacity_factor}")
-
-
 def add_UK_brownfield_minimum_capacity_factors(n, capacity_factors, base_year):
 
     # For example:
@@ -570,13 +528,12 @@ def add_UK_deployment_rate_limits(n, deployment_rate_limits, base_year):
 
         elif tech in ["transmission"]:
             # Transmission lines are divided into AC and DC. The expansion limits should be applied to the total transmission volume, which is the sum of AC and DC lines. 
-            power_factor = 0.7 # conversion from line capacity in MVA to MW
             uk_transmission_links = n.links.query("(bus0.str.contains('GB') and bus1.str.contains('GB')) and carrier == 'DC' and not index.str.contains('rev')") # including only internal lines
             uk_transmission_lines = n.lines.query("bus0.str.contains('GB') and bus1.str.contains('GB')") # including only internal lines
 
             # Today's total transmission volume in the UK (in MW-km)
             dc_links_vol_today = (n.links.loc[uk_transmission_links.index].p_nom_min * uk_transmission_links.length).sum()
-            ac_lines_vol_today = power_factor * (n.lines.loc[uk_transmission_lines.index].s_nom_min * uk_transmission_lines.length).sum()
+            ac_lines_vol_today = (n.lines.loc[uk_transmission_lines.index].s_nom_min * uk_transmission_lines.length).sum()
             transmission_vol_today = dc_links_vol_today + ac_lines_vol_today
 
             # Extendable subsets
@@ -597,7 +554,7 @@ def add_UK_deployment_rate_limits(n, deployment_rate_limits, base_year):
 
             # Build linear expressions
             dc_expansion = ((dc_var - dc_existing) * dc_length).sum()
-            ac_expansion = power_factor * ((ac_var - ac_existing) * ac_length).sum()
+            ac_expansion = ((ac_var - ac_existing) * ac_length).sum()
 
             # The expansion limit is defined as a fraction of today's total transmission volume in the UK. 
             expansion_fraction = deployment_rate_limits[tech] # fraction of today's transmission volume that can be added per 5-year period
@@ -1724,8 +1681,18 @@ def extra_functionality(
         limit_sense = config["sector"]["fossil_imports"]["limit_sense"]
         add_import_limit_constraint(n, snapshots, "fossil", limit_sense, limit)
 
+    if config["sector"]["other_imports"]["enable"]:
+        limit = config["sector"]["other_imports"]["limit"]
+        limit_sense = config["sector"]["other_imports"]["limit_sense"]
+        add_import_limit_constraint(n, snapshots, "other", limit_sense, limit)
+
     base_year = snakemake.config["scenario"]["planning_horizons"][0]
+    investment_year = snakemake.wildcards.planning_horizons
     uk_settings = snakemake.params.uk_settings
+
+    if uk_settings["uk_max_electric_heating_share"]:
+        logger.info("Adding UK maximum electricity share of heating.")
+        add_heating_constraint_uk(n, base_year, uk_settings["uk_max_electric_heating_share"])
 
     if uk_settings["uk_fixed_electricity_generation_mix"]:
         logger.info("Adding UK fixed electricity generation mix.")
@@ -1735,14 +1702,16 @@ def extra_functionality(
         capacity_factors = uk_settings["uk_brownfield_minimum_capacity_factors"]
         add_UK_brownfield_minimum_capacity_factors(n, capacity_factors, base_year)
 
-    # if isinstance(uk_settings["uk_greenfield_minimum_capacity_factors"], dict):
-    #     logger.info("Adding UK greenfield minimum capacity factors.")
-    #     capacity_factors = uk_settings["uk_greenfield_minimum_capacity_factors"]
-    #     add_UK_greenfield_minimum_capacity_factors(n, capacity_factors)
-
     if isinstance(uk_settings["uk_deployment_rate_limits"], dict):
         logger.info("Adding UK deployment rates.")
         add_UK_deployment_rate_limits(n, uk_settings["uk_deployment_rate_limits"], base_year)
+
+    uk_settings_prepare = snakemake.params.uk_settings_prepare
+    df_keadby = snakemake.input.keadby_h2_demand
+    df_billingham = snakemake.input.billingham_h2_demand
+    if isinstance(uk_settings_prepare["northumbria_projects"], dict) and (int(investment_year) > int(base_year)):
+        add_utilization_constraint_keadby(n, df_keadby, uk_settings_prepare, investment_year)
+        add_ammonia_demand(n, df_billingham, uk_settings_prepare, investment_year)
 
     if isinstance(config["local_co2"], dict):
         logger.info("Adding local CO2 constraint.")
@@ -1857,13 +1826,58 @@ def freeze_uk_wind_projects(n, dictionary):
             df.loc[element_tf_special.index, f"{att}_nom"] = df.loc[element_tf_special.index, f"{att}_nom"] + df.loc[element_tf_special.index, f"{att}_nom_min"]
             df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
 
+def add_utilization_constraint_keadby(n, df, uk_settings, year):
+    year = int(year)
+    demand_level = uk_settings["northumbria_projects"]["demand_level"]
+    df = pd.read_csv(df, index_col = 0)
+
+    # H2 consumption at Keadby power plant in GWh LHV
+    keadby_y_s = df.query("year == @year and scenario == @demand_level")
+
+    buses = keadby_y_s["bus"].values
+    carrier = "H2 turbine"
+
+    uk_power_generation_links = n.links.query("bus1.isin(@buses) and carrier == @carrier")
+
+    keadby_output = n.model.variables["Link-p"].loc[:, uk_power_generation_links.index].sum() # in units of MWh hydrogen consumed
+    keadby_minimum_output = keadby_y_s["hydrogen_demand_gwh_lhv"].item() * 1e3 # converted to MWh hydrogen consumed
+
+    n.model.add_constraints(-keadby_output + keadby_minimum_output <= 0, name="keadby_minimum_output_constraint_{year}")
+
+def add_ammonia_demand(n, df, uk_settings, year):
+    year = int(year)
+    links = getattr(n, "links")
+    demand_level = uk_settings["northumbria_projects"]["demand_level"]
+    df = pd.read_csv(df, index_col = 0)
+
+    tech = "Haber-Bosch" # we assume Haber-Bosch process for ammonia production
+    logger.info("Adding committed projects on ", tech, " in North East region")
+
+    df_nh3_y_s = df.query("year == @year and scenario == @demand_level")
+    bus = df_nh3_y_s.bus.item()
+    link_i = links.query("carrier.str.contains(@tech) and bus0 == @bus")
+
+    # add constraint:
+    efficiency = -link_i.efficiency2 # efficiency is negative because the link is a multilink
+    hydrogen_consumption = n.model.variables["Link-p"].loc[:, link_i.index].sum() * efficiency # in units of MWh
+    billingham_minimum_output = df_nh3_y_s["hydrogen_demand_gwh_lhv"].item() * 1e3 # converted to MWh
+
+    n.model.add_constraints(-hydrogen_consumption + billingham_minimum_output <= 0, name="billingham_minimum_h2_consumption_constraint_{year}")
+
 def remove_storage(n, carrier):
     df = getattr(n, "stores")
     uk_stores = n.stores.query("carrier.str.contains(@carrier) and bus.str.contains('GB')")
     df.loc[uk_stores.index, "e_nom_extendable"] = False
 
-def add_heating_constraint_uk(n, year):
-    uk_electrified_heating = n.links.query("carrier.str.contains('resistive') or carrier.str.contains('heat pump')  and bus1.str.contains('GB')").index
+def add_heating_constraint_uk(n, base_year, factor):
+
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    
+    if investment_year > base_year:
+        logger.info("Planning year greater than base year, skipping UK minimum capacity factor constraint.")
+        return
+
+    uk_electrified_heating = n.links.query("(carrier.str.contains('resistive') or carrier.str.contains('heat pump')) and bus1.str.contains('GB')").index
 
     # Calculate the total heat load in the UK
     uk_heat_load = n.loads.query("carrier.str.contains('heat') and bus.str.contains('GB')")
@@ -1876,15 +1890,15 @@ def add_heating_constraint_uk(n, year):
     total_heat_load = dynamic_load_sum + fixed_load_sum
 
     # Impose upper limit of electrified heating, corresponding to 2025 values
-    maximum_electric_heating = 0.10 * total_heat_load
+    maximum_electric_heating = factor * total_heat_load
 
     uk_electrified_heating_t = n.model["Link-p"].loc[:, uk_electrified_heating].sum()
 
     # uk_electrified_heating_t >= maximum_electric_heating
     # 0 >= maximum_electric_heating - uk_electrified_heating_t
 
-    lhs = - uk_electrified_heating_t + maximum_electric_heating
-    n.model.add_constraints(lhs <= 0, name=f"maximum_electric_heating_UK_{year}")
+    lhs = uk_electrified_heating_t - maximum_electric_heating
+    n.model.add_constraints(lhs <= 0, name=f"maximum_electric_heating_UK_{base_year}")
 
 def freeze_uk_capacities(n, base_year):
     investment_year = int(snakemake.wildcards.planning_horizons)
@@ -1893,6 +1907,11 @@ def freeze_uk_capacities(n, base_year):
         return
     else:
         logger.info("Freezing capacities in UK for the baseyear.")
+
+    # Remove negative hydrogen loads (that appeared to represent H2 as a bi-product from the chemical industry))
+    loads = getattr(n, "loads")
+    c_h2_load = n.loads.query("carrier.str.contains('H2')")
+    loads.loc[c_h2_load.index, "p_set"] = c_h2_load["p_set"].clip(lower = 0)
 
     # Freeze AC and DC transmission lines everywhere
     transmission_dic = {"AC": ["lines", "s_nom_extendable"], 
@@ -1904,56 +1923,73 @@ def freeze_uk_capacities(n, base_year):
         df.loc[df_carrier.index, element[1]] = False
 
     # Freeze emerging technologies everywhere
-    emerging_techs = ["CC", 
-                      "DAC",
-                      "methanol",
-                      "Methanol",
-                      "H2 Electrolysis", 
-                      "H2 turbine", 
-                      "H2 Fuel Cell", 
-                      "methanolisation",
-                      "redox flow", 
-                      "compressed air", 
-                      "molten salt",
-                      "liquid air",
-                      "biomass to liquid",
-                      "solid biomass for industry heat",
-                      "Sabatier",
-                      "Fischer-Tropsch",
-                      "NH3 turbine",
-                      "Haber-Bosch",
-                      "ammonia cracker"
+    emerging_techs_all = [
+                      "CC", # carbon capture technology (point source)
+                      "DAC", # carbon capture technology (direct air capture)
+                      
+                      "methanol", # any technologies related to methanol
+                      "Methanol", # any technologies related to methanol
+                       
+                      "H2 Electrolysis", # hydrogen production
+                      "methanolisation", # hydrogen to methanol
+
+                      "H2 turbine", # electricity storage (emerging)
+                      "H2 Fuel Cell", # electricity storage (emerging)
+                      "redox flow", # electricity storage (emerging) 
+                      "compressed air", # electricity storage (emerging)
+                      "molten salt", # electricity storage (emerging)
+                      "liquid air", # electricity storage (emerging)
+
+                      "biomass to liquid", # fuel production from biomass
+                      "solid biomass for industry heat", # industry heat from biomass
+                      "Sabatier", # methane production H2 and CO2
+                      "Fischer-Tropsch", # liquid fuel from H2 and CO2
+                      "NH3 turbine", # ammonia turbine
                       ]
-    
-    for et in emerging_techs:
-        condition = "carrier.str.contains(@et)" if not et == "CC" else "carrier.str.endswith(@et)"
+
+    # Ensure that all technologies in the list cannot expand
+    for ET in emerging_techs_all:
+        condition = "carrier.str.contains(@ET)" if not ET == "CC" else "carrier.str.endswith(@ET)"
         df = getattr(n, "links")
         df_carrier = df.query(condition)
         df.loc[df_carrier.index, "p_nom_extendable"] = False
 
-    # add load shedding everywhere
+    emerging_techs_UK = [
+                        "Haber-Bosch",
+                        "ammonia cracker"
+                        ]
+    
+    # Ensure that all technologies in the list cannot expand
+    for ET in emerging_techs_UK:
+        condition = "carrier.str.contains(@ET) and bus1.str.contains('GB')" if not ET == "CC" else "carrier.str.endswith(@ET) and bus1.str.contains('GB')"
+        df = getattr(n, "links")
+        df_carrier = df.query(condition)
+        df.loc[df_carrier.index, "p_nom_extendable"] = False
+
+    # Add load shedding everywhere
     add_load_shedding(n)
 
-    # UK generators
+    # Fix UK generators
     uk_generators = n.generators.query("bus.str.contains('GB')")
     
-    # UK lines
+    # Fix UK lines
     uk_lines = n.lines.query("bus0.str.contains('GB') or bus1.str.contains('GB')")
     
-    # UK links
+    # Fix UK links
     carriers = ["AC", "urban central heat", "urban decentral heat", "rural heat"]
     uk_buses = n.buses.query("index.str.contains('GB') and carrier.isin(@carriers)")
     uk_links = n.links.query("bus1.isin(@uk_buses.index)")
-    uk_links = uk_links.query("carrier.str.contains('OCGT') | carrier.str.contains('CCGT') | carrier.str.contains('nuclear') | carrier.str.contains('lignite') | carrier.str.contains('coal') | carrier.str.contains('oil') | carrier.str.contains('CHP') | carrier.str.contains('heat pump')") 
+    uk_links = uk_links.query("carrier.str.contains('OCGT') | carrier.str.contains('CCGT') | carrier.str.contains('nuclear') | carrier.str.contains('lignite') | carrier.str.contains('coal') | carrier.str.contains('oil') | carrier.str.contains('CHP')") 
+    gas_boilers = uk_links.query("carrier.str.contains('gas boiler')")
+    uk_links.drop(index = gas_boilers.index, inplace=True) # ensuring that gas boilers are kept in the system and can scale to the heating demand
     pipelines = n.links.query("carrier.str.contains('pipeline') and (bus0.str.contains('GB') or bus1.str.contains('GB'))")
     uk_links = pd.concat([uk_links, pipelines])
 
-    # stores
-    uk_stores = n.stores.query("bus.str.contains('GB')")
-    
-    # storage units
-    uk_storage_units = n.storage_units.query("bus.str.contains('GB')")
-    
+    # Fix UK storage facilities (incl. n.stores and n.storage_units)
+    uk_stores = n.stores.query("bus.str.contains('GB')") # stores
+    uk_storage_units = n.storage_units.query("bus.str.contains('GB')") # storage_units
+
+    # Creating a dictionary with all components being fixed
     elements = {
                 "generators": uk_generators, 
                 "lines": uk_lines, 
@@ -1963,6 +1999,7 @@ def freeze_uk_capacities(n, base_year):
                 }
     attributes = {"generators": "p", "lines": "s", "links": "p", "stores": "e", "storage_units": "p"}
 
+    # Loop over each component type and freeze the capacities
     for element_name, element in elements.items():
         att = attributes[element_name]
         df = getattr(n, element_name)
@@ -1978,8 +2015,6 @@ def freeze_uk_capacities(n, base_year):
         df.loc[element_tf_special.index, f"{att}_nom"] = df.loc[element_tf_special.index, f"{att}_nom"] + df.loc[element_tf_special.index, f"{att}_nom_min"]
         
         df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
-
-    add_heating_constraint_uk(n, investment_year)
 
 def remove_ie_from_network(n):
     """ 

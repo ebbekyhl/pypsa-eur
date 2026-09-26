@@ -91,7 +91,6 @@ uk_settings:
     uk_new_gas_storage_data: true # whether to use new UK gas storage data (various sources)
     uk_new_powerplants_data: true # whether to use new UK powerplant data (OpenStreetMap)  
     uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov (DUKES)
-    
   prepare:
     uk_scale_up_offwind_potential: 2 # to align with UK government's offshore wind targets, we increase the estimated offshore wind potential in the UK by 2 
     uk_include_offshore_buses: false # whether offshore buses (not to be confused with offshore regions) are included.
@@ -109,11 +108,13 @@ uk_settings:
     uk_freeze_wind_projects: 
       onwind: [2030,] # we assume that UK wind projects for 2030 are already established and will not be subject to expansion decisions in the model.
       offwind: [2030,] # we assume that UK wind projects for 2030 are already established and will not be subject to expansion decisions in the model.
+    UK_elec_transmission_expansion_limit: false # max 15% expansion of existing transmission 
     uk_greenfield_minimum_capacity_factors: # minimum capacity factors of brownfield capacities 
       electrolysis: 0.95
     uk_brownfield_minimum_capacity_factors: # minimum capacity factors of brownfield capacities 
       CCGT: 
         2025: 0.35
+    uk_max_electric_heating_share: false #0.10 # upper limit of electric heating share in the UK applied to the base year for calibration purpose.
     uk_fixed_electricity_generation_mix: false # fix electricity generation mix to historical levels
     uk_remove_storage: false
     uk_deployment_rate_limits: 

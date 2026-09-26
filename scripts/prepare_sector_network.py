@@ -1547,6 +1547,25 @@ def add_ammonia(
             carrier="ammonia transport",
         )
 
+    if options["ammonia_turbine"]:
+        logger.info(
+            "Adding ammonia turbine for re-electrification. Assuming OCGT technology costs."
+        )
+
+        n.add(
+            "Link",
+            nodes + " NH3 turbine",
+            bus0=spatial.ammonia.nodes,
+            bus1=nodes,
+            p_nom_extendable=True,
+            carrier="NH3 turbine",
+            efficiency=costs.at["OCGT", "efficiency"],
+            capital_cost=costs.at["OCGT", "capital_cost"]
+            * costs.at["OCGT", "efficiency"],  # NB: fixed cost is per MWel
+            marginal_cost=costs.at["OCGT", "VOM"],
+            lifetime=costs.at["OCGT", "lifetime"],
+        )
+
 def insert_electricity_distribution_grid(
     n: pypsa.Network,
     costs: pd.DataFrame,
@@ -1863,25 +1882,6 @@ def add_ldes_storage(n, options):
                     carrier=tech,
                     capital_cost=costs.at[techs_stores_dict[tech],"capital_cost"], 
                     lifetime = costs.at[techs_stores_dict[tech],'lifetime']) 
-    
-    if options["ammonia_turbine"]:
-        logger.info(
-            "Adding ammonia turbine for re-electrification. Assuming OCGT technology costs."
-        )
-
-        n.add(
-            "Link",
-            nodes + " NH3 turbine",
-            bus0=spatial.ammonia.nodes,
-            bus1=nodes,
-            p_nom_extendable=True,
-            carrier="NH3 turbine",
-            efficiency=costs.at["OCGT", "efficiency"],
-            capital_cost=costs.at["OCGT", "capital_cost"]
-            * costs.at["OCGT", "efficiency"],  # NB: fixed cost is per MWel
-            marginal_cost=costs.at["OCGT", "VOM"],
-            lifetime=costs.at["OCGT", "lifetime"],
-        )
 
 def add_storage_and_grids(
     n,
@@ -1956,13 +1956,13 @@ def add_storage_and_grids(
 
     logger.info("Add hydrogen storage")
 
-    electrolysis_p_min_pu = uk_settings.get("electrolysis_p_min_pu", 0.0)
-
     nodes = pop_layout.index
 
     n.add("Carrier", "H2")
 
     n.add("Bus", nodes + " H2", location=nodes, carrier="H2", unit="MWh_LHV")
+
+    electrolysis_p_min_pu = options.get("electrolysis_p_min_pu", 0.0)
 
     n.add(
         "Link",
@@ -4667,7 +4667,6 @@ def add_biomass(
             lifetime=25,  # TODO: add value to technology-data
         )
 
-
 def add_industry(
     n: pypsa.Network,
     costs: pd.DataFrame,
@@ -5603,6 +5602,14 @@ def add_industry(
             p_set=p_set,
         )
 
+        # update UK ammonia load 
+        uk_ammonia_demand = pd.read_csv(snakemake.input.uk_ammonia_demand, index_col=0).query("Country == 'United Kingdom'")
+
+        NH3_LHV = 5.2 # MWh per tonne
+        uk_ammonia_demand_MWh = uk_ammonia_demand["Ammonia [kt/a]"] * 1e3 * NH3_LHV # annual demand in MWh
+        loads = getattr(n, "loads")
+        loads.loc[uk_ammonia_demand.bus + " NH3", "p_set"] = (uk_ammonia_demand_MWh / nhours).item()
+
     if industrial_demand[["coke", "coal"]].sum().sum() > 0:
         add_carrier_buses(
             n,
@@ -6264,7 +6271,6 @@ def limit_individual_line_extension(n, maxext):
     n.lines["s_nom_max"] = n.lines["s_nom"] + maxext
     hvdc = n.links.index[n.links.carrier == "DC"]
     n.links.loc[hvdc, "p_nom_max"] = n.links.loc[hvdc, "p_nom"] + maxext
-
 
 aggregate_dict = {
     "p_nom": pd.Series.sum,
@@ -6953,7 +6959,393 @@ def update_gas_prices(n, gas_prices):
         gas_imports = df.query("carrier == 'import gas'")
         df.loc[gas_imports.index, "marginal_cost"] = gas_prices["imports"]
 
-def fix_transmission_lines(n, year, fixed_years): 
+def map_planned_projects_to_regions(df, 
+                                        regions, 
+                                        pipeline = False, 
+                                        industry_demand = False):
+
+    regions_aligned = regions.to_crs("EPSG:4326")
+
+    lat_name = "Start (lat)" if not industry_demand else "latitude"
+    lon_name = "Start (lon)" if not industry_demand else "longitude"
+
+    gdf_infra = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(
+            df[lon_name],
+            df[lat_name]
+        ),
+        crs="EPSG:4326"
+    )
+
+    gdf_joined = gpd.sjoin(
+        gdf_infra,
+        regions_aligned[["name", "geometry"]],
+        how="left",
+        predicate="within"
+    )
+
+    if pipeline:
+
+        gdf_joined.rename(columns = {"name": "bus0"}, inplace = True)
+        gdf_joined.drop(columns = ["index_right"], inplace = True)
+
+        gdf_infra2 = gpd.GeoDataFrame(
+        df,
+        geometry=gpd.points_from_xy(
+            df["End (lon)"],
+            df["End (lat)"]
+        ),
+        crs="EPSG:4326"
+        )
+
+        gdf_joined2 = gpd.sjoin(
+            gdf_infra2,
+            regions_aligned[["name", "geometry"]],
+            how="left",
+            predicate="within"
+        )
+        gdf_joined["geometry1"] = gdf_joined2["geometry"]
+        gdf_joined["bus1"] = gdf_joined2["name"]
+        gdf_joined["length_km"] = gdf_joined.apply(lambda row: row["geometry"].distance(row["geometry1"]) * 100, axis=1)
+
+    else:
+        gdf_joined.rename(columns = {"name": "bus"}, inplace = True)
+        gdf_joined.drop(columns = ["index_right"], inplace = True)
+
+    return gdf_joined
+
+def prepare_data_for_planned_projects(regions_file):
+    regions = gpd.read_file(regions_file)
+
+    # coordinates of counties in the North East region of UK:
+    NE_counties_coordinates = {"County Durham": (54.77265355934816, -1.590128536521878),
+                                "Darlington": (54.52331796597884, -1.5597002574697454),
+                                "East Riding of Yorkshire": (53.77084769542473, -0.34689025471357643),
+                                "Gateshead": (54.945491031332075, -1.5836887341815127),
+                                "Hartlepool": (54.692087405378324, -1.2135623217925595),
+                                "Kingston upon Hull, City of": (53.76616072695432, -0.3273513377833377),
+                                "Middlesbrough": (54.573835987620335, -1.2338620529729731),
+                                "Newcastle upon Tyne": (54.98010813430524, -1.6190783288341954),
+                                "North East Lincolnshire": (53.52445663869947, -0.11029977818457022),
+                                "North Lincolnshire": (53.61092273623921, -0.5201589576369211),
+                                "North Tyneside": (55.01898180898635, -1.4763115602959989),
+                                "Northumberland": (55.243286978479034, -1.9172781479593284),
+                                "Redcar and Cleveland": (54.54770416305167, -0.9783556289593076),
+                                "South Tyneside": (54.96255090274549, -1.4232727280140443),
+                                "Stockton-on-Tees": (54.568303283183155, -1.3369960032800936),
+                                "Sunderland": (54.9040409454417, -1.3860249424085647),}
+
+    # read excel sheet
+    df_infrastructure = pd.read_excel(snakemake.input.planned_hydrogen_projects, sheet_name="Infrastructure")
+    df_industry_demand = pd.read_excel(snakemake.input.planned_hydrogen_projects, sheet_name="all_spatial_demand_long")
+
+    # Read data on infrastructure
+    df_infrastructure_h2_pipeline = df_infrastructure.query("Category == 'H2 pipeline'").copy()
+    df_infrastructure_powerplant = df_infrastructure.query("Category == 'H2 turbine'").copy()
+    df_infrastructure_blue_h2 = df_infrastructure.query("Category == 'SMR CC'").copy()
+    df_infrastructure_green_h2 = df_infrastructure.query("Category == 'H2 Electrolysis'").copy()
+    df_infrastructure_h2_storage = df_infrastructure.query("Category == 'H2 salt cavern'").copy()
+
+    # Read industry demand data
+    # find rows with missing lat and lon in df_industry_demand
+    missing_lat_lon = df_industry_demand[df_industry_demand['latitude'].isnull() | df_industry_demand['longitude'].isnull()]
+
+    # add coordinates from counties
+    missing_lat_lon = df_industry_demand.loc[missing_lat_lon.index, 'location_name'].map(NE_counties_coordinates).apply(pd.Series)
+    missing_lat_lon.columns = ['latitude', 'longitude']
+    df_industry_demand.loc[missing_lat_lon.index, ['latitude', 'longitude']] = missing_lat_lon[['latitude', 'longitude']]
+
+    # map to regions 
+    df_infrastructure_blue_h2 = map_planned_projects_to_regions(df_infrastructure_blue_h2, regions)
+    df_infrastructure_h2_pipeline = map_planned_projects_to_regions(df_infrastructure_h2_pipeline, regions, pipeline = True)
+    df_infrastructure_powerplant = map_planned_projects_to_regions(df_infrastructure_powerplant, regions)
+    df_infrastructure_green_h2 = map_planned_projects_to_regions(df_infrastructure_green_h2, regions)
+    df_infrastructure_h2_storage = map_planned_projects_to_regions(df_infrastructure_h2_storage, regions)
+    df_industry_demand = map_planned_projects_to_regions(df_industry_demand, regions, industry_demand = True)
+
+    df_prepared = {
+                    "blue_h2": df_infrastructure_blue_h2,
+                    "h2_pipeline": df_infrastructure_h2_pipeline,
+                    "powerplant": df_infrastructure_powerplant,
+                    "green_h2": df_infrastructure_green_h2,
+                    "h2_storage": df_infrastructure_h2_storage,
+                    "industry_demand": df_industry_demand
+                    }
+    
+    return df_prepared
+
+def reduce_dimensions_for_planned_projects(df_prepared):
+    ####################### Reduce dimensions of H2 pipelines ###################################
+    df_p = df_prepared["h2_pipeline"]
+    df_p_reduced = df_p[["Capacity floor (GW)", 
+                          "Capacity ceil (GW)", 
+                          "Commission year",
+                          "bus0", 
+                          "bus1"]].groupby(["bus0", "bus1"]).agg({"Capacity floor (GW)": "sum", 
+                                                                  "Capacity ceil (GW)": "sum",
+                                                                  "Commission year": "first"}).reset_index()
+    df_p_reduced["bus0"] += " H2"
+    df_p_reduced["bus1"] += " H2"
+    df_p_reduced = df_p_reduced.query("bus0 != bus1").reset_index(drop=True)
+
+    #################### Reduce dimensions of H2 production facilities ###########################
+    df_h2 = pd.concat([df_prepared["blue_h2"], 
+                       df_prepared["green_h2"]], ignore_index=True)
+    df_h2_reduced = df_h2[["Capacity floor (GW)", 
+                            "Capacity ceil (GW)", 
+                            "Commission year",
+                            "Category",
+                            "bus"]].groupby(["bus", "Category"]).agg({"Capacity floor (GW)": "sum", 
+                                                                       "Capacity ceil (GW)": "sum",
+                                                                       "Commission year": "first"}).reset_index()
+    df_h2_reduced["bus"] += " H2"
+
+    #################### Reduce dimensions of H2 storage sites ####################################
+    df_s = df_prepared["h2_storage"]
+    df_s_reduced = df_s[["Storage capacity (GWh)", 
+                        "Commission year",
+                        "Category",
+                        "bus"]].groupby(["bus", "Category"]).agg({"Storage capacity (GWh)": "sum", 
+                                                                "Commission year": "first"}).reset_index()
+    df_s_reduced["bus"] += " H2"
+
+    #################### Reduce dimensions of power plant sites ##################################
+    df_pp = df_prepared["powerplant"]
+
+    df_pp_reduced = df_pp[["Capacity floor (GW)", 
+                            "Capacity ceil (GW)",
+                            "Commission year",
+                            "Category",
+                            "bus"]].groupby(["bus", "Category"]).agg({"Capacity floor (GW)": "sum",
+                                                                        "Capacity ceil (GW)": "sum",
+                                                                        "Commission year": "first"}).reset_index()  
+
+    keadby = df_prepared["industry_demand"].query("location_name == 'Keadby Next Generation'")
+    keadby_reduced = keadby[["hydrogen_demand_gwh_lhv", 
+                            "scenario",
+                            "year",
+                            "bus"]].groupby([
+                                            "scenario",
+                                            "year",
+                                            "bus"]).agg({"hydrogen_demand_gwh_lhv": "sum", 
+                                                        }).reset_index()
+
+    #################### Reduce dimensions of NH3 industry demand sites ###########################
+    df_nh3 = df_prepared["industry_demand"].query("record_id.str.contains('FERTILISERS')")
+
+    df_nh3_reduced = df_nh3[["hydrogen_demand_gwh_lhv", 
+                            "scenario",
+                            "year",
+                            "bus"]].groupby([
+                                            "scenario",
+                                            "year",
+                                            "bus"]).agg({"hydrogen_demand_gwh_lhv": "sum", 
+                                                            }).reset_index()       
+
+    #################### Reduce dimensions of other industry demand sites ###########################
+    df_d = df_prepared["industry_demand"]
+    df_d.drop(index = keadby.index, inplace = True)
+    df_d.drop(index = df_nh3.index, inplace = True)
+    df_d_reduced = df_d[["hydrogen_demand_gwh_lhv", 
+                        "scenario",
+                        "year",
+                        "bus"]].groupby([
+                                        "scenario",
+                                        "year",
+                                        "bus"]).agg({"hydrogen_demand_gwh_lhv": "sum", 
+                                                        }).reset_index()
+
+    df_d_reduced["bus"] += " H2"                                                                                                                                                                               
+
+    df_reduced = {
+                "h2_pipeline": df_p_reduced,
+                "h2_production": df_h2_reduced,
+                "powerplant": df_pp_reduced,
+                "powerplant_h2_demand": keadby_reduced,
+                "h2_storage": df_s_reduced,
+                "industry_demand_nh3": df_nh3_reduced,
+                "industry_demand": df_d_reduced,
+                }
+
+    return df_reduced
+
+def add_planned_hydrogen_projects(n, northumbria_settings, regions_onshore, year):
+
+    scenario = northumbria_settings["scenario"]
+    demand_level = northumbria_settings["demand_level"]
+
+    links = getattr(n, "links")
+    stores = getattr(n, "stores")
+    loads = getattr(n, "loads")
+
+    df_prepared = prepare_data_for_planned_projects(regions_onshore)
+    df_reduced = reduce_dimensions_for_planned_projects(df_prepared)
+
+    ########### Add H2 pipelines to the network ############
+    df_h2_pipeline = df_reduced["h2_pipeline"]
+    
+    bus0s = df_h2_pipeline.bus0
+    bus1s = df_h2_pipeline.bus1
+    NE_pipelines = links.query("carrier == 'H2 pipeline' and (bus0.str.contains('GBNE') or bus1.str.contains('GBNE'))")
+    links_lst = pd.Index([])
+    logger.info("Adding committed pipeline projects in North East region")
+            
+    for i in range(len(df_h2_pipeline)):
+        bus0 = bus0s[i]
+        bus1 = bus1s[i]
+        capacity_floor_i = df_h2_pipeline["Capacity floor (GW)"][i]
+        capacity_ceil_i = df_h2_pipeline["Capacity ceil (GW)"][i]
+        links_i = links.query("carrier == 'H2 pipeline' and (bus0 == @bus0 and bus1 == @bus1) or (bus0 == @bus1 and bus1 == @bus0)")
+        links_lst = links_lst.append(links_i.index)
+
+        links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
+
+        # only set upper bound if scenario is network-upgrades-led
+        if scenario == "network-upgrades-led":
+            links.loc[links_i.index, "p_nom_max"] = capacity_ceil_i * 1e3 # MW
+
+    # if scenario is network-upgrades led, then only allow committed projects to be built
+    NE_remaining_pipelines = NE_pipelines.drop(NE_pipelines.index.intersection(links_lst))
+    if scenario == "network-upgrades-led":
+        links.loc[NE_remaining_pipelines.index, "p_nom_extendable"] = False
+    ######################################################################################################
+
+    ########### Add H2 production to the network ############
+    df_h2_production = df_reduced["h2_production"]
+    for tech in df_h2_production.Category.unique():
+
+        links_lst = pd.Index([])
+        logger.info(f"Adding committed projects on {tech} in North East region")
+        
+        for i in range(len(df_h2_production.query("Category == @tech"))):
+            bus = df_h2_production.query("Category == @tech").bus.iloc[i]
+
+            capacity_floor_i = df_h2_production["Capacity floor (GW)"][i]
+            capacity_ceil_i = df_h2_production["Capacity ceil (GW)"][i]
+
+            links_i = links.query("carrier == @tech and bus1 == @bus")
+            links_lst = links_lst.append(links_i.index)
+
+            # always set capacity floor 
+            links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
+
+            # only set upper bound if scenario is network-upgrades-led
+            if scenario == "network-upgrades-led":
+                links.loc[links_i.index, "p_nom_max"] = capacity_ceil_i * 1e3 # MW
+
+        # for the remaining production sites either fix or allow expansion depending on the scenario
+        NE_H2_production = links.query("carrier == @tech and bus1.str.contains('GBNE')")
+        NE_remaining_production = NE_H2_production.drop(links_lst)
+        if scenario == "network-upgrades-led":
+            links.loc[NE_remaining_production.index, "p_nom_extendable"] = False
+    ######################################################################################################
+
+    ########### Add H2 storage to the network ############
+    df_h2_production = df_reduced["h2_storage"]
+    for tech in df_h2_production.Category.unique():
+
+        stores_lst = pd.Index([])
+        logger.info(f"Adding committed projects on {tech} in North East region")
+        
+        for i in range(len(df_h2_production.query("Category == @tech"))):
+            bus = df_h2_production.query("Category == @tech").bus.iloc[i]
+
+            capacity_floor_i = df_h2_production["Storage capacity (GWh)"][i]
+            capacity_ceil_i = df_h2_production["Storage capacity (GWh)"][i]
+
+            stores_i = stores.query("index.str.contains(@tech) and bus == @bus")
+            stores_lst = stores_lst.append(stores_i.index)
+
+            # always set capacity floor 
+            stores.loc[stores_i.index, "e_nom_min"] = capacity_floor_i * 1e3 # MWh
+
+            # capacity ceilings are set according to geotechnical potentials
+
+        # for the remaining potential storage sites that have not had any plans
+        NE_stores = stores.query("index.str.contains(@tech) and bus.str.contains('GBNE')")
+        NE_remaining_stores = NE_stores.drop(stores_lst)
+
+        # if scenario is network-upgrades led, then only allow committed projects to be built
+        if scenario == "network-upgrades-led":
+            stores.loc[NE_remaining_stores.index, "e_nom_extendable"] = False
+    ######################################################################################################
+    
+    ########### Add H2 power plants to the network ############
+    df_powerplant = df_reduced["powerplant"]
+    for tech in df_powerplant.Category.unique():
+
+        links_lst = pd.Index([])
+        logger.info(f"Adding committed projects on {tech} in North East region")
+        
+        for i in range(len(df_powerplant.query("Category == @tech"))):
+            bus = df_powerplant.query("Category == @tech").bus.iloc[i]
+
+            capacity_floor_i = df_powerplant["Capacity floor (GW)"][i]
+            capacity_ceil_i = df_powerplant["Capacity ceil (GW)"][i]
+
+            links_i = links.query("carrier == @tech and bus1 == @bus")
+            links_lst = links_lst.append(links_i.index)
+
+            # always set capacity floor 
+            links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
+
+            # only set upper bound if scenario is network-upgrades-led
+            if scenario == "network-upgrades-led":
+                links.loc[links_i.index, "p_nom_max"] = capacity_ceil_i * 1e3 # MW
+
+    keadby = df_reduced["powerplant_h2_demand"].query("year == @year")
+    keadby.to_csv(snakemake.output.keadby_h2_demand, index=False)
+    # H2 demand for the Keadby power plant is added as a constraint in solve_network.py
+    ######################################################################################################
+
+    ########### Add NH3 industry to the network ############
+    df_nh3 = df_reduced["industry_demand_nh3"].query("year == @year")
+    df_nh3.to_csv(snakemake.output.billingham_h2_demand, index=False)
+    # H2 demand for the Billingham plant is added as a constraint in solve_network.py
+
+    # Update NH3 demand 
+    tech = "Haber-Bosch" # we assume Haber-Bosch process for ammonia production
+    df_nh3_s = df_nh3.query("scenario == @demand_level")
+
+    if not df_nh3_s.empty:
+        bus = df_nh3_s.bus.item()
+        link_i = links.query("carrier.str.contains(@tech) and bus0 == @bus")
+        billingham_minimum_output = df_nh3_s["hydrogen_demand_gwh_lhv"].item() * 1e3 # converted to MWh
+        h2_to_nh3_efficiency = -link_i.efficiency / link_i.efficiency2 
+
+        nh3_demand_increase = billingham_minimum_output * h2_to_nh3_efficiency
+
+        # We assume that produced ammonia at Billingham is fed into the fertiliser production, increasing total demand for ammonia
+        nhours = n.snapshot_weightings.generators.sum()
+        loads.loc[bus + " NH3", "p_set"] += nh3_demand_increase.item() / nhours
+    ######################################################################################################
+
+    ########### Add industry demands to the network ############
+    df_industry_demand = df_reduced["industry_demand"]
+
+    tech = 'H2 for industry'
+    logger.info(f"Adding committed projects on {tech} in North East region")
+
+    df_industry_demand_y_s = df_industry_demand.query("year == @year and scenario == @demand_level")
+
+    if not df_industry_demand_y_s.empty:
+        for i in range(len(df_industry_demand_y_s)):
+            bus = df_industry_demand_y_s.bus.iloc[i]
+            load_i = df_industry_demand_y_s["hydrogen_demand_gwh_lhv"].iloc[i]
+            loads_i = loads.query("carrier == @tech and bus == @bus") 
+            loads_i_resampled = load_i / nhours * 1e3 # MWh
+            loads.loc[loads_i.index, "p_set"] = loads_i_resampled
+
+def limit_UK_transmission_lines(n, investment_year, uk_transmission_limits):
+
+    maxext = uk_transmission_limits.get(investment_year, False)
+
+    if maxext is False:
+        return
+
+    logger.info(f"Limiting HVAC and HVDC extensions in UK by {int(maxext*100)}%")
+
     lines = getattr(n, "lines")
     links = getattr(n, "links")
 
@@ -6967,10 +7359,14 @@ def fix_transmission_lines(n, year, fixed_years):
     lines.loc[future_AC_lines.index, "s_nom"] = 0
     links.loc[future_DC_links.index, "p_nom"] = 0
 
-    # for certain years in the pathway optimization, transmission expansion is not endogenous.
-    if year in fixed_years:
+    # if maxext is 0, disallow any extensions of UK transmission lines and links
+    if maxext == 0:
         lines.loc[UK_lines.index, "s_nom_extendable"] = False
         links.loc[UK_links.index, "p_nom_extendable"] = False
+
+    else:
+        lines.loc[UK_lines.index, "s_nom_max"] = UK_lines["s_nom_max"] * (1 + maxext) 
+        links.loc[UK_links.index, "p_nom_max"] = UK_links["p_nom_max"] * (1 + maxext)
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -7308,9 +7704,9 @@ if __name__ == "__main__":
 
     fix_gas_storage(n)
 
-    transmission_fixed_years = uk_settings_prepare.get("transmission_fixed_years", None)
-    if isinstance(transmission_fixed_years, list):
-        fix_transmission_lines(n, investment_year, transmission_fixed_years)
+    uk_transmission_limits = uk_settings_prepare.get("uk_transmission_limits", None)
+    if isinstance(uk_transmission_limits, list):
+        limit_UK_transmission_lines(n, investment_year, uk_transmission_limits)
         
     factor = uk_settings_prepare.get("uk_scale_up_offwind_potential", None)
     if isinstance(factor, (int, float)):
@@ -7323,7 +7719,6 @@ if __name__ == "__main__":
     scale_UK_gas_network(n)
 
     LDES_settings = snakemake.params.ldes_settings
-    
     add_ldes_storage(n, LDES_settings)
 
     regions_onshore = snakemake.input.regions_onshore
@@ -7337,5 +7732,9 @@ if __name__ == "__main__":
     gas_prices = uk_settings_prepare["gas_prices"]
     if isinstance(gas_prices, dict):
         update_gas_prices(n, gas_prices)
+
+    northumbria_settings = uk_settings_prepare["northumbria_projects"]
+    if isinstance(northumbria_settings, dict):
+        add_planned_hydrogen_projects(n, northumbria_settings, regions_onshore, investment_year)
 
     n.export_to_netcdf(snakemake.output[0])

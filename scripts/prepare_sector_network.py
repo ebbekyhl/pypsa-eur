@@ -1501,19 +1501,20 @@ def add_ammonia(
         lifetime=costs.at["Haber-Bosch", "lifetime"],
     )
 
-    n.add(
-        "Link",
-        nodes,
-        suffix=" ammonia cracker",
-        bus0=spatial.ammonia.nodes,
-        bus1=nodes + " H2",
-        p_nom_extendable=True,
-        carrier="ammonia cracker",
-        efficiency=1 / cf_industry["MWh_NH3_per_MWh_H2_cracker"],
-        capital_cost=costs.at["Ammonia cracker", "capital_cost"]
-        / cf_industry["MWh_NH3_per_MWh_H2_cracker"],  # given per MW_H2
-        lifetime=costs.at["Ammonia cracker", "lifetime"],
-    )
+    if options["ammonia_cracker"]:
+        n.add(
+            "Link",
+            nodes,
+            suffix=" ammonia cracker",
+            bus0=spatial.ammonia.nodes,
+            bus1=nodes + " H2",
+            p_nom_extendable=True,
+            carrier="ammonia cracker",
+            efficiency=1 / cf_industry["MWh_NH3_per_MWh_H2_cracker"],
+            capital_cost=costs.at["Ammonia cracker", "capital_cost"]
+            / cf_industry["MWh_NH3_per_MWh_H2_cracker"],  # given per MW_H2
+            lifetime=costs.at["Ammonia cracker", "lifetime"],
+        )
 
     # Ammonia Storage
     n.add(
@@ -7170,10 +7171,11 @@ def reduce_dimensions_for_planned_projects(df_prepared):
 
     return df_reduced
 
-def add_planned_hydrogen_projects(n, northumbria_settings, regions_onshore, year):
+def add_planned_hydrogen_projects(n, planned_projects_settings, regions_onshore, year):
 
-    scenario = northumbria_settings["scenario"]
-    demand_level = northumbria_settings["demand_level"]
+    scenario = planned_projects_settings["scenario"]
+    demand_level = planned_projects_settings["demand_level"]
+    implementation_year = int(planned_projects_settings["implementation_year"])
 
     links = getattr(n, "links")
     stores = getattr(n, "stores")
@@ -7199,7 +7201,8 @@ def add_planned_hydrogen_projects(n, northumbria_settings, regions_onshore, year
         links_i = links.query("carrier == 'H2 pipeline' and (bus0 == @bus0 and bus1 == @bus1) or (bus0 == @bus1 and bus1 == @bus0)")
         links_lst = links_lst.append(links_i.index)
 
-        links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
+        if year == implementation_year:
+            links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
 
         # only set upper bound if scenario is network-upgrades-led
         if scenario == "network-upgrades-led":
@@ -7221,14 +7224,15 @@ def add_planned_hydrogen_projects(n, northumbria_settings, regions_onshore, year
         for i in range(len(df_h2_production.query("Category == @tech"))):
             bus = df_h2_production.query("Category == @tech").bus.iloc[i]
 
-            capacity_floor_i = df_h2_production["Capacity floor (GW)"][i]
-            capacity_ceil_i = df_h2_production["Capacity ceil (GW)"][i]
+            capacity_floor_i = df_h2_production.query("bus == @bus and Category == @tech")["Capacity floor (GW)"].item()
+            capacity_ceil_i = df_h2_production.query("bus == @bus and Category == @tech")["Capacity ceil (GW)"].item()
 
             links_i = links.query("carrier == @tech and bus1 == @bus")
             links_lst = links_lst.append(links_i.index)
 
-            # always set capacity floor 
-            links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
+            # set capacity floor 
+            if year == implementation_year:
+                links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
 
             # only set upper bound if scenario is network-upgrades-led
             if scenario == "network-upgrades-led":
@@ -7242,23 +7246,24 @@ def add_planned_hydrogen_projects(n, northumbria_settings, regions_onshore, year
     ######################################################################################################
 
     ########### Add H2 storage to the network ############
-    df_h2_production = df_reduced["h2_storage"]
-    for tech in df_h2_production.Category.unique():
+    df_h2_storage = df_reduced["h2_storage"]
+    for tech in df_h2_storage.Category.unique():
 
         stores_lst = pd.Index([])
         logger.info(f"Adding committed projects on {tech} in North East region")
         
-        for i in range(len(df_h2_production.query("Category == @tech"))):
-            bus = df_h2_production.query("Category == @tech").bus.iloc[i]
+        for i in range(len(df_h2_storage.query("Category == @tech"))):
+            bus = df_h2_storage.query("Category == @tech").bus.iloc[i]
 
-            capacity_floor_i = df_h2_production["Storage capacity (GWh)"][i]
-            capacity_ceil_i = df_h2_production["Storage capacity (GWh)"][i]
+            capacity_floor_i = df_h2_storage.query("bus == @bus and Category == @tech")["Storage capacity (GWh)"].item()
+            capacity_ceil_i = df_h2_storage.query("bus == @bus and Category == @tech")["Storage capacity (GWh)"].item()
 
             stores_i = stores.query("index.str.contains(@tech) and bus == @bus")
             stores_lst = stores_lst.append(stores_i.index)
 
-            # always set capacity floor 
-            stores.loc[stores_i.index, "e_nom_min"] = capacity_floor_i * 1e3 # MWh
+            # set capacity floor 
+            if year == implementation_year:
+                stores.loc[stores_i.index, "e_nom_min"] = capacity_floor_i * 1e3 # MWh
 
             # capacity ceilings are set according to geotechnical potentials
 
@@ -7281,14 +7286,15 @@ def add_planned_hydrogen_projects(n, northumbria_settings, regions_onshore, year
         for i in range(len(df_powerplant.query("Category == @tech"))):
             bus = df_powerplant.query("Category == @tech").bus.iloc[i]
 
-            capacity_floor_i = df_powerplant["Capacity floor (GW)"][i]
-            capacity_ceil_i = df_powerplant["Capacity ceil (GW)"][i]
+            capacity_floor_i = df_powerplant.query("bus == @bus and Category == @tech")["Capacity floor (GW)"].item()
+            capacity_ceil_i = df_powerplant.query("bus == @bus and Category == @tech")["Capacity ceil (GW)"].item()
 
             links_i = links.query("carrier == @tech and bus1 == @bus")
             links_lst = links_lst.append(links_i.index)
 
-            # always set capacity floor 
-            links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
+            # set capacity floor 
+            if year == implementation_year:
+                links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
 
             # only set upper bound if scenario is network-upgrades-led
             if scenario == "network-upgrades-led":
@@ -7733,8 +7739,8 @@ if __name__ == "__main__":
     if isinstance(gas_prices, dict):
         update_gas_prices(n, gas_prices)
 
-    northumbria_settings = uk_settings_prepare["northumbria_projects"]
-    if isinstance(northumbria_settings, dict):
-        add_planned_hydrogen_projects(n, northumbria_settings, regions_onshore, investment_year)
+    planned_h2_settings = uk_settings_prepare["planned_hydrogen_projects"]
+    if isinstance(planned_h2_settings, dict):
+        add_planned_hydrogen_projects(n, planned_h2_settings, regions_onshore, investment_year)
 
     n.export_to_netcdf(snakemake.output[0])

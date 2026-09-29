@@ -1709,7 +1709,7 @@ def extra_functionality(
     uk_settings_prepare = snakemake.params.uk_settings_prepare
     df_keadby = snakemake.input.keadby_h2_demand
     df_billingham = snakemake.input.billingham_h2_demand
-    if isinstance(uk_settings_prepare["northumbria_projects"], dict) and (int(investment_year) > int(base_year)):
+    if isinstance(uk_settings_prepare["planned_hydrogen_projects"], dict) and (int(investment_year) > int(base_year)):
         add_utilization_constraint_keadby(n, df_keadby, uk_settings_prepare, investment_year)
         add_ammonia_demand(n, df_billingham, uk_settings_prepare, investment_year)
 
@@ -1753,7 +1753,7 @@ def check_objective_value(n: pypsa.Network, solving: dict) -> None:
                 f"{expected_value} by more than {atol}."
             )
 
-def save_co2_constraint_duals(n: pypsa.Network) -> None:
+def save_duals(n: pypsa.Network) -> None:
     """
     Save dual values of CO2 constraints to CSV files.
     """
@@ -1763,9 +1763,15 @@ def save_co2_constraint_duals(n: pypsa.Network) -> None:
     # get constraints
     constraints = pd.Series(n.model.constraints)
     co2_constraints = constraints.loc[constraints.str.contains("co2", case=False)]
+    heating_UK_constraints = constraints.loc[constraints.str.contains("maximum_electric_heating_UK", case=False)]
+    keadby_constraints = constraints.loc[constraints.str.contains("keadby", case=False)]
+
+    constraints_to_save = pd.concat([co2_constraints, 
+                                     heating_UK_constraints, 
+                                     keadby_constraints])
 
     # loop over constraints and save duals
-    for constraint_name in co2_constraints:
+    for constraint_name in constraints_to_save:
         df = pd.Series(n.model.dual[constraint_name].values)
         coord = list(n.model.dual[constraint_name].coords)
 
@@ -1828,20 +1834,18 @@ def freeze_uk_wind_projects(n, dictionary):
 
 def add_utilization_constraint_keadby(n, df, uk_settings, year):
     year = int(year)
-    demand_level = uk_settings["northumbria_projects"]["demand_level"]
+    demand_level = uk_settings["planned_hydrogen_projects"]["demand_level"]
     df = pd.read_csv(df, index_col = 0)
 
     # H2 consumption at Keadby power plant in GWh LHV
     keadby_y_s = df.query("year == @year and scenario == @demand_level")
+    keadby_minimum_output = keadby_y_s["hydrogen_demand_gwh_lhv"].item() * 1e3 # converted to MWh hydrogen consumed
 
     buses = keadby_y_s["bus"].values
     carrier = "H2 turbine"
-
     uk_power_generation_links = n.links.query("bus1.isin(@buses) and carrier == @carrier")
-
     keadby_output = n.model.variables["Link-p"].loc[:, uk_power_generation_links.index].sum() # in units of MWh hydrogen consumed
-    keadby_minimum_output = keadby_y_s["hydrogen_demand_gwh_lhv"].item() * 1e3 # converted to MWh hydrogen consumed
-
+    
     n.model.add_constraints(-keadby_output + keadby_minimum_output <= 0, name="keadby_minimum_output_constraint_{year}")
 
 def add_ammonia_demand(n, df, uk_settings, year):
@@ -1892,7 +1896,8 @@ def add_heating_constraint_uk(n, base_year, factor):
     # Impose upper limit of electrified heating, corresponding to 2025 values
     maximum_electric_heating = factor * total_heat_load
 
-    uk_electrified_heating_t = n.model["Link-p"].loc[:, uk_electrified_heating].sum()
+    efficiency = 3 # assume avg. COP of 3
+    uk_electrified_heating_t = n.model["Link-p"].loc[:, uk_electrified_heating].sum() * 3
 
     # uk_electrified_heating_t >= maximum_electric_heating
     # 0 >= maximum_electric_heating - uk_electrified_heating_t
@@ -2170,7 +2175,7 @@ def solve_network(
         n.model.print_infeasibilities()
         raise RuntimeError("Solving status 'infeasible'. Infeasibilities computed.")
 
-    save_co2_constraint_duals(n)
+    save_duals(n)
 
 if __name__ == "__main__":
     if "snakemake" not in globals():

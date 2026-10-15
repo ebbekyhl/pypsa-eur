@@ -43,7 +43,14 @@ import yaml
 from pypsa.descriptors import get_activity_mask
 from pypsa.descriptors import get_switchable_as_dense as get_as_dense
 
-from scripts.prepare_sector_network import determine_emission_sectors, build_carbon_budget, add_co2limit
+from scripts.prepare_sector_network import (
+    CO2_INTENSITY_LVLS,
+    add_cbam_import_charge,
+    add_co2limit,
+    build_carbon_budget,
+    determine_emission_sectors,
+    split_components_by_co2_intensity_levels,
+)
 from scripts._benchmark import memory_logger
 from scripts._helpers import (
     PYPSA_V1,
@@ -631,16 +638,92 @@ def add_UK_deployment_rate_limits(n, deployment_rate_limits, base_year):
         n.model.add_constraints(lhs <= rhs, name=f"deployment_rate_limit_{tech}_{investment_year}")
         logger.info(f"Added deployment rate limit for UK {tech}: {rhs} MW / 5-year period")
 
-def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
+
+def _build_emission_transfer_expressions(
+    n: pypsa.Network,
+    local_co2_regions: list,
+    import_only_into: list | None = None,
+    uncapped: list = (),
+) -> dict:
     """
-    This function adds local net co2 emissions constraints, according to the limits 
-    specified in the "local_co2" variable in the config file. 
-    For the remaining countries not listed, a collective co2 emisssions constraint is 
-    added, with the limit equivalent to the carbon budget "co2_budget" defined in the 
-    config file. 
-    The current version excludes the region specified in the local_co2 from the collective 
+    Embodied emissions of cross-border nonclean electricity, per CO2 budget zone
+    (each local region, and "collective" for the rest apart from the uncapped
+    countries): sum_t w_t * intensity * p_t
+    over the nonclean class copies of the links importing into the zone, minus
+    those exporting from it. Each expression is added to the zone's CO2 constraint.
+
+    With ``import_only_into`` (the CBAM regions) this is a border adjustment: only
+    those of them with a local target take on the emissions of their nonclean
+    imports, and no zone is credited for exports. The symmetric transfer lets the
+    optimiser move emissions between budgets by choosing the labels of exports.
+    """
+    if "co2_class" not in n.links.columns:
+        return {}
+
+    cb = pd.DataFrame(
+        {
+            "intensity": n.links.co2_class.map(CO2_INTENSITY_LVLS),
+            "region0": n.links.bus0.map(n.buses.location).str[:2],
+            "region1": n.links.bus1.map(n.buses.location).str[:2],
+        }
+    )
+    cb = cb[(cb.intensity > 0) & (cb.region0 != cb.region1)]
+
+    if import_only_into is None:
+        zones = {r: [r] for r in local_co2_regions}
+        zones["collective"] = [
+            c
+            for c in snakemake.params.countries
+            if c not in local_co2_regions and c not in uncapped
+        ]
+    else:
+        zones = {r: [r] for r in local_co2_regions if r in import_only_into}
+
+    p = n.model["Link-p"]
+    weights = n.snapshot_weightings.generators
+    transfer_exprs = {}
+    for zone, countries in zones.items():
+        importing = cb.region1.isin(countries) & ~cb.region0.isin(countries)
+        exporting = cb.region0.isin(countries) & ~cb.region1.isin(countries)
+        intensity = cb.intensity[importing]
+        if import_only_into is None:
+            intensity = pd.concat([intensity, -cb.intensity[exporting]])
+        if intensity.empty:
+            continue
+        transfer_exprs[zone] = (p.loc[:, intensity.index] * weights * intensity).sum()
+        logger.info(
+            f"Emission transfer for '{zone}': {importing.sum()} import links, "
+            f"{len(intensity) - importing.sum()} export links."
+        )
+
+    return transfer_exprs
+
+
+def _link_countries(n: pypsa.Network) -> pd.Series:
+    """
+    Country of each link: that of the first of its buses (bus0, bus1, ...) located
+    at an AC node. Links between EU-level buses only (e.g. "EU oil") get NaN.
+    """
+    ac = n.buses.carrier == "AC"
+    country = n.buses.location.map(n.buses.country[ac])
+    ports = sorted(n.links.filter(regex=r"^bus\d+$"), key=lambda c: int(c[3:]))
+    return n.links[ports].apply(lambda bus: bus.map(country)).bfill(axis=1).iloc[:, 0]
+
+
+def add_split_co2_constraints(
+    n: pypsa.Network, local_co2: dict, uncapped: list = ()
+) -> None:
+    """
+    This function adds local net co2 emissions constraints, according to the limits
+    specified in the "local_co2" variable in the config file.
+    For the remaining countries not listed, a collective co2 emisssions constraint is
+    added, with the limit equivalent to the carbon budget "co2_budget" defined in the
+    config file.
+    The current version excludes the region specified in the local_co2 from the collective
     constraint. Later, we should make it an option of either including or excluding the region
     in the collective constraint.
+    Countries in ``uncapped`` are left out of every CO2 constraint (no carbon price).
+    Emissions are assigned to countries by the location of the emitting links.
     """
     co2_totals_file = snakemake.input.co2_totals
     co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0) # convert Mt to tCO2
@@ -651,7 +734,28 @@ def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
     nyears = nhours / 8760
 
     investment_year = int(snakemake.wildcards.planning_horizons)
-    local_co2_regions = list(local_co2.keys())
+
+    # Regions with a local target in this horizon; any other region joins the
+    # collective budget. Decided up front, so that the emission transfer below
+    # uses the same zones as the constraints (in a year without a GB target, GB
+    # is part of the collective and GB<->EU flows are no transfer at all).
+    local_co2_regions = []
+    for region in local_co2:
+        if region not in co2_totals.index or investment_year not in local_co2[region]:
+            logger.info(
+                f"No local CO2 target for {region} in {investment_year} (or no "
+                "co2_totals): it is part of the collective budget."
+            )
+            continue
+        local_co2_regions.append(region)
+
+    uncapped = list(uncapped)
+    if both := set(uncapped) & set(local_co2_regions):
+        raise ValueError(f"Countries {sorted(both)} have a local CO2 target and are uncapped.")
+    if unknown := set(uncapped) - set(snakemake.params.countries):
+        raise ValueError(f"Uncapped countries {sorted(unknown)} are not in the model.")
+    if uncapped:
+        logger.info(f"No CO2 constraint for {uncapped}.")
 
     expr = n.optimize.expressions.energy_balance(
                                                 bus_carrier="co2",
@@ -662,15 +766,35 @@ def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
     # component name ("Link"). Selecting on the wrong label raises KeyError.
     link_dim = "name" if "name" in expr.coords else "Link"
 
+    # Match emissions to countries by location; a match on names would count
+    # e.g. every CHP towards CH.
+    names = expr.coords[link_dim].to_index()
+    name_countries = names.map(_link_countries(n))
+
+    def located_in(countries):
+        return xr.DataArray(name_countries.isin(countries), coords={link_dim: names})
+
+    # CBAM: embodied emissions of cross-border nonclean electricity, as a border
+    # adjustment ("import_only"), symmetric between all zones (true) or off (false).
+    uk_settings_prepare = snakemake.params.uk_settings_prepare
+    transfer = uk_settings_prepare["cbam_emission_transfer"]
+    if transfer not in (True, False, "import_only"):
+        raise ValueError(
+            "cbam_emission_transfer must be true, false or 'import_only', "
+            f"not {transfer!r}."
+        )
+    transfer_exprs = {}
+    if uk_settings_prepare["cbam"] and transfer:
+        import_only_into = (
+            uk_settings_prepare["cbam_regions"] if transfer == "import_only" else None
+        )
+        transfer_exprs = _build_emission_transfer_expressions(
+            n, local_co2_regions, import_only_into, uncapped
+        )
+
     # add local CO2 emissions constraints
-    i = 0
     for region in local_co2_regions:
 
-        if (not region in co2_totals.index) or (investment_year not in local_co2[region].keys()):
-            local_co2_regions.remove(region)
-            logger.info(f"Region {region} specified in local_co2 not found in co2_totals, skipping local CO2 constraint for this region.")
-            continue
-        
         # calculating the net CO2 emissions allowance for the country
         limit = local_co2[region][investment_year]
 
@@ -679,10 +803,15 @@ def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
         logger.info(f"Net CO2 emissions cap for {region}: {net_co2_allowance}")
 
         # Add expression containing all CO2 sources and sinks attached to the country
-        mask = expr.coords[link_dim].str.contains(region)
+        mask = located_in([region])
         expr_c_group = expr.sel({link_dim: mask, "group": 0}) # group 0 corresponds to links
 
         lhs = expr_c_group.sum()
+
+        # Emission transfer: add net imported embodied emissions to this region.
+        if region in transfer_exprs:
+            lhs = lhs + transfer_exprs[region]
+
         rhs = net_co2_allowance
 
         n.model.add_constraints(
@@ -690,32 +819,25 @@ def add_split_co2_constraints(n: pypsa.Network, local_co2: dict) -> None:
             name="local co2 emissions constraint " + region ,
         )
 
-        if i == 0:
-            mask_merged = mask.copy()
-        else:
-            mask_merged = mask_merged | mask
-
-        i += 1
-
     # Add global co2 emissions constraint
+    outside = local_co2_regions + uncapped
     all_countries = snakemake.params.countries
-    collective = [x for x in all_countries if x not in local_co2_regions]
+    collective = [x for x in all_countries if x not in outside]
     limit = calculate_co2_limit(investment_year, options, collective)
     co2_1990 = co2_totals.loc[collective, sectors].sum().sum()
     net_co2_allowance = co2_1990 * limit * nyears
     logger.info(f"Collective CO2 emissions budget for {len(collective)} countries: {net_co2_allowance}")
 
-    # Exclude the regions already covered by a local constraint. If none were
-    # added, mask_merged was never assigned and the collective budget covers
-    # everything. Previously a bare except handled both this and the KeyError
-    # from the wrong dimension label, silently applying the collective budget to
-    # every region -- double-counting the ones with a local cap.
-    if i > 0:
-        expr_collective_group = expr.sel({link_dim: ~mask_merged, "group": 0})
-    else:
-        expr_collective_group = expr.sel({"group": 0})
+    # Exclude the regions with a local constraint and the uncapped ones; links at
+    # EU-level buses only stay in the collective.
+    expr_collective_group = expr.sel({link_dim: ~located_in(outside), "group": 0})
 
     lhs = expr_collective_group.sum()
+
+    # Emission transfer: add net imported embodied emissions to collective zone.
+    if "collective" in transfer_exprs:
+        lhs = lhs + transfer_exprs["collective"]
+
     rhs = net_co2_allowance
 
     n.model.add_constraints(
@@ -1611,146 +1733,220 @@ def add_flexible_egs_constraint(n):
     )
 
 
-def add_cbam_transmission_capacity_constraints(n: pypsa.Network, sns: pd.DatetimeIndex) -> None:
+def _capacity_owners(df: pd.DataFrame) -> pd.Series:
+    """capacity_owner of every CO2-class copy of the CBAM split, by copy."""
+    if "capacity_owner" not in df.columns:
+        return pd.Series(dtype=object)
+    owner = df.capacity_owner.fillna("")
+    owner = owner[owner != ""]
+    missing = set(owner) - set(df.index)
+    if missing:
+        raise ValueError(
+            "capacity_owner refers to components that do not exist: "
+            f"{sorted(missing)[:3]}"
+        )
+    return owner
+
+
+def _group_copies(var: linopy.Variable, group: pd.Series) -> linopy.LinearExpression:
+    """Sum a variable over the components ``group.index`` by the value of ``group``."""
+    dim = next(d for d in var.dims if d != "snapshot")
+    grouper = group.rename("shared_asset").rename_axis(dim)
+    return var.loc[:, group.index].groupby(grouper).sum()
+
+
+def _add_shared_bound(
+    n: pypsa.Network,
+    name: str,
+    total: linopy.LinearExpression,
+    owner_of: pd.Series,
+    component: str,
+    nom: str,
+    factor: pd.DataFrame,
+    sign: str,
+) -> None:
     """
-    Restrict the CO2 intensity copies of a transmission line to the rating of the
-    single physical cable they represent.
-
-    ``prepare_sector_network`` builds the electricity network of the CBAM study
-    in two steps that both inflate transmission capacity if left unconstrained:
-
-    * ``convert_HVAC_to_HVDC`` turns every AC line into a *forward* and a
-      *reverse* unidirectional DC link (``p_min_pu = 0``), so one physical line
-      becomes two links.
-    * ``duplicate_transmission`` then replicates every DC link once per CO2
-      intensity class, so imported electricity keeps its emission label across a
-      border.
-
-    A single AC line therefore ends up as up to ``2 * N`` independent DC links
-    (two directions x N classes), and an original HVDC interconnector as ``N``
-    (one bidirectional link x N classes). Each carries the full rating of the
-    original cable, so without coupling the split multiplies both the transfer
-    capability and -- under myopic foresight -- the capacity carried into the
-    next horizon. All copies of one cable are tied together here to behave as a
-    single asset:
-
-        sum_copies p_t <= p_max_pu_t * p_nom_owner    for every snapshot t
-        sum_copies p_t >= p_min_pu_t * p_nom_owner
-        p_nom_copy      = p_nom_owner                 (one capacity per cable)
-
-    The forward and reverse halves of a converted line share one envelope, so the
-    line cannot carry its full rating in both directions at once -- which would
-    otherwise let the model swap the clean/nonclean label of energy across a
-    border at no capacity cost. "owner" is the forward copy that kept the capital
-    cost, so an expansion is decided and paid for once but usable by every class.
+    Bound the sum over the class copies of each shared asset by the capacity of
+    its owner, ``total[asset, t] <sign> factor[t, asset] * nom[owner_of[asset]]``,
+    using the capacity variable of extendable owners.
     """
-    links = n.links
+    static = n.components[component].static
+    extendable = static[f"{nom}_extendable"][owner_of.values].values
+    for assets, kind in [
+        (owner_of.index[extendable], "ext"),
+        (owner_of.index[~extendable], "fix"),
+    ]:
+        if assets.empty:
+            continue
+        owners = owner_of[assets].values
+        lhs = total.sel(shared_asset=assets.values)
+        f = factor[assets].rename_axis(index="snapshot", columns="shared_asset")
+        if kind == "ext":
+            cap = n.model[f"{component}-{nom}"].loc[owners]
+            cap = cap.rename({cap.dims[0]: "shared_asset"})
+            lhs = lhs - cap.assign_coords(shared_asset=assets.values) * xr.DataArray(f)
+            rhs = 0
+        else:
+            rhs = xr.DataArray(f * static[nom][owners].values)
+        n.model.add_constraints(
+            lhs, sign, rhs, name=f"{component}-cbam_shared_{name}_{kind}"
+        )
 
-    if "capacity_owner" not in links.columns:
+
+def _tie_shared_capacity(
+    n: pypsa.Network, component: str, nom: str, owner: pd.Series
+) -> None:
+    """
+    Let every extendable class copy report the capacity of its owner. Otherwise
+    the capacity of the copies, which carry no investment cost, would be free
+    within its bounds and the solved network would report arbitrary values.
+    """
+    extendable = n.components[component].static[f"{nom}_extendable"]
+    copies = owner.index[owner.index != owner.values]
+    owners = owner[copies].values
+    mismatch = copies[extendable[copies].values != extendable[owners].values]
+    if not mismatch.empty:
+        raise ValueError(
+            f"{component} class copies differ from their capacity owner in "
+            f"{nom}_extendable: {list(mismatch[:3])}"
+        )
+    copies = copies[extendable[copies].values]
+    if copies.empty:
         return
-
-    dup = links[links.capacity_owner.fillna("").ne("")]
-    if dup.empty:
-        return
-
-    p = n.model["Link-p"]
-    dim = "name" if "name" in p.dims else "Link"
-    # PyPSA <1 puts the capacity variables on their own "Link-ext" dimension.
-    rename = {} if PYPSA_V1 else {"Link-ext": dim}
-
-    # Physical cable each copy belongs to: strip the CO2-level suffix, then the
-    # "_reverse" marker, so both emission classes and both unidirectional halves
-    # of a converted AC line collapse onto one cable id.
-    lvl_suffix = " " + dup["co2_class"].astype(str)
-    base = pd.Series(
-        [ix[: -len(s)] if s and ix.endswith(s) else ix
-         for ix, s in zip(dup.index, lvl_suffix)],
-        index=dup.index,
+    cap = n.model[f"{component}-{nom}"]
+    lhs = cap.loc[copies] - cap.loc[owner[copies].values].assign_coords(
+        {cap.dims[0]: copies.values}
     )
-    reverse = base.str.endswith("_reverse")
-    cable = base.where(~reverse, base.str.slice(0, -len("_reverse")))
+    n.model.add_constraints(lhs == 0, name=f"{component}-cbam_shared_capacity")
 
-    # Representative owner per cable = the forward capacity owner (a copy that is
-    # its own capacity_owner and not a reverse half). Its p_nom and p_max/min_pu
-    # define the shared envelope.
-    is_owner = dup.index.values == dup.capacity_owner.values
-    fwd_owner = dup.index[is_owner & (~reverse).values]
-    cable_of_owner = cable[fwd_owner]
-    if cable_of_owner.duplicated().any() or not set(cable.unique()) <= set(cable_of_owner):
-        logger.warning(
-            "Could not match every duplicated DC copy to exactly one forward "
-            "capacity owner, skipping the joint transmission capacity constraint."
+
+def add_cbam_shared_capacity_constraints(
+    n: pypsa.Network, sns: pd.DatetimeIndex
+) -> None:
+    """
+    Keep the CO2-class copies that the CBAM split makes of an asset (DC links,
+    electricity storage, hydrogen) within the rating of the one physical asset.
+
+    Every copy points to the first class's copy ("capacity_owner"), which alone
+    carries the investment cost. For every asset and snapshot t:
+
+        links:          sum_copies p_t          <= p_max_pu_t * p_nom_owner
+        stores:         sum_copies e_t          <= e_max_pu_t * e_nom_owner
+        storage units:  sum_copies p_dispatch_t <= p_max_pu_t * p_nom_owner
+                        sum_copies p_store_t    <= -p_min_pu_t * p_nom_owner
+                        sum_copies soc_t        <= max_hours * p_nom_owner
+        extendable:     nom_copy = nom_owner
+
+    Both directions of a cable ("<line>"/"<line>_reverse" of a converted AC line,
+    "<link>"/"<link>-reversed" of a lossy HVDC link) share one envelope, so that
+    the classes cannot swap labels across a border without using the cable. Link
+    copies are unidirectional (the split refuses others), so no lower bound is
+    needed; stores get one where a copy can go negative.
+    """
+    # Links: one envelope per physical cable or converter, over both directions.
+    owner = _capacity_owners(n.links)
+    n_links = 0
+    if not owner.empty:
+        co2_class = n.links.co2_class[owner.index]
+        base = pd.Series(
+            [name.removesuffix(" " + lvl) for name, lvl in co2_class.items()],
+            index=owner.index,
         )
-        return
-    owner_of_cable = pd.Series(fwd_owner, index=cable_of_owner.values)  # cable -> owner
-    cables = owner_of_cable.index
-
-    # Sum every copy of a cable (both directions, both classes) into one flow.
-    grp = cable.copy()
-    grp.index.name = dim
-    grp.name = "physical_cable"
-    flow = p.loc[:, dup.index].groupby(grp).sum()  # dims: (physical_cable, snapshot)
-
-    owners = owner_of_cable.loc[cables]
-    p_max_pu = get_as_dense(n, "Link", "p_max_pu", sns)[owners.values]
-    p_min_pu = get_as_dense(n, "Link", "p_min_pu", sns)[owners.values]
-    p_max_pu.columns = p_min_pu.columns = cables  # relabel by cable
-
-    def as_da(df: pd.DataFrame) -> xr.DataArray:
-        return xr.DataArray(
-            df.values,
-            dims=["snapshot", "physical_cable"],
-            coords={"snapshot": sns, "physical_cable": df.columns.values},
+        reverse = base.str.endswith(("_reverse", "-reversed"))
+        asset = base.str.replace(r"(_reverse|-reversed)$", "", regex=True)
+        # The owner of the forward half sets the envelope (rating, p_max_pu).
+        forward_owners = owner.index[(owner.index == owner.values) & ~reverse.values]
+        owner_of = pd.Series(forward_owners, index=asset[forward_owners].values)
+        if owner_of.index.duplicated().any() or not set(asset) <= set(owner_of.index):
+            raise ValueError(
+                "Could not match every CO2-class link copy to exactly one forward "
+                "capacity owner; the shared capacity constraints would be incomplete."
+            )
+        total = _group_copies(n.model["Link-p"], asset)
+        p_max_pu = get_as_dense(n, "Link", "p_max_pu", sns)[owner_of.values]
+        p_max_pu.columns = owner_of.index
+        _add_shared_bound(
+            n, "flow_upper", total, owner_of, "Link", "p_nom", p_max_pu, "<="
         )
+        _tie_shared_capacity(n, "Link", "p_nom", owner)
+        n_links = len(owner_of)
 
-    extendable = links.p_nom_extendable[owners.values].values
-    ext_cables, fix_cables = cables[extendable], cables[~extendable]
+    # Stores: the energy of all compartments within the capacity of the store.
+    owner = _capacity_owners(n.stores)
+    n_stores = 0
+    if not owner.empty:
+        assets = pd.Index(owner.unique())
+        owner_of = pd.Series(assets, index=assets)
+        total = _group_copies(n.model["Store-e"], owner)
+        e_max_pu = get_as_dense(n, "Store", "e_max_pu", sns)[assets]
+        _add_shared_bound(
+            n, "energy_upper", total, owner_of, "Store", "e_nom", e_max_pu, "<="
+        )
+        e_min_pu = get_as_dense(n, "Store", "e_min_pu", sns)
+        negative = (e_min_pu[owner.index] < 0).any().groupby(owner).any()
+        lower = owner_of[negative[assets].values]
+        if not lower.empty:
+            _add_shared_bound(
+                n, "energy_lower", total, lower, "Store", "e_nom", e_min_pu, ">="
+            )
+        _tie_shared_capacity(n, "Store", "e_nom", owner)
+        n_stores = len(assets)
 
-    if len(ext_cables):
-        p_nom = n.model["Link-p_nom"].rename(rename).loc[owner_of_cable[ext_cables].values]
-        p_nom = p_nom.rename({dim: "physical_cable"}).assign_coords(physical_cable=ext_cables.values)
-        lhs = flow.sel(physical_cable=ext_cables.values)
-        n.model.add_constraints(
-            lhs - p_nom * as_da(p_max_pu[ext_cables]) <= 0,
-            name="Link-cbam_joint_capacity_upper_ext",
-        )
-        n.model.add_constraints(
-            lhs - p_nom * as_da(p_min_pu[ext_cables]) >= 0,
-            name="Link-cbam_joint_capacity_lower_ext",
-        )
-
-    if len(fix_cables):
-        p_nom = links.p_nom[owner_of_cable[fix_cables].values].values
-        lhs = flow.sel(physical_cable=fix_cables.values)
-        n.model.add_constraints(
-            lhs <= as_da(p_max_pu[fix_cables] * p_nom),
-            name="Link-cbam_joint_capacity_upper_fix",
-        )
-        n.model.add_constraints(
-            lhs >= as_da(p_min_pu[fix_cables] * p_nom),
-            name="Link-cbam_joint_capacity_lower_fix",
-        )
-
-    # Let every non-owner copy of an extendable cable report the owner's capacity.
-    # Without this the capacity variables of the copies that carry no capital cost
-    # are free within their bounds, and myopic foresight would hand those
-    # arbitrary values to the next planning horizon as existing capacity.
-    others = dup.index[dup.index.values != dup.capacity_owner.values]
-    others = others[links.p_nom_extendable[others].values]
-    matched = dup.loc[others, "capacity_owner"]
-    keep = links.p_nom_extendable[matched.values].values
-    others, matched = others[keep], matched[keep]
-
-    if len(others):
-        p_nom = n.model["Link-p_nom"].rename(rename)
-        n.model.add_constraints(
-            p_nom.loc[others] - p_nom.loc[matched.values] == 0,
-            name="Link-cbam_shared_capacity",
-        )
+    # Storage units: dispatch, pumping and state of charge of all compartments
+    # within the rating and the reservoir of the unit.
+    owner = _capacity_owners(n.storage_units)
+    n_units = 0
+    if not owner.empty:
+        assets = pd.Index(owner.unique())
+        owner_of = pd.Series(assets, index=assets)
+        p_max_pu = get_as_dense(n, "StorageUnit", "p_max_pu", sns)[assets]
+        p_min_pu = get_as_dense(n, "StorageUnit", "p_min_pu", sns)[assets]
+        max_hours = pd.DataFrame(1.0, index=sns, columns=assets)
+        max_hours *= n.storage_units.max_hours[assets]
+        for var, name, factor in [
+            ("p_dispatch", "dispatch", p_max_pu),
+            ("p_store", "store", -p_min_pu),
+            ("state_of_charge", "state_of_charge", max_hours),
+        ]:
+            total = _group_copies(n.model[f"StorageUnit-{var}"], owner)
+            _add_shared_bound(
+                n, name, total, owner_of, "StorageUnit", "p_nom", factor, "<="
+            )
+        _tie_shared_capacity(n, "StorageUnit", "p_nom", owner)
+        n_units = len(assets)
 
     logger.info(
-        f"Added joint capacity constraints for {len(cables)} physical DC cables "
-        f"({len(dup)} duplicated links)."
+        f"CBAM: CO2-class copies share the capacity of {n_links} links, {n_stores} "
+        f"stores and {n_units} storage units."
+    )
+
+
+def add_cbam_rooftop_constraints(n: pypsa.Network, sns: pd.DatetimeIndex) -> None:
+    """
+    Cap the upward flow of the distribution grid into the clean layer at the
+    concurrent output of rooftop PV on the same low-voltage bus
+    (prepare_sector_network.label_rooftop_pv_backflow), so that only PV generation
+    is labelled clean, not grid power that low-voltage storage passes back up.
+    """
+    links = n.links
+    upward = links.index[
+        (links.carrier == "electricity distribution grid")
+        & links.bus1.str.endswith(" clean")
+    ]
+    if upward.empty:
+        return
+    # all vintages of the distribution grid at a bus together
+    lv_bus = links.bus0[upward]
+    buses = lv_bus.unique()
+    rooftop = n.generators[
+        (n.generators.carrier == "solar rooftop") & n.generators.bus.isin(buses)
+    ]
+    pv = _group_copies(n.model["Generator-p"], rooftop.bus).sel(shared_asset=buses)
+    up = _group_copies(n.model["Link-p"], lv_bus).sel(shared_asset=buses)
+    n.model.add_constraints(up - pv <= 0, name="Link-cbam_rooftop_backflow")
+    logger.info(
+        f"CBAM: capped the upward distribution grid flow at {len(buses)} low-voltage "
+        "buses at their rooftop PV output."
     )
 
 
@@ -1914,13 +2110,14 @@ def extra_functionality(
 
     if isinstance(config["local_co2"], dict):
         logger.info("Adding local CO2 constraint.")
-        add_split_co2_constraints(n, config["local_co2"])
+        add_split_co2_constraints(
+            n, config["local_co2"], getattr(snakemake.params, "co2_uncapped", [])
+        )
 
     uk_settings_prepare = snakemake.params.uk_settings_prepare
-    if uk_settings_prepare.get("cbam", False) and uk_settings_prepare.get(
-        "cbam_shared_transmission_capacity", True
-    ):
-        add_cbam_transmission_capacity_constraints(n, snapshots)
+    if uk_settings_prepare.get("cbam", False):
+        add_cbam_shared_capacity_constraints(n, snapshots)
+        add_cbam_rooftop_constraints(n, snapshots)
 
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality
@@ -2006,6 +2203,72 @@ def add_load_shedding(n):
         capital_cost = 0)
 
 
+def warn_unservable_loads(n):
+    """
+    Warn about loads that nothing but load shedding can supply.
+
+    A bus counts as supplied if a generator other than load shedding, a store that
+    can deliver net energy, an inflow or the atmosphere feeds it, or a usable link
+    (extendable or p_nom > 0) whose inputs are all supplied. Load shedding at
+    1e5 EUR/MWh otherwise hides such gaps (it hid the base-year freeze of the only
+    medium-heat and methanol supply).
+    """
+    gens = n.generators[n.generators.carrier != "load"]
+    p_max_pu = get_as_dense(n, "Generator", "p_max_pu")[gens.index].max()
+    usable = ((gens.p_nom > 0) | gens.p_nom_extendable) & (p_max_pu > 0)
+    supplied = set(gens.bus[usable])
+
+    stores = n.stores
+    can_deliver = (stores.e_min_pu < 0) | ((stores.e_initial > 0) & ~stores.e_cyclic)
+    supplied |= set(stores.bus[can_deliver])
+    inflow = n.storage_units_t.inflow
+    if not inflow.empty:
+        supplied |= set(n.storage_units.bus[inflow.columns[inflow.sum() > 0]])
+    supplied |= set(n.buses.index[n.buses.index.str.contains("co2 atmosphere")])
+
+    # (input buses, output buses) of every usable link and line direction
+    links = n.links[(n.links.p_nom > 0) | n.links.p_nom_extendable]
+    p_max_pu = get_as_dense(n, "Link", "p_max_pu")[links.index].max()
+    p_min_pu = get_as_dense(n, "Link", "p_min_pu")[links.index].min()
+    ports = [c[3:] for c in links.columns if c[:3] == "bus" and c[3:].isdigit()]
+    ports.remove("0")
+    edges = []
+    for name, link in links[p_max_pu > 0].iterrows():
+        inputs, outputs = [link.bus0], []
+        for port in ports:
+            bus = link[f"bus{port}"]
+            efficiency = link["efficiency" if port == "1" else f"efficiency{port}"]
+            if not isinstance(bus, str) or not bus:
+                continue
+            if efficiency > 0:
+                outputs.append(bus)
+            elif efficiency < 0:
+                inputs.append(bus)
+        edges.append((inputs, outputs))
+        if p_min_pu[name] < 0:
+            edges.append(([link.bus1], [link.bus0]))
+    lines = n.lines[(n.lines.s_nom > 0) | n.lines.s_nom_extendable]
+    for bus0, bus1 in zip(lines.bus0, lines.bus1):
+        edges += [([bus0], [bus1]), ([bus1], [bus0])]
+
+    changed = True
+    while changed:
+        changed = False
+        for inputs, outputs in edges:
+            if supplied.issuperset(inputs) and not supplied.issuperset(outputs):
+                supplied.update(outputs)
+                changed = True
+
+    weightings = n.snapshot_weightings.generators
+    demand = get_as_dense(n, "Load", "p_set").mul(weightings, axis=0).sum()
+    stranded = demand[(demand > 0) & ~n.loads.bus.isin(supplied)]
+    if not stranded.empty:
+        by_carrier = stranded.groupby(n.loads.carrier).sum().div(1e6).round(2)
+        logger.warning(
+            f"Loads that only load shedding can supply [TWh]: {by_carrier.to_dict()}"
+        )
+
+
 def freeze_uk_wind_projects(n, dictionary):
     investment_year = int(snakemake.wildcards.planning_horizons)
 
@@ -2067,16 +2330,47 @@ def freeze_uk_capacities(n, base_year):
                       "molten salt",
                       "liquid air",
                       "biomass to liquid",
-                      "solid biomass for industry heat",
                       "Sabatier",
                       "Fischer-Tropsch",
                       "NH3 turbine"]
-    
+    # NB. "solid biomass for industry heat" is not on the list: it is the only
+    # supply of "medium heat for industry" (today's industrial use of solid
+    # biomass); its CC variant stays frozen through "CC".
+    # Matched by the "methanol" substring but not technologies: the links that
+    # deliver methanol to its (fixed) industry and shipping demand.
+    not_emerging = ["industry methanol", "shipping methanol"]
+
     for et in emerging_techs:
         condition = "carrier.str.contains(@et)" if not et == "CC" else "carrier.str.endswith(@et)"
         df = getattr(n, "links")
         df_carrier = df.query(condition)
+        df_carrier = df_carrier[~df_carrier.carrier.isin(not_emerging)]
         df.loc[df_carrier.index, "p_nom_extendable"] = False
+
+    # Every methanol production route is frozen above as emerging, and today's
+    # methanol (made from natural gas) is not represented. Supply the base year's
+    # methanol demand from an exogenous fossil methanol supply on each methanol
+    # bus instead. Nothing else in the base year can use methanol, so its price
+    # only adds a constant cost; the combustion CO2 is booked by the delivery
+    # links, the upstream CO2 of making methanol from gas is neglected. With an
+    # infinite lifetime it is not carried into the next horizon by add_brownfield.
+    methanol_buses = n.buses.index[n.buses.carrier == "methanol"]
+    if not methanol_buses.empty:
+        n.add(
+            "Carrier",
+            "fossil methanol supply",
+            color="#b35900",
+            nice_name="Fossil methanol supply",
+        )
+        n.add(
+            "Generator",
+            methanol_buses,
+            suffix=" fossil methanol supply",
+            bus=methanol_buses,
+            carrier="fossil methanol supply",
+            marginal_cost=80.0,  # EUR/MWh, about 440 EUR/t (LHV 5.5 MWh/t)
+            p_nom_extendable=True,
+        )
 
     # add load shedding everywhere
     add_load_shedding(n)
@@ -2125,6 +2419,8 @@ def freeze_uk_capacities(n, base_year):
         df.loc[element_tf_special.index, f"{att}_nom"] = df.loc[element_tf_special.index, f"{att}_nom"] + df.loc[element_tf_special.index, f"{att}_nom_min"]
         
         df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
+
+    warn_unservable_loads(n)
 
 def remove_ie_from_network(n):
     """ 
@@ -2336,6 +2632,9 @@ if __name__ == "__main__":
         remove_storage(n, storage_to_remove)
 
     if not isinstance(snakemake.config["local_co2"], dict):
+        if getattr(snakemake.params, "co2_uncapped", []):
+            # the CO2Limit global constraint counts every country's emissions
+            raise ValueError("co2_uncapped needs local_co2 (the split CO2 constraints).")
         countries = snakemake.params.countries
         co2_budget = snakemake.params.co2_budget
         options = snakemake.params.sector
@@ -2370,6 +2669,45 @@ if __name__ == "__main__":
             countries,
             nyears,
             limit,
+        )
+
+    # CBAM: split the electricity network by CO2 intensity class and add the
+    # border charge. The split runs on the complete network of the horizon,
+    # greenfield options and brownfield fleet alike, and after every edit above,
+    # so the class copies inherit them (e.g. the base-year capacity freeze). The
+    # networks written between rules stay unsplit; add_brownfield folds the solved
+    # network back (collapse_co2_split).
+    uk_settings_prepare = snakemake.params.uk_settings_prepare
+    if uk_settings_prepare["cbam"]:
+        cbam_split = uk_settings_prepare["cbam_split"]
+        basis = uk_settings_prepare["cbam_charge_basis"]
+        if not cbam_split and (
+            basis == "nonclean" or uk_settings_prepare["cbam_emission_transfer"]
+        ):
+            raise ValueError(
+                "A CBAM charge on nonclean imports and the emission transfer need "
+                "cbam_split: true."
+            )
+        if cbam_split:
+            split_components_by_co2_intensity_levels(
+                n,
+                shared_capacity=uk_settings_prepare["cbam_shared_transmission_capacity"],
+                split_hydrogen=uk_settings_prepare["cbam_split_hydrogen"],
+            )
+        # CBAM certificate price, net of the carbon price paid by each exporter.
+        investment_year = int(snakemake.wildcards.planning_horizons)
+        deduction = {
+            country: get(paid, investment_year)
+            for country, paid in uk_settings_prepare["cbam_deduction"].items()
+        }
+        add_cbam_import_charge(
+            n,
+            uk_settings_prepare["cbam_regions"],
+            get(uk_settings_prepare["cbam_price"], investment_year),
+            basis=basis,
+            default_intensity=uk_settings_prepare["cbam_default_intensity"],
+            exempt=uk_settings_prepare["cbam_exempt"],
+            deduction=deduction,
         )
 
     logging_frequency = snakemake.config.get("solving", {}).get(

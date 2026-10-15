@@ -22,6 +22,7 @@ from scripts._helpers import (
 )
 from scripts.add_electricity import flatten, sanitize_carriers
 from scripts.add_existing_baseyear import add_build_year_to_new_assets
+from scripts.prepare_sector_network import collapse_co2_split
 
 logger = logging.getLogger(__name__)
 idx = pd.IndexSlice
@@ -612,6 +613,11 @@ if __name__ == "__main__":
     add_build_year_to_new_assets(n, year)
 
     n_p = pypsa.Network(snakemake.input.network_p)
+
+    # Under CBAM the previous horizon was solved on a copy split by CO2 intensity
+    # (solve_network); fold it back so that the brownfield carried forward is a
+    # plain network again -- the next solve splits it afresh. No-op otherwise.
+    collapse_co2_split(n_p)
 
     update_heat_pump_efficiency(n, n_p, year)
 

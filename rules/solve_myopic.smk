@@ -132,6 +132,7 @@ rule solve_sector_network_myopic:
         planning_horizons=config_provider("scenario", "planning_horizons"),
         sector=config_provider("sector"),
         local_co2=config_provider("local_co2"),
+        co2_uncapped=config_provider("co2_uncapped", default=[]),
         solving=config_provider("solving"),
         foresight=config_provider("foresight"),
         co2_sequestration_potential=config_provider(

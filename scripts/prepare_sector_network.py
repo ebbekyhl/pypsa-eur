@@ -27,6 +27,7 @@ from cluster_countries import map_countries_to_regions, calculate_centroids
 from scripts._helpers import (
     configure_logging,
     get,
+    sanitize_custom_columns,
     set_scenario_config,
     update_config_from_wildcards,
 )
@@ -6901,6 +6902,57 @@ def convert_HVAC_to_HVDC(n):
 
     return n
 
+# CO2 intensity classes of the CBAM split [tCO2/MWh_el]: one CO2-free class and one
+# shared by every emitting source. The first class owns duplicated capacities.
+CO2_INTENSITY_LVLS = {
+    "clean": 0,
+    "nonclean": 0.35,  # tCO2/MWh_el (gas at ~0.57 CCGT efficiency)
+}
+
+def _share_capacity_across_levels(n, component, originals, co2_intensity_lvls):
+    """
+    Make the per-level copies "<name> <lvl>" of each original asset compartments of
+    one physical asset: the first level's copy keeps the capital cost, initial
+    energy and inflow, every copy points to it via "capacity_owner", and
+    solve_network.add_cbam_shared_capacity_constraints caps their sum at its rating.
+    """
+    originals = pd.Index(originals)
+    if originals.empty:
+        return
+
+    c = n.components[component]
+    df = c.static
+    lvls = list(co2_intensity_lvls)
+    minimum = "e_min_pu" if component == "Store" else "p_min_pu"
+
+    for col in ["capacity_owner", "co2_class"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    owners = (originals + " " + lvls[0]).values
+    for k, lvl in enumerate(lvls):
+        copies = originals + " " + lvl
+        df.loc[copies, "capacity_owner"] = owners
+        df.loc[copies, "co2_class"] = lvl
+
+        varying = c.dynamic[minimum]
+        varying = varying[varying.columns.intersection(copies)]
+        if (df.loc[copies, minimum] > 0).any() or (varying > 0).any().any():
+            raise NotImplementedError(
+                f"{component}s duplicated per CO2 class must not have a positive "
+                f"{minimum}: it would be imposed on every class copy."
+            )
+
+        if k == 0:
+            continue
+        df.loc[copies, "capital_cost"] = 0.0
+        if component == "Store":
+            df.loc[copies, "e_initial"] = 0.0
+        elif component == "StorageUnit":
+            df.loc[copies, "state_of_charge_initial"] = 0.0
+            inflow = c.dynamic["inflow"]
+            inflow.drop(columns=inflow.columns.intersection(copies), inplace=True)
+
 def split_buses(n, co2_intensity_lvls, buses_primary):
     # Duplicate buses for the nonclean and clean energy carriers
     buses = getattr(n, "buses")
@@ -6934,14 +6986,13 @@ def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary):
     layer and a nonclean battery only the nonclean layer, so the CO2 label is
     preserved through storage - clean power is buffered and released as clean,
     nonclean as nonclean, with no cross-layer blending and no way to relabel one
-    class as the other. Every layer's store/charger/discharger is independent and
-    extendable, so both clean AND nonclean electricity can be stored (a single
-    clean-only store would give the clean layer time-shifting flexibility the
-    nonclean layer lacks and bias flows towards clean).
+    class as the other. Both clean AND nonclean electricity can be stored (a
+    single clean-only store would give the clean layer time-shifting flexibility
+    the nonclean layer lacks and bias flows towards clean).
 
-    New per-layer names carry the level suffix, e.g. "<node> battery clean" /
-    "<node> battery clean charger". add_existing_baseyear / add_brownfield pin
-    existing battery capacity onto the clean copy (see those scripts).
+    The per-layer copies are compartments of one physical asset and share its
+    capacity (_share_capacity_across_levels). New names append the level suffix,
+    e.g. "<node> battery charger-2030 clean" on bus "<node> battery clean".
 
     Conversion carriers that merely resemble electricity storage because they have
     an AC charger + discharger (H2 via electrolysis/fuel cell, NH3) are left
@@ -7019,12 +7070,65 @@ def split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary):
     # Drop the originals (common-bus store, charger, discharger, and store bus).
     stores.drop(index=elec_stores, inplace=True)
     links.drop(index=list(chargers) + list(dischargers), inplace=True)
-    buses.drop(index=elec_storage_buses, inplace=True)
+    # Keep store buses still used by other components (the base-year load shedding),
+    # cut off from their store, charger and discharger.
+    in_use = set()
+    for c in n.components:
+        for col in [k for k in c.static.columns if k.startswith("bus")]:
+            in_use |= set(c.static[col])
+    buses.drop(index=elec_storage_buses.difference(in_use), inplace=True)
+
+    # One physical charger, discharger and store shared by the class copies.
+    _share_capacity_across_levels(n, "Store", elec_stores, co2_intensity_lvls)
+    _share_capacity_across_levels(n, "Link", chargers, co2_intensity_lvls)
+    _share_capacity_across_levels(n, "Link", dischargers, co2_intensity_lvls)
 
     n_lvls = len(list(co2_intensity_lvls))
     logger.info(
         f"Duplicated {len(elec_stores)} electricity stores across {n_lvls} CO2 "
-        f"layers ({len(chargers)} chargers, {len(dischargers)} dischargers each)."
+        f"layers ({len(chargers)} chargers, {len(dischargers)} dischargers each), "
+        f"sharing each asset's capacity."
+    )
+
+def split_and_duplicate_storage_units(n, co2_intensity_lvls, buses_primary):
+    """
+    Duplicate grid-charged storage units (pumped hydro) once per CO2 layer, as
+    split_and_duplicate_storage does for stores: one compartment per class on the
+    matching layer bus, sharing the unit's rating and reservoir. Units that cannot
+    charge from the grid (reservoir hydro) are left to distribute_generators.
+    """
+    su = n.storage_units
+    p_min_pu_t = n.storage_units_t.p_min_pu
+    pumped = p_min_pu_t.columns[(p_min_pu_t < 0).any()]
+    pumps = (su.p_min_pu < 0) | su.index.isin(pumped)
+    units = su.index[su.bus.isin(buses_primary) & pumps]
+    if units.empty:
+        logger.info("No grid-charged storage units to duplicate across CO2 layers.")
+        return
+
+    static = su.loc[units]
+    series = {
+        attr: df[df.columns.intersection(units)]
+        for attr, df in n.storage_units_t.items()
+        if len(df.columns.intersection(units))
+    }
+    for lvl in co2_intensity_lvls:
+        copies = static.rename(index=lambda x: x + " " + lvl)
+        copies["bus"] = copies.bus + " " + lvl
+        n.add("StorageUnit", copies.index, **copies)
+        # only some units may have a given time series, so attach them by column
+        for attr, df in series.items():
+            n.storage_units_t[attr] = pd.concat(
+                [n.storage_units_t[attr], df.add_suffix(" " + lvl)], axis=1
+            )
+    n.remove("StorageUnit", units)
+
+    _share_capacity_across_levels(n, "StorageUnit", units, co2_intensity_lvls)
+
+    logger.info(
+        f"Duplicated {len(units)} grid-charged storage units across "
+        f"{len(list(co2_intensity_lvls))} CO2 layers, sharing each unit's capacity: "
+        f"{static.carrier.value_counts().to_dict()}."
     )
 
 def distribute_generators(n, generators_co2_lvls, buses_primary):
@@ -7036,18 +7140,51 @@ def distribute_generators(n, generators_co2_lvls, buses_primary):
         ii.loc[ii.index, bus_type] = ii[bus_type] + " " + c.carrier.replace(generators_co2_lvls)
         c.loc[ii.index, bus_type] = ii[bus_type]
 
+def label_rooftop_pv_backflow(n, co2_intensity_lvls, buses_primary):
+    """
+    Let the distribution grid feed power back up into the clean layer at nodes
+    with rooftop PV, instead of into the common bus.
+
+    Rooftop PV sits on the low-voltage bus and is not labelled by
+    distribute_generators. Its surplus would otherwise reach only the common bus,
+    which serves the node's own demand, but no transmission, export or grid
+    storage. solve_network.add_cbam_rooftop_constraints caps the upward flow at the
+    concurrent rooftop PV output of the same low-voltage bus, so that only PV
+    generation is labelled clean (not, say, grid power cycled through home
+    batteries).
+    """
+    clean = min(co2_intensity_lvls, key=co2_intensity_lvls.get)
+    links = n.links
+    rooftop_buses = n.generators.bus[n.generators.carrier == "solar rooftop"].unique()
+    upward = links.index[
+        (links.carrier == "electricity distribution grid")
+        & links.bus0.isin(rooftop_buses)
+        & links.bus1.isin(buses_primary)
+    ]
+    if upward.empty and len(rooftop_buses):
+        logger.warning(
+            "No upward distribution grid links found for rooftop PV: its surplus can "
+            "only serve demand at its own node."
+        )
+    links.loc[upward, "bus1"] = links.loc[upward, "bus1"] + " " + clean
+    logger.info(
+        f"Routed {len(upward)} upward distribution grid links into the clean layer."
+    )
+
 def duplicate_transmission(n, co2_intensity_lvls, shared_capacity=True):
     """
     Duplicate the HVDC network once per CO2 intensity level.
 
     Every copy connects the bus layer of its own emission class, which is what
     makes the CO2 intensity of electricity observable at the importing side of a
-    border. The copies are, however, only accounting layers of one physical
-    cable: with "shared_capacity", the copy of the first level owns the capacity
-    of the original link and is the only one charged for it. The remaining copies
-    are marked through the columns "capacity_owner" and "co2_class", which
-    ``solve_network.add_cbam_transmission_capacity_constraints`` picks up to make
-    the flows of all copies share that single capacity.
+    border. Every copy is labelled with its class in the column "co2_class",
+    which the CBAM import charge and the emission transfer key on. The copies
+    are, however, only accounting layers of one physical cable: with
+    "shared_capacity", the copy of the first level owns the capacity of the
+    original link and is the only one charged for it, and every copy points to it
+    through the column "capacity_owner", which
+    ``solve_network.add_cbam_shared_capacity_constraints`` picks up to make the
+    flows of all copies share that single capacity.
 
     Setting "shared_capacity" to False leaves every copy a fully independent
     link, which multiplies the transfer capability and the investment cost of
@@ -7066,10 +7203,9 @@ def duplicate_transmission(n, co2_intensity_lvls, shared_capacity=True):
     # every link that is not part of the CO2 intensity split.
     #   co2_class      - emission layer of the copy ("clean" / "nonclean")
     #   capacity_owner - link whose single capacity all copies of a cable share
-    if shared_capacity:
-        for col in ["capacity_owner", "co2_class"]:
-            if col not in links.columns:
-                links[col] = ""
+    for col in ["capacity_owner", "co2_class"]:
+        if col not in links.columns:
+            links[col] = ""
 
     lvls = list(co2_intensity_lvls)
     owner_names = (dc_links + " " + lvls[0]).values
@@ -7082,9 +7218,10 @@ def duplicate_transmission(n, co2_intensity_lvls, shared_capacity=True):
         dc_i.bus0 = dc_i.bus0 + " " + lvl
         dc_i.bus1 = dc_i.bus1 + " " + lvl
 
+        dc_i["co2_class"] = lvl
+
         if shared_capacity:
             dc_i["capacity_owner"] = owner_names
-            dc_i["co2_class"] = lvl
 
             # A border expansion must only be paid for once. Charging every copy
             # would multiply the cost of a cable by the number of emission classes.
@@ -7200,6 +7337,11 @@ def split_and_duplicate_hydrogen(n, co2_intensity_lvls):
     stores.drop(index=h2_stores_i, inplace=True)
     links.drop(index=list(electrolysis_i) + list(fuelcell_i), inplace=True)
 
+    # 6. Class copies share the capacity (and cavern potential) of the asset.
+    _share_capacity_across_levels(n, "Link", electrolysis_i, co2_intensity_lvls)
+    _share_capacity_across_levels(n, "Link", fuelcell_i, co2_intensity_lvls)
+    _share_capacity_across_levels(n, "Store", h2_stores_i, co2_intensity_lvls)
+
     n_lvls = len(list(co2_intensity_lvls))
     logger.info(
         f"Split {len(h2_hubs)} H2 hubs across {n_lvls} CO2 layers: "
@@ -7207,20 +7349,104 @@ def split_and_duplicate_hydrogen(n, co2_intensity_lvls):
         f"duplicated, {len(smr_i)} SMR->nonclean, {len(smr_cc_i)} SMR CC->clean."
     )
 
-def split_components_by_co2_intensity_levels(n, carriers = ["AC"], shared_capacity = True, split_hydrogen = True):
+def add_cbam_import_charge(
+    n,
+    cbam_regions,
+    price,
+    basis="nonclean",
+    default_intensity=None,
+    exempt=(),
+    deduction=None,
+):
+    """
+    Add the CBAM charge to the marginal cost of the electricity imported into the
+    CBAM regions: every DC link (or class copy) whose bus1 lies in a CBAM region and
+    whose bus0 lies outside them, unless the exporter is exempt. Regions and
+    exemptions are matched as prefixes of the bus location, so "GB" covers all of
+    GB and "GBNI" Northern Ireland alone.
+
+    The charge is price [EUR/tCO2] * intensity [tCO2/MWh] on the power sent (p0):
+
+    - basis "nonclean": the nonclean class copies at their class intensity, i.e.
+      actual emissions by label (needs the CO2 split);
+    - basis "default": every import at the exporting country's default intensity,
+      independent of labels, as under the EU CBAM's default values.
+
+    ``deduction`` maps exporting countries to the carbon price [EUR/tCO2] paid
+    there, which is deducted from ``price`` (down to zero).
+    """
+    if not cbam_regions or price <= 0:
+        return
+
+    links = n.links
+    location = links[["bus0", "bus1"]].apply(lambda bus: bus.map(n.buses.location))
+    location = location.fillna("")
+    inside = location.apply(lambda loc: loc.str.startswith(tuple(cbam_regions)))
+    exempted = location.bus0.str.startswith(tuple(exempt))
+    imports = (links.carrier == "DC") & inside.bus1 & ~inside.bus0 & ~exempted
+
+    exporter = location.bus0.str[:2]
+    if basis == "nonclean":
+        co2_class = links.get("co2_class", pd.Series("", index=links.index))
+        if not co2_class.fillna("").ne("").any():
+            raise ValueError("A CBAM charge on nonclean imports needs the CO2 split.")
+        intensity = co2_class.map(CO2_INTENSITY_LVLS)
+    elif basis == "default":
+        missing = sorted(set(exporter[imports]) - set(default_intensity or {}))
+        if missing:
+            raise ValueError(f"No CBAM default intensity for exporters {missing}.")
+        intensity = exporter.map(default_intensity)
+    else:
+        raise ValueError(
+            f"CBAM charge basis must be 'nonclean' or 'default', not {basis!r}."
+        )
+
+    net_price = (price - exporter.map(deduction or {}).fillna(0)).clip(lower=0)
+    charge = net_price * intensity
+    charged = links.index[imports & (charge > 0)]
+    links.loc[charged, "marginal_cost"] += charge[charged]
+    by_exporter = charge[charged].groupby(exporter[charged]).mean()
+    logger.info(
+        f"CBAM charge ({basis}): added {by_exporter.round(1).to_dict()} EUR/MWh "
+        f"(by exporter) to {len(charged)} import links into {list(cbam_regions)}."
+    )
+
+def split_components_by_co2_intensity_levels(
+    n,
+    carriers=["AC"],
+    shared_capacity=True,
+    split_hydrogen=True,
+):
+    """
+    Split the electricity network by CO2 intensity class (CBAM).
+
+    Called by solve_network on the complete network of a horizon, brownfield
+    included, so that every asset is labelled by its carrier. The networks written
+    between rules stay unsplit (see collapse_co2_split).
+    """
     # CO2 buses in network
     co2_buses = n.buses.query("carrier == 'co2'").index
 
-    # CO2 emissions classifications
-    # NB! We currently have two classications, meaning that we have one category of energy which is assumed to be
-    # without CO2 emissions and another with CO2 emissions. For this reason, the elements
-    # in the CO2-emitting category share the same CO2-intensity. To improve this, it could be further split,
-    # but for now we leave it as it is to test the concept.     
+    # CO2 emissions classifications, see CO2_INTENSITY_LVLS.
+    co2_intensity_lvls = CO2_INTENSITY_LVLS
 
-    co2_intensity_lvls = {"clean": 0, 
-                          "nonclean": 0.2, # tCO2 / MWh_th
-                          # e.g., intermediate: 0.1, # tCO2 / MWh_th 
-                        }
+    connection_carriers = [f"{lvl} connection" for lvl in co2_intensity_lvls]
+    if n.links.carrier.isin(connection_carriers).any():
+        raise ValueError(
+            "The network is already split by CO2 intensity (e.g. a network built "
+            "before the split moved into solve_network); rebuild it unsplit."
+        )
+
+    def orphan_series():
+        # time series columns without a component (checked after the split)
+        return {
+            (c.name, attr, col)
+            for c in n.components
+            for attr, df in c.dynamic.items()
+            for col in df.columns.difference(c.static.index)
+        }
+
+    orphans_before = orphan_series()
 
     # Dictionary distributing generators - should later be classified automatically based on the generator's CO2 intensity
     generators_co2_lvls = {"onwind": "clean",
@@ -7229,12 +7455,25 @@ def split_components_by_co2_intensity_levels(n, carriers = ["AC"], shared_capaci
                             "offwind-float": "clean",
                             "solar": "clean",
                             "solar rooftop": "clean",
+                            "solar-hsat": "clean",
                             "ror": "clean",
-                            "PHS": "clean",
+                            "PHS": "clean", # only PHS that cannot pump
                             "hydro": "clean",
                             "nuclear": "clean",
                             "OCGT": "nonclean",
                             "CCGT": "nonclean",
+                            "coal": "nonclean",
+                            "lignite": "nonclean",
+                            "oil": "nonclean",
+                            # CHPs by fuel; CC counts as clean, as for SMR CC.
+                            # Plants burning methanol or NH3 stay unlabelled
+                            # until those carriers are split.
+                            "urban central gas CHP": "nonclean",
+                            "urban central gas CHP CC": "clean",
+                            "urban central solid biomass CHP": "clean",
+                            "urban central solid biomass CHP CC": "clean",
+                            "urban central biogas CHP": "clean",
+                            "waste CHP": "nonclean",
                             }
 
     # ####################################################
@@ -7244,19 +7483,164 @@ def split_components_by_co2_intensity_levels(n, carriers = ["AC"], shared_capaci
 
         split_buses(n, co2_intensity_lvls, buses_primary)
         split_and_duplicate_storage(n, co2_intensity_lvls, buses_primary)
+        split_and_duplicate_storage_units(n, co2_intensity_lvls, buses_primary)
         distribute_generators(n, generators_co2_lvls, buses_primary)
+        label_rooftop_pv_backflow(n, co2_intensity_lvls, buses_primary)
         duplicate_transmission(n, co2_intensity_lvls, shared_capacity)
 
-        # The capacity constraint keeping the duplicated DC links within the rating
-        # of the physical cable is added at solve time, see
-        # solve_network.add_cbam_transmission_capacity_constraints.
-
-        # add emission or tax to importing links only
+        # Copies share capacity via solve_network.add_cbam_shared_capacity_constraints.
 
     # Hydrogen carbon labelling (runs once, after the AC layers exist so
     # electrolysers/fuel cells can be tied to the matching electricity layer).
     if split_hydrogen:
         split_and_duplicate_hydrogen(n, co2_intensity_lvls)
+
+    # Class copies must be unidirectional (p >= 0): the shared envelope, the import
+    # charge and the emission transfer rely on it. Time-varying limits of
+    # duplicated links are caught by the orphan check below.
+    co2_class = n.links.get("co2_class", pd.Series("", index=n.links.index))
+    copies = n.links.index[co2_class.fillna("").ne("")]
+    bidirectional = copies[(n.links.loc[copies, "p_min_pu"] < 0).values]
+    if len(bidirectional):
+        raise NotImplementedError(
+            "The CO2 split needs unidirectional links; split these into forward and "
+            f"reverse halves first: {list(bidirectional[:3])}"
+        )
+
+    # Register the connection carriers for statistics and plotting.
+    new_carriers = sorted(
+        {c for c in n.links.carrier.unique() if c.endswith(" connection")}
+        - set(n.carriers.index)
+    )
+    if new_carriers:
+        n.add("Carrier", new_carriers, nice_name=new_carriers)
+
+    # The connection links leave custom columns such as "reversed" empty.
+    sanitize_custom_columns(n)
+
+    # Duplication copies static data only: an original's time series left behind
+    # would mean that its class copies lost them.
+    orphans = sorted(orphan_series() - orphans_before)
+    if orphans:
+        raise NotImplementedError(
+            "The CO2 split dropped components with time-varying input data without "
+            f"carrying it over to their class copies: {orphans[:3]}"
+        )
+
+def collapse_co2_split(n, co2_intensity_lvls=CO2_INTENSITY_LVLS):
+    """
+    Fold a network split by split_components_by_co2_intensity_levels back onto the
+    plain topology, so that add_brownfield carries forward an unsplit network. Layer
+    buses map back onto their base bus, the class copies of an asset onto the first
+    level's copy (which holds the shared capacity), and connection links are
+    removed. Output time series of the dropped copies are discarded. No-op on an
+    unsplit network.
+    """
+    lvls = list(co2_intensity_lvls)
+    owner_lvl = lvls[0]
+
+    def strip(name):
+        for lvl in lvls:
+            if name.endswith(" " + lvl):
+                return name[: -len(lvl) - 1], lvl
+        return name, None
+
+    carrier = n.links.carrier.astype(str)
+    connections = n.links.index[
+        carrier.str.endswith(" connection") & carrier.str.split(" ").str[0].isin(lvls)
+    ]
+    if connections.empty:
+        return
+    n.remove("Link", connections)
+
+    # 1. Map every layer bus onto its base bus, restoring the base buses the split
+    #    dropped (storage buses) from the first level's copy.
+    to_base = {b: strip(b)[0] for b in n.buses.index if strip(b)[1] is not None}
+    revive = {
+        b: base for b, base in to_base.items()
+        if base not in n.buses.index and b.endswith(" " + owner_lvl)
+    }
+    if revive:
+        n.rename_component_names("Bus", **revive)
+        for b in revive:
+            del to_base[b]
+    for c in n.components:
+        for col in [k for k in c.static.columns if k.startswith("bus")]:
+            c.static[col] = c.static[col].replace(to_base)
+    n.remove("Bus", list(to_base))
+
+    # 2. Collapse the class copies of every duplicated asset onto the owner level.
+    for component, nom in [
+        ("Link", "p_nom"), ("Store", "e_nom"), ("StorageUnit", "p_nom")
+    ]:
+        c = n.components[component]
+        opt = f"{nom}_opt"
+        df = c.static
+        groups = {}
+        for name in df.index:
+            base, lvl = strip(name)
+            if lvl is not None:
+                groups.setdefault(base, {})[lvl] = name
+        if not groups:
+            continue
+        incomplete = [base for base, g in groups.items() if owner_lvl not in g]
+        if incomplete:
+            raise ValueError(
+                f"{component} copies without a '{owner_lvl}' copy: {incomplete[:3]}"
+            )
+
+        # Independent copies (no capacity owner, i.e. without the joint transmission
+        # constraint) each had their own capacity, but the next solve gives every
+        # copy the one collapsed capacity as its minimum. Carry the largest copy, so
+        # that no class loses capacity and minimums do not compound (as a sum would).
+        owner = df.get("capacity_owner", pd.Series("", index=df.index)).fillna("")
+        independent = [
+            g for g in groups.values() if (owner[list(g.values())] == "").all()
+        ]
+        if independent and opt in df.columns:
+            logger.warning(
+                f"{len(independent)} independent {component} class copies carry the "
+                "capacity of their largest copy into the next horizon (approximation)."
+            )
+            for g in independent:
+                df.loc[g[owner_lvl], opt] = df.loc[list(g.values()), opt].max()
+
+        copies = [
+            name for g in groups.values() for lvl, name in g.items() if lvl != owner_lvl
+        ]
+        n.remove(component, copies)
+        # n.rename_component_names fails for Links in pypsa 1.0.1, and no component
+        # refers to links, stores or storage units: rename static and dynamic data.
+        rename = {g[owner_lvl]: base for base, g in groups.items()}
+        c.static.rename(index=rename, inplace=True)
+        for df in c.dynamic.values():
+            df.rename(columns=rename, inplace=True)
+
+    for component in ["Link", "Store", "StorageUnit"]:
+        n.components[component].static.drop(
+            columns=["capacity_owner", "co2_class"], errors="ignore", inplace=True
+        )
+
+    # 3. Nothing of the split may survive into the brownfield.
+    buses = set(n.buses.index)
+    leftovers = [
+        name for component in ["Bus", "Generator", "Link", "Store", "StorageUnit"]
+        for name in n.components[component].static.index if strip(name)[1] is not None
+    ]
+    dangling = [
+        f"{c.name}.{col}" for c in n.components
+        for col in [k for k in c.static.columns if k.startswith("bus")]
+        if (~c.static[col].fillna("").isin(buses | {""})).any()
+    ]
+    if leftovers or dangling:
+        raise RuntimeError(
+            f"Collapsing the CO2 split left {leftovers[:3]} / dangling buses "
+            f"in {dangling}."
+        )
+    logger.info(
+        f"Collapsed the CO2 split: removed {len(connections)} connection links and "
+        f"{len(to_base) + len(revive)} layer buses."
+    )
 
 def reduce_model_in_the_east(n, regions_onshore, dct1):
 
@@ -7674,13 +8058,7 @@ if __name__ == "__main__":
     if clustering["HVAC_to_HVDC"]:
         convert_HVAC_to_HVDC(n)
 
-    if uk_settings_prepare["cbam"]:
-        split_components_by_co2_intensity_levels(
-            n,
-            shared_capacity=uk_settings_prepare.get(
-                "cbam_shared_transmission_capacity", True
-            ),
-            split_hydrogen=uk_settings_prepare.get("cbam_split_hydrogen", True),
-        )
+    # NB. The CBAM split by CO2 intensity (uk_settings: prepare: cbam) is applied
+    # in solve_network, once the brownfield has been added, not here.
 
     n.export_to_netcdf(snakemake.output[0])

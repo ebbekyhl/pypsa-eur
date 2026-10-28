@@ -7349,35 +7349,26 @@ def split_and_duplicate_hydrogen(n, co2_intensity_lvls):
         f"duplicated, {len(smr_i)} SMR->nonclean, {len(smr_cc_i)} SMR CC->clean."
     )
 
-def add_cbam_import_charge(
+def cbam_import_intensity(
     n,
     cbam_regions,
-    price,
     basis="nonclean",
     default_intensity=None,
     exempt=(),
-    deduction=None,
 ):
     """
-    Add the CBAM charge to the marginal cost of the electricity imported into the
-    CBAM regions: every DC link (or class copy) whose bus1 lies in a CBAM region and
+    Embodied intensity [tCO2/MWh] of the electricity imported into the CBAM
+    regions: every DC link (or class copy) whose bus1 lies in a CBAM region and
     whose bus0 lies outside them, unless the exporter is exempt. Regions and
     exemptions are matched as prefixes of the bus location, so "GB" covers all of
-    GB and "GBNI" Northern Ireland alone.
+    GB and "GBNI" Northern Ireland alone. Only links with a positive intensity
+    are returned.
 
-    The charge is price [EUR/tCO2] * intensity [tCO2/MWh] on the power sent (p0):
-
-    - basis "nonclean": the nonclean class copies at their class intensity, i.e.
-      actual emissions by label (needs the CO2 split);
+    - basis "nonclean": the class copies at their class intensity, i.e. actual
+      emissions by label (needs the CO2 split);
     - basis "default": every import at the exporting country's default intensity,
       independent of labels, as under the EU CBAM's default values.
-
-    ``deduction`` maps exporting countries to the carbon price [EUR/tCO2] paid
-    there, which is deducted from ``price`` (down to zero).
     """
-    if not cbam_regions or price <= 0:
-        return
-
     links = n.links
     location = links[["bus0", "bus1"]].apply(lambda bus: bus.map(n.buses.location))
     location = location.fillna("")
@@ -7401,9 +7392,36 @@ def add_cbam_import_charge(
             f"CBAM charge basis must be 'nonclean' or 'default', not {basis!r}."
         )
 
+    intensity = intensity[imports]
+    return intensity[intensity > 0]
+
+
+def add_cbam_import_charge(
+    n,
+    cbam_regions,
+    price,
+    basis="nonclean",
+    default_intensity=None,
+    exempt=(),
+    deduction=None,
+):
+    """
+    Add the CBAM charge to the marginal cost of the electricity imported into the
+    CBAM regions (see cbam_import_intensity): price [EUR/tCO2] * intensity
+    [tCO2/MWh] on the power sent (p0).
+
+    ``deduction`` maps exporting countries to the carbon price [EUR/tCO2] paid
+    there, which is deducted from ``price`` (down to zero).
+    """
+    if not cbam_regions or price <= 0:
+        return
+
+    links = n.links
+    intensity = cbam_import_intensity(n, cbam_regions, basis, default_intensity, exempt)
+    exporter = links.bus0[intensity.index].map(n.buses.location).str[:2]
     net_price = (price - exporter.map(deduction or {}).fillna(0)).clip(lower=0)
     charge = net_price * intensity
-    charged = links.index[imports & (charge > 0)]
+    charged = charge.index[charge > 0]
     links.loc[charged, "marginal_cost"] += charge[charged]
     by_exporter = charge[charged].groupby(exporter[charged]).mean()
     logger.info(

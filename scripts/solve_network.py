@@ -48,6 +48,7 @@ from scripts.prepare_sector_network import (
     add_cbam_import_charge,
     add_co2limit,
     build_carbon_budget,
+    cbam_import_intensity,
     determine_emission_sectors,
     split_components_by_co2_intensity_levels,
 )
@@ -642,61 +643,96 @@ def add_UK_deployment_rate_limits(n, deployment_rate_limits, base_year):
 def _build_emission_transfer_expressions(
     n: pypsa.Network,
     local_co2_regions: list,
-    import_only_into: list | None = None,
+    transfer: bool | str,
     uncapped: list = (),
 ) -> dict:
     """
-    Embodied emissions of cross-border nonclean electricity, per CO2 budget zone
-    (each local region, and "collective" for the rest apart from the uncapped
-    countries): sum_t w_t * intensity * p_t
-    over the nonclean class copies of the links importing into the zone, minus
-    those exporting from it. Each expression is added to the zone's CO2 constraint.
+    Embodied emissions of cross-border electricity, per CO2 budget zone (each
+    local region, and "collective" for the rest apart from the uncapped
+    countries): sum_t w_t * intensity * p_t, added to the zone's CO2 constraint.
 
-    With ``import_only_into`` (the CBAM regions) this is a border adjustment: only
-    those of them with a local target take on the emissions of their nonclean
-    imports, and no zone is credited for exports. The symmetric transfer lets the
-    optimiser move emissions between budgets by choosing the labels of exports.
+    - "import_only" (a border adjustment): each zone takes on the emissions of the
+      CBAM imports (cbam_import_intensity) that enter it from outside the zone, at
+      the intensity of cbam_charge_basis (nonclean labels or default values). No
+      zone is credited for exports. With cbam_regions [GB] this is GB's target;
+      with the EU-27, the collective budget.
+    - True: a symmetric transfer of the nonclean labels between all zones;
+      importers add and exporters subtract. It lets the optimiser move emissions
+      between budgets by choosing the labels of exports.
     """
-    if "co2_class" not in n.links.columns:
-        return {}
+    settings = snakemake.params.uk_settings_prepare
+    country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    country0, country1 = n.links.bus0.map(country), n.links.bus1.map(country)
 
-    cb = pd.DataFrame(
-        {
-            "intensity": n.links.co2_class.map(CO2_INTENSITY_LVLS),
-            "region0": n.links.bus0.map(n.buses.location).str[:2],
-            "region1": n.links.bus1.map(n.buses.location).str[:2],
-        }
-    )
-    cb = cb[(cb.intensity > 0) & (cb.region0 != cb.region1)]
+    zones = {r: [r] for r in local_co2_regions}
+    zones["collective"] = [
+        c
+        for c in snakemake.params.countries
+        if c not in local_co2_regions and c not in uncapped
+    ]
 
-    if import_only_into is None:
-        zones = {r: [r] for r in local_co2_regions}
-        zones["collective"] = [
-            c
-            for c in snakemake.params.countries
-            if c not in local_co2_regions and c not in uncapped
-        ]
+    if transfer == "import_only":
+        intensity = cbam_import_intensity(
+            n,
+            settings["cbam_regions"],
+            basis=settings["cbam_charge_basis"],
+            default_intensity=settings["cbam_default_intensity"],
+            exempt=settings["cbam_exempt"],
+        )
+    elif "co2_class" in n.links.columns:
+        intensity = n.links.co2_class.map(CO2_INTENSITY_LVLS)
+        intensity = intensity[(intensity > 0) & (country0 != country1)]
     else:
-        zones = {r: [r] for r in local_co2_regions if r in import_only_into}
+        return {}
+    country0, country1 = country0[intensity.index], country1[intensity.index]
 
     p = n.model["Link-p"]
     weights = n.snapshot_weightings.generators
     transfer_exprs = {}
     for zone, countries in zones.items():
-        importing = cb.region1.isin(countries) & ~cb.region0.isin(countries)
-        exporting = cb.region0.isin(countries) & ~cb.region1.isin(countries)
-        intensity = cb.intensity[importing]
-        if import_only_into is None:
-            intensity = pd.concat([intensity, -cb.intensity[exporting]])
-        if intensity.empty:
+        importing = country1.isin(countries) & ~country0.isin(countries)
+        exporting = country0.isin(countries) & ~country1.isin(countries)
+        zone_intensity = intensity[importing]
+        if transfer is True:
+            zone_intensity = pd.concat([zone_intensity, -intensity[exporting]])
+        if zone_intensity.empty:
             continue
-        transfer_exprs[zone] = (p.loc[:, intensity.index] * weights * intensity).sum()
+        transfer_exprs[zone] = (
+            p.loc[:, zone_intensity.index] * weights * zone_intensity
+        ).sum()
         logger.info(
             f"Emission transfer for '{zone}': {importing.sum()} import links, "
-            f"{len(intensity) - importing.sum()} export links."
+            f"{len(zone_intensity) - importing.sum()} export links."
         )
 
     return transfer_exprs
+
+
+def restrict_carbon_exports_to_uncapped(n: pypsa.Network, uncapped: list) -> None:
+    """
+    Stop captured CO2 (CO2 pipelines) and methanol from flowing out of the capped
+    countries into uncapped ones. Released there, their carbon would count in no
+    CO2 constraint, while the capped side keeps the credit for capturing it: the
+    model would use the uncapped countries as a free CO2 sink. Flows in the other
+    direction stay possible.
+    """
+    if not uncapped:
+        return
+    country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    links = n.links[n.links.carrier.isin(["CO2 pipeline", "methanol transport"])]
+    country0, country1 = links.bus0.map(country), links.bus1.map(country)
+    known = country0.notna() & country1.notna()
+    outward = links.index[known & ~country0.isin(uncapped) & country1.isin(uncapped)]
+    inward = links.index[known & country0.isin(uncapped) & ~country1.isin(uncapped)]
+    # p_max_pu limits flow bus0 -> bus1, p_min_pu (-1 on CO2 pipelines) the reverse
+    n.links.loc[outward, "p_max_pu"] = 0.0
+    n.links.loc[inward, "p_min_pu"] = n.links.loc[inward, "p_min_pu"].clip(lower=0.0)
+    for attr, idx in [("p_max_pu", outward), ("p_min_pu", inward)]:
+        n.links_t[attr].drop(columns=idx, errors="ignore", inplace=True)
+    logger.info(
+        f"Blocked CO2 and methanol flows from capped countries into {list(uncapped)} "
+        f"on {len(outward)} + {len(inward)} links."
+    )
 
 
 def _link_countries(n: pypsa.Network) -> pd.Series:
@@ -774,10 +810,10 @@ def add_split_co2_constraints(
     def located_in(countries):
         return xr.DataArray(name_countries.isin(countries), coords={link_dim: names})
 
-    # CBAM: embodied emissions of cross-border nonclean electricity, as a border
+    # CBAM: embodied emissions of cross-border electricity, as a border
     # adjustment ("import_only"), symmetric between all zones (true) or off (false).
     uk_settings_prepare = snakemake.params.uk_settings_prepare
-    transfer = uk_settings_prepare["cbam_emission_transfer"]
+    transfer = get(uk_settings_prepare["cbam_emission_transfer"], investment_year)
     if transfer not in (True, False, "import_only"):
         raise ValueError(
             "cbam_emission_transfer must be true, false or 'import_only', "
@@ -785,11 +821,8 @@ def add_split_co2_constraints(
         )
     transfer_exprs = {}
     if uk_settings_prepare["cbam"] and transfer:
-        import_only_into = (
-            uk_settings_prepare["cbam_regions"] if transfer == "import_only" else None
-        )
         transfer_exprs = _build_emission_transfer_expressions(
-            n, local_co2_regions, import_only_into, uncapped
+            n, local_co2_regions, transfer, uncapped
         )
 
     # add local CO2 emissions constraints
@@ -2671,6 +2704,9 @@ if __name__ == "__main__":
             limit,
         )
 
+    # Uncapped countries must not become a sink for captured CO2.
+    restrict_carbon_exports_to_uncapped(n, getattr(snakemake.params, "co2_uncapped", []))
+
     # CBAM: split the electricity network by CO2 intensity class and add the
     # border charge. The split runs on the complete network of the horizon,
     # greenfield options and brownfield fleet alike, and after every edit above,
@@ -2679,14 +2715,14 @@ if __name__ == "__main__":
     # network back (collapse_co2_split).
     uk_settings_prepare = snakemake.params.uk_settings_prepare
     if uk_settings_prepare["cbam"]:
+        investment_year = int(snakemake.wildcards.planning_horizons)
         cbam_split = uk_settings_prepare["cbam_split"]
         basis = uk_settings_prepare["cbam_charge_basis"]
-        if not cbam_split and (
-            basis == "nonclean" or uk_settings_prepare["cbam_emission_transfer"]
-        ):
+        transfer = get(uk_settings_prepare["cbam_emission_transfer"], investment_year)
+        if not cbam_split and (basis == "nonclean" or transfer is True):
             raise ValueError(
-                "A CBAM charge on nonclean imports and the emission transfer need "
-                "cbam_split: true."
+                "A CBAM charge on nonclean imports and the symmetric emission "
+                "transfer need cbam_split: true."
             )
         if cbam_split:
             split_components_by_co2_intensity_levels(
@@ -2695,7 +2731,13 @@ if __name__ == "__main__":
                 split_hydrogen=uk_settings_prepare["cbam_split_hydrogen"],
             )
         # CBAM certificate price, net of the carbon price paid by each exporter.
-        investment_year = int(snakemake.wildcards.planning_horizons)
+        if not all(
+            isinstance(c, str) and len(c) == 2 for c in uk_settings_prepare["cbam_deduction"]
+        ):
+            raise ValueError(
+                "cbam_deduction must map exporting countries to a price or "
+                "{year: price}, e.g. {GB: {2030: 8}}."
+            )
         deduction = {
             country: get(paid, investment_year)
             for country, paid in uk_settings_prepare["cbam_deduction"].items()

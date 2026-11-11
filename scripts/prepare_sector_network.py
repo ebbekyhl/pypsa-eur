@@ -7262,7 +7262,8 @@ def split_and_duplicate_hydrogen(n, co2_intensity_lvls):
       flows common -> class (leakage guard).
 
     Runs after split_buses, so the "<node> <level>" AC layer buses already exist.
-    Pipelines are not present in the MVP (H2_network off) and are not handled.
+    Hydrogen pipelines between the hubs (H2_network) are duplicated per class by
+    duplicate_h2_pipelines.
     NB. NH3 is intentionally left unsplit (Phase 2 in the design doc): it is made
     by Haber-Bosch from AC + H2, so "split by electricity layer" does not apply.
     """
@@ -7349,12 +7350,61 @@ def split_and_duplicate_hydrogen(n, co2_intensity_lvls):
         f"duplicated, {len(smr_i)} SMR->nonclean, {len(smr_cc_i)} SMR CC->clean."
     )
 
+def duplicate_h2_pipelines(n, co2_intensity_lvls, shared_capacity=True):
+    """
+    Duplicate the hydrogen pipelines once per CO2 class, between the class buses of
+    the hydrogen hubs (see split_and_duplicate_hydrogen), so that hydrogen keeps its
+    label across borders and the CBAM can charge nonclean hydrogen imports. As for
+    the HVDC cables (duplicate_transmission), the copies are accounting layers of
+    one pipe: the first level's copy owns the capacity and the investment cost, and
+    solve_network caps the flows of all copies, in both directions, at that one
+    capacity. The compression electricity (bus2) stays at the node's common bus.
+    """
+    links = getattr(n, "links")
+    lvls = list(co2_intensity_lvls)
+    hubs = [b for b in n.buses.index[n.buses.carrier == "H2"] if f"{b} {lvls[0]}" in n.buses.index]
+    pipeline = links.carrier.str.startswith("H2 pipeline")
+    pipes = links.index[pipeline & links.bus0.isin(hubs) & links.bus1.isin(hubs)]
+    if pipeline.sum() > len(pipes):
+        logger.warning(
+            f"{pipeline.sum() - len(pipes)} hydrogen pipelines do not connect two split "
+            "hubs and keep no CO2 label."
+        )
+    if pipes.empty:
+        return
+
+    for col in ["capacity_owner", "co2_class"]:
+        if col not in links.columns:
+            links[col] = ""
+    owner_names = (pipes + " " + lvls[0]).values
+    for k, lvl in enumerate(lvls):
+        p = links.loc[pipes].copy()
+        p.index = p.index + " " + lvl
+        p.bus0 = p.bus0 + " " + lvl
+        p.bus1 = p.bus1 + " " + lvl
+        p["co2_class"] = lvl
+        if shared_capacity:
+            p["capacity_owner"] = owner_names
+            if k > 0:
+                p["capital_cost"] = 0.0
+        for j in range(len(p)):
+            links.loc[p.index[j]] = p.iloc[j]
+    links.drop(index=pipes, inplace=True)
+
+    logger.info(
+        f"Duplicated {len(pipes)} hydrogen pipelines across {len(lvls)} CO2 classes "
+        f"{lvls}. Joint capacity enforced in solve_network: {shared_capacity}."
+    )
+
+
 def cbam_import_intensity(
     n,
     cbam_regions,
     basis="nonclean",
     default_intensity=None,
     exempt=(),
+    carrier="DC",
+    class_intensity=None,
 ):
     """
     Embodied intensity [tCO2/MWh] of the electricity imported into the CBAM
@@ -7367,29 +7417,41 @@ def cbam_import_intensity(
     - basis "nonclean": the class copies at their class intensity, i.e. actual
       emissions by label (needs the CO2 split);
     - basis "default": every import at the exporting country's default intensity,
-      independent of labels, as under the EU CBAM's default values.
+      independent of labels, as under the EU CBAM's default values;
+    - basis "label": clean-labelled imports free (the actual-emissions route, which
+      needs a clean supply) and every other import at the exporter's default value,
+      which an exporter of fossil power cannot undercut (needs the CO2 split).
+
+    ``carrier`` selects the links by carrier prefix: "DC" for electricity [tCO2/MWh_el],
+    "H2 pipeline" for hydrogen [tCO2/MWh_H2]; ``class_intensity`` maps the CO2 classes
+    to their intensity (default: CO2_INTENSITY_LVLS, for electricity).
     """
     links = n.links
     location = links[["bus0", "bus1"]].apply(lambda bus: bus.map(n.buses.location))
     location = location.fillna("")
     inside = location.apply(lambda loc: loc.str.startswith(tuple(cbam_regions)))
     exempted = location.bus0.str.startswith(tuple(exempt))
-    imports = (links.carrier == "DC") & inside.bus1 & ~inside.bus0 & ~exempted
+    imports = links.carrier.str.startswith(carrier) & inside.bus1 & ~inside.bus0 & ~exempted
 
     exporter = location.bus0.str[:2]
     if basis == "nonclean":
         co2_class = links.get("co2_class", pd.Series("", index=links.index))
         if not co2_class.fillna("").ne("").any():
             raise ValueError("A CBAM charge on nonclean imports needs the CO2 split.")
-        intensity = co2_class.map(CO2_INTENSITY_LVLS)
-    elif basis == "default":
+        intensity = co2_class.map(class_intensity or CO2_INTENSITY_LVLS)
+    elif basis in ("default", "label"):
         missing = sorted(set(exporter[imports]) - set(default_intensity or {}))
         if missing:
             raise ValueError(f"No CBAM default intensity for exporters {missing}.")
         intensity = exporter.map(default_intensity)
+        if basis == "label":
+            co2_class = links.get("co2_class", pd.Series("", index=links.index)).fillna("")
+            if not co2_class.ne("").any():
+                raise ValueError("A CBAM charge by label needs the CO2 split.")
+            intensity = intensity.where(co2_class != "clean", 0.0)
     else:
         raise ValueError(
-            f"CBAM charge basis must be 'nonclean' or 'default', not {basis!r}."
+            f"CBAM charge basis must be 'nonclean', 'default' or 'label', not {basis!r}."
         )
 
     intensity = intensity[imports]
@@ -7404,11 +7466,14 @@ def add_cbam_import_charge(
     default_intensity=None,
     exempt=(),
     deduction=None,
+    carrier="DC",
+    class_intensity=None,
 ):
     """
-    Add the CBAM charge to the marginal cost of the electricity imported into the
-    CBAM regions (see cbam_import_intensity): price [EUR/tCO2] * intensity
-    [tCO2/MWh] on the power sent (p0).
+    Add the CBAM charge to the marginal cost of the electricity (or, with carrier
+    "H2 pipeline", the hydrogen) imported into the CBAM regions (see
+    cbam_import_intensity): price [EUR/tCO2] * intensity [tCO2/MWh] on the energy
+    sent (p0).
 
     ``deduction`` maps exporting countries to the carbon price [EUR/tCO2] paid
     there, which is deducted from ``price`` (down to zero).
@@ -7417,7 +7482,9 @@ def add_cbam_import_charge(
         return
 
     links = n.links
-    intensity = cbam_import_intensity(n, cbam_regions, basis, default_intensity, exempt)
+    intensity = cbam_import_intensity(
+        n, cbam_regions, basis, default_intensity, exempt, carrier, class_intensity
+    )
     exporter = links.bus0[intensity.index].map(n.buses.location).str[:2]
     net_price = (price - exporter.map(deduction or {}).fillna(0)).clip(lower=0)
     charge = net_price * intensity
@@ -7425,7 +7492,7 @@ def add_cbam_import_charge(
     links.loc[charged, "marginal_cost"] += charge[charged]
     by_exporter = charge[charged].groupby(exporter[charged]).mean()
     logger.info(
-        f"CBAM charge ({basis}): added {by_exporter.round(1).to_dict()} EUR/MWh "
+        f"CBAM charge on {carrier} ({basis}): added {by_exporter.round(1).to_dict()} EUR/MWh "
         f"(by exporter) to {len(charged)} import links into {list(cbam_regions)}."
     )
 
@@ -7512,6 +7579,7 @@ def split_components_by_co2_intensity_levels(
     # electrolysers/fuel cells can be tied to the matching electricity layer).
     if split_hydrogen:
         split_and_duplicate_hydrogen(n, co2_intensity_lvls)
+        duplicate_h2_pipelines(n, co2_intensity_lvls, shared_capacity)
 
     # Class copies must be unidirectional (p >= 0): the shared envelope, the import
     # charge and the emission transfer rely on it. Time-varying limits of

@@ -640,6 +640,14 @@ def add_UK_deployment_rate_limits(n, deployment_rate_limits, base_year):
         logger.info(f"Added deployment rate limit for UK {tech}: {rhs} MW / 5-year period")
 
 
+def intensity_by_year(intensity: dict | None, investment_year: int) -> dict:
+    """
+    CBAM default values per exporter [tCO2/MWh] in one horizon: each value is
+    fixed or {year: value} (e.g. from the generation mix of the previous horizon).
+    """
+    return {c: get(v, investment_year) for c, v in (intensity or {}).items()}
+
+
 def _build_emission_transfer_expressions(
     n: pypsa.Network,
     local_co2_regions: list,
@@ -656,6 +664,12 @@ def _build_emission_transfer_expressions(
       the intensity of cbam_charge_basis (nonclean labels or default values). No
       zone is credited for exports. With cbam_regions [GB] this is GB's target;
       with the EU-27, the collective budget.
+    - "import_only_all" (a border adjustment at every border, e.g. between national
+      caps): each zone takes on the emissions of the nonclean-labelled imports
+      that enter it from any other zone, whatever cbam_regions says, at
+      cbam_transfer_intensity by link carrier (default: electricity, "DC", at the
+      nonclean class intensity; e.g. add "H2 pipeline" for hydrogen). No zone is
+      credited for exports. Needs the CO2 split.
     - True: a symmetric transfer of the nonclean labels between all zones;
       importers add and exporters subtract. It lets the optimiser move emissions
       between budgets by choosing the labels of exports.
@@ -676,8 +690,27 @@ def _build_emission_transfer_expressions(
             n,
             settings["cbam_regions"],
             basis=settings["cbam_charge_basis"],
-            default_intensity=settings["cbam_default_intensity"],
+            default_intensity=intensity_by_year(
+                settings["cbam_default_intensity"],
+                int(snakemake.wildcards.planning_horizons),
+            ),
             exempt=settings["cbam_exempt"],
+        )
+    elif transfer == "import_only_all":
+        co2_class = n.links.get("co2_class", pd.Series("", index=n.links.index))
+        if not co2_class.fillna("").ne("").any():
+            raise ValueError("cbam_emission_transfer: import_only_all needs the CO2 split.")
+        by_carrier = settings.get("cbam_transfer_intensity") or {
+            "DC": CO2_INTENSITY_LVLS["nonclean"]
+        }
+        intensity = pd.Series(0.0, index=n.links.index)
+        for prefix, value in by_carrier.items():
+            intensity[n.links.carrier.str.startswith(prefix)] = value
+        cross = country0.notna() & country1.notna() & (country0 != country1)
+        intensity = intensity[co2_class.eq("nonclean") & cross & (intensity > 0)]
+        logger.info(
+            "Emission transfer at every border: nonclean imports by carrier "
+            f"{n.links.carrier[intensity.index].value_counts().to_dict()}."
         )
     elif "co2_class" in n.links.columns:
         intensity = n.links.co2_class.map(CO2_INTENSITY_LVLS)
@@ -746,8 +779,149 @@ def _link_countries(n: pypsa.Network) -> pd.Series:
     return n.links[ports].apply(lambda bus: bus.map(country)).bfill(axis=1).iloc[:, 0]
 
 
+def _oil_demand_shares(n: pypsa.Network) -> pd.Series:
+    """
+    Each country's share of the demand for oil products: the loads at the product
+    buses that links from the oil bus feed (land transport oil, kerosene for
+    aviation, shipping oil, naphtha for industry, agriculture machinery oil),
+    weighted over the year. Oil burnt in power plants or boilers is endogenous and
+    left out. The key is fixed, so the shared emissions stay linear.
+    """
+    oil = n.buses.index[n.buses.carrier == "oil"]
+    links = n.links[n.links.bus0.isin(oil)]
+    product = links.bus1.map(n.buses.carrier) == links.carrier
+    loads = n.loads[n.loads.bus.isin(links.bus1[product])]
+    if loads.empty:
+        raise ValueError("No oil-product loads found to share the oil refining emissions.")
+    p_set = n.get_switchable_as_dense("Load", "p_set")[loads.index]
+    energy = p_set.mul(n.snapshot_weightings.generators, axis=0).sum()
+    country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    by_country = energy.groupby(loads.bus.map(country)).sum()
+    return by_country / by_country.sum()
+
+
+def uncapped_countries(investment_year) -> list:
+    """
+    Countries outside every CO2 constraint in this horizon. co2_uncapped is a list,
+    or {year: list} for countries whose own cap starts later (missing years: none).
+    """
+    uncapped = getattr(snakemake.params, "co2_uncapped", []) or []
+    if isinstance(uncapped, dict):
+        uncapped = uncapped.get(int(investment_year), [])
+    return list(uncapped)
+
+
+def plan_interconnectors(
+    n: pypsa.Network, projects_file: str, countries: list, investment_year: int
+) -> None:
+    """
+    Cross-border cables of the given countries follow planned projects only. Without
+    this, every cable could grow by up to 20 GW (links: max_extension) and GB-EU
+    capacity reached 89 GW by 2040. Listed links get the largest listed capacity
+    whose from_year has passed (0 before), projects missing from the network are
+    added as copies of a template cable, and every other cable keeps its rating.
+    """
+    if not countries:
+        return
+    projects = pd.read_csv(projects_file)
+    projects = projects[projects.include.astype(str).str.lower() == "true"]
+
+    # projects missing from the network: copies of an existing cable (both halves)
+    for link, row in projects.dropna(subset=["template"]).groupby("link").first().iterrows():
+        if link in n.links.index:
+            continue
+        for suffix in ["", "-reversed"]:
+            new = n.links.loc[[row.template + suffix]].copy()
+            # PyPSA needs the index name ("name") to build the model
+            new.index = pd.Index([link + suffix], name=n.links.index.name)
+            buses = (row.bus0, row.bus1) if suffix == "" else (row.bus1, row.bus0)
+            new[["bus0", "bus1"]] = buses
+            n.links = pd.concat([n.links, new])
+        logger.info(f"Added the cable {link} ({row.bus0} - {row.bus1}) from {row.template}.")
+
+    country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    # Northern Ireland is in the Irish market (and the CBAM area), so its cables to
+    # Great Britain count as cross-border
+    zone = country.where(~n.buses.location.str.startswith("GBNI", na=False), "GBNI")
+    dc = n.links[n.links.carrier == "DC"]
+    country0, country1 = dc.bus0.map(country), dc.bus1.map(country)
+    zone0, zone1 = dc.bus0.map(zone), dc.bus1.map(zone)
+    cross = dc.index[
+        zone0.notna() & zone1.notna() & (zone0 != zone1)
+        & (country0.isin(countries) | country1.isin(countries))
+    ]
+    due = projects[projects.from_year <= investment_year]
+    capacity = due.groupby("link").p_nom.max().reindex(projects.link.unique(), fill_value=0.0)
+    cable = cross.str.replace("-reversed", "", regex=False)
+    listed = cable.isin(capacity.index)
+    n.links.loc[cross[listed], "p_nom"] = cable[listed].map(capacity).values
+    n.links.loc[cross, "p_nom_min"] = n.links.loc[cross, "p_nom"]
+    n.links.loc[cross, "p_nom_extendable"] = False
+    logger.info(
+        f"Planned cross-border cables for {list(countries)} in {investment_year}: "
+        f"{len(cross)} links fixed, {listed.sum()} of them from {projects_file}."
+    )
+
+
+def restrict_new_gas_pipelines(n: pypsa.Network, countries: list) -> None:
+    """
+    No new gas pipelines into, out of or within the given countries. The gas network
+    connectivity upgrade offers a candidate pipeline between neighbouring nodes
+    ("gas pipeline new"); without a project behind it, the model built a 13 GW
+    pipeline from Albania to Montenegro. Existing pipelines keep their capacity.
+    """
+    if not countries:
+        return
+    country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    links = n.links
+    new = links.carrier.str.startswith("gas pipeline new") & links.p_nom_extendable
+    touches = links.bus0.map(country).isin(countries) | links.bus1.map(country).isin(countries)
+    idx = links.index[new & touches]
+    n.links.loc[idx, "p_nom_extendable"] = False
+    logger.info(f"No new gas pipelines for {list(countries)}: {len(idx)} candidates removed.")
+
+
+def allow_early_retirement(
+    n: pypsa.Network, carriers: list, countries: list, costs_file: str
+) -> None:
+    """
+    Let existing power plants of the given carriers close before the end of their
+    lifetime. Existing capacity is fixed, so its fixed cost is a constant and a
+    plant stays until its DateOut. Here it becomes extendable between zero and its
+    installed capacity at its fixed O&M cost alone (the investment is sunk), so the
+    model closes it where its margin does not cover that cost. add_brownfield
+    carries the reduced capacity into the next horizon: a closure is permanent.
+    """
+    links = n.links
+    existing = links.carrier.isin(carriers) & ~links.p_nom_extendable & (links.p_nom > 0)
+    if countries:
+        existing &= _link_countries(n).isin(countries)
+    existing = links.index[existing]
+    if existing.empty:
+        return
+
+    costs = pd.read_csv(costs_file, index_col=[0, 1])
+    carrier = links.carrier[existing]
+    for c in carrier.unique():
+        units = costs.loc[(c, "investment"), "unit"], costs.loc[(c, "FOM"), "unit"]
+        if units != ("EUR/kW_e", "%/year"):
+            raise ValueError(f"Unexpected cost units for {c}: {units}")
+    investment = carrier.map(lambda c: costs.loc[(c, "investment"), "value"]) * 1e3
+    fom = carrier.map(lambda c: costs.loc[(c, "FOM"), "value"]) / 100
+    nyears = n.snapshot_weightings.objective.sum() / 8760
+    # fixed O&M is per MW of electrical output; p_nom is the fuel input
+    n.links.loc[existing, "capital_cost"] = fom * investment * links.efficiency[existing] * nyears
+    n.links.loc[existing, "p_nom_max"] = links.p_nom[existing]
+    n.links.loc[existing, "p_nom_min"] = 0.0
+    n.links.loc[existing, "p_nom_extendable"] = True
+    logger.info(
+        f"Early retirement allowed for {len(existing)} existing {list(carriers)} links "
+        f"({links.p_nom[existing].mul(links.efficiency[existing]).sum() / 1e3:.1f} GW_e)."
+    )
+
+
 def add_split_co2_constraints(
-    n: pypsa.Network, local_co2: dict, uncapped: list = ()
+    n: pypsa.Network, local_co2: dict, uncapped: list = (), pooled: list = ()
 ) -> None:
     """
     This function adds local net co2 emissions constraints, according to the limits
@@ -759,7 +933,22 @@ def add_split_co2_constraints(
     constraint. Later, we should make it an option of either including or excluding the region
     in the collective constraint.
     Countries in ``uncapped`` are left out of every CO2 constraint (no carbon price).
+    Regions in ``pooled`` keep their cap but share it with the collective (linked
+    carbon markets): their emissions count in the collective constraint and their
+    allowance is added to its budget, so the total cap equals that of separate caps.
     Emissions are assigned to countries by the location of the emitting links.
+
+    Config keys read here besides local_co2:
+    - co2_1990_override {country: MtCO2}: 1990 CO2 of countries whose co2_totals
+      row is missing or partial (e.g. the Western Balkans from their national
+      inventories). It replaces the sum over the emission sectors, both in
+      fraction-based local caps and in the collective budget.
+    - co2_unlocated: where the emissions of links at EU-level buses only (e.g. oil
+      refining at "EU oil") count. "collective" (default): in the collective
+      budget. "oil_demand": shared among all countries by their demand for oil
+      products, for setups in which every country has its own cap. Only oil
+      refining may be unlocated then (coal for industry needs
+      regional_coal_demand: true).
     """
     co2_totals_file = snakemake.input.co2_totals
     co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0) # convert Mt to tCO2
@@ -771,13 +960,31 @@ def add_split_co2_constraints(
 
     investment_year = int(snakemake.wildcards.planning_horizons)
 
+    # 1990 CO2 by country over the emission sectors [tCO2]
+    co2_1990_by_country = co2_totals[sectors].sum(axis=1)
+    override = snakemake.config.get("co2_1990_override") or {}
+    if override:
+        override = pd.Series(override, dtype=float) * 1e6
+        co2_1990_by_country = co2_1990_by_country.reindex(
+            co2_1990_by_country.index.union(override.index)
+        )
+        co2_1990_by_country.update(override)
+        logger.info(f"1990 CO2 from co2_1990_override [Mt]: {(override / 1e6).to_dict()}")
+
+    def allowance(region):
+        limit = local_co2[region][investment_year]
+        if local_co2[region].get("unit") == "MtCO2":
+            # absolute cap, for countries whose 1990 emissions co2_totals lacks
+            return limit * 1e6 * nyears
+        return co2_1990_by_country[region] * limit * nyears  # tCO2
+
     # Regions with a local target in this horizon; any other region joins the
     # collective budget. Decided up front, so that the emission transfer below
     # uses the same zones as the constraints (in a year without a GB target, GB
     # is part of the collective and GB<->EU flows are no transfer at all).
     local_co2_regions = []
     for region in local_co2:
-        if region not in co2_totals.index or investment_year not in local_co2[region]:
+        if region not in co2_1990_by_country.index or investment_year not in local_co2[region]:
             logger.info(
                 f"No local CO2 target for {region} in {investment_year} (or no "
                 "co2_totals): it is part of the collective budget."
@@ -785,8 +992,14 @@ def add_split_co2_constraints(
             continue
         local_co2_regions.append(region)
 
+    # pooled regions bring their cap into the collective budget
+    pooled = [r for r in local_co2_regions if r in pooled]
+    local_co2_regions = [r for r in local_co2_regions if r not in pooled]
+    if pooled:
+        logger.info(f"Caps pooled with the collective budget: {pooled}.")
+
     uncapped = list(uncapped)
-    if both := set(uncapped) & set(local_co2_regions):
+    if both := set(uncapped) & set(local_co2_regions + pooled):
         raise ValueError(f"Countries {sorted(both)} have a local CO2 target and are uncapped.")
     if unknown := set(uncapped) - set(snakemake.params.countries):
         raise ValueError(f"Uncapped countries {sorted(unknown)} are not in the model.")
@@ -810,14 +1023,42 @@ def add_split_co2_constraints(
     def located_in(countries):
         return xr.DataArray(name_countries.isin(countries), coords={link_dim: names})
 
+    # Links at EU-level buses only (no country), e.g. oil refining
+    is_link = names.isin(n.links.index)
+    unlocated_names = names[is_link & name_countries.isna()]
+    unlocated_carriers = sorted(n.links.carrier[unlocated_names].unique())
+    unlocated_mode = snakemake.config.get("co2_unlocated", "collective")
+    if unlocated_mode not in ("collective", "oil_demand"):
+        raise ValueError(
+            f"co2_unlocated must be 'collective' or 'oil_demand', not {unlocated_mode!r}."
+        )
+    shares = pd.Series(dtype=float)  # country -> share of the unlocated emissions
+    if unlocated_mode == "oil_demand" and len(unlocated_names):
+        if other := [c for c in unlocated_carriers if c != "oil refining"]:
+            raise ValueError(
+                f"Emissions of {other} belong to no country and co2_unlocated: "
+                "oil_demand only shares oil refining (coal for industry needs "
+                "regional_coal_demand: true)."
+            )
+        shares = _oil_demand_shares(n)
+        expr_unlocated = expr.sel(
+            {link_dim: xr.DataArray(names.isin(unlocated_names), coords={link_dim: names}),
+             "group": 0}
+        ).sum()
+        logger.info(
+            f"Emissions of {unlocated_carriers} shared by oil demand: "
+            f"{shares.round(3).to_dict()}"
+        )
+
     # CBAM: embodied emissions of cross-border electricity, as a border
-    # adjustment ("import_only"), symmetric between all zones (true) or off (false).
+    # adjustment ("import_only", or "import_only_all" at every border), symmetric
+    # between all zones (true) or off (false).
     uk_settings_prepare = snakemake.params.uk_settings_prepare
     transfer = get(uk_settings_prepare["cbam_emission_transfer"], investment_year)
-    if transfer not in (True, False, "import_only"):
+    if transfer not in (True, False, "import_only", "import_only_all"):
         raise ValueError(
-            "cbam_emission_transfer must be true, false or 'import_only', "
-            f"not {transfer!r}."
+            "cbam_emission_transfer must be true, false, 'import_only' or "
+            f"'import_only_all', not {transfer!r}."
         )
     transfer_exprs = {}
     if uk_settings_prepare["cbam"] and transfer:
@@ -829,10 +1070,7 @@ def add_split_co2_constraints(
     for region in local_co2_regions:
 
         # calculating the net CO2 emissions allowance for the country
-        limit = local_co2[region][investment_year]
-
-        co2_1990 = co2_totals.loc[region, sectors].sum() # tCO2 emissions per year
-        net_co2_allowance = co2_1990 * limit * nyears
+        net_co2_allowance = allowance(region)
         logger.info(f"Net CO2 emissions cap for {region}: {net_co2_allowance}")
 
         # Add expression containing all CO2 sources and sinks attached to the country
@@ -840,6 +1078,10 @@ def add_split_co2_constraints(
         expr_c_group = expr.sel({link_dim: mask, "group": 0}) # group 0 corresponds to links
 
         lhs = expr_c_group.sum()
+
+        # Share of the emissions at EU-level buses (co2_unlocated: oil_demand)
+        if shares.get(region, 0) > 0:
+            lhs = lhs + shares[region] * expr_unlocated
 
         # Emission transfer: add net imported embodied emissions to this region.
         if region in transfer_exprs:
@@ -856,16 +1098,29 @@ def add_split_co2_constraints(
     outside = local_co2_regions + uncapped
     all_countries = snakemake.params.countries
     collective = [x for x in all_countries if x not in outside]
-    limit = calculate_co2_limit(investment_year, options, collective)
-    co2_1990 = co2_totals.loc[collective, sectors].sum().sum()
-    net_co2_allowance = co2_1990 * limit * nyears
+    if not collective:
+        if unlocated_mode == "collective" and unlocated_carriers:
+            raise ValueError(
+                f"Every country has its own CO2 cap or none, so the emissions of "
+                f"{unlocated_carriers} (EU-level buses) would count nowhere; set "
+                "co2_unlocated: oil_demand."
+            )
+        logger.info("No collective CO2 budget: every country has its own cap or none.")
+        return
+    base = [x for x in collective if x not in pooled]
+    limit = calculate_co2_limit(investment_year, options, base)
+    co2_1990 = co2_1990_by_country[base].sum()
+    net_co2_allowance = co2_1990 * limit * nyears + sum(allowance(r) for r in pooled)
     logger.info(f"Collective CO2 emissions budget for {len(collective)} countries: {net_co2_allowance}")
 
-    # Exclude the regions with a local constraint and the uncapped ones; links at
-    # EU-level buses only stay in the collective.
-    expr_collective_group = expr.sel({link_dim: ~located_in(outside), "group": 0})
-
-    lhs = expr_collective_group.sum()
+    if unlocated_mode == "collective":
+        # Exclude the regions with a local constraint and the uncapped ones; links
+        # at EU-level buses only stay in the collective.
+        lhs = expr.sel({link_dim: ~located_in(outside), "group": 0}).sum()
+    else:
+        lhs = expr.sel({link_dim: located_in(collective), "group": 0}).sum()
+        if shares[shares.index.isin(collective)].sum() > 0:
+            lhs = lhs + shares[shares.index.isin(collective)].sum() * expr_unlocated
 
     # Emission transfer: add net imported embodied emissions to collective zone.
     if "collective" in transfer_exprs:
@@ -2144,7 +2399,10 @@ def extra_functionality(
     if isinstance(config["local_co2"], dict):
         logger.info("Adding local CO2 constraint.")
         add_split_co2_constraints(
-            n, config["local_co2"], getattr(snakemake.params, "co2_uncapped", [])
+            n,
+            config["local_co2"],
+            uncapped_countries(snakemake.wildcards.planning_horizons),
+            config.get("co2_pooled", []),
         )
 
     uk_settings_prepare = snakemake.params.uk_settings_prepare
@@ -2665,7 +2923,7 @@ if __name__ == "__main__":
         remove_storage(n, storage_to_remove)
 
     if not isinstance(snakemake.config["local_co2"], dict):
-        if getattr(snakemake.params, "co2_uncapped", []):
+        if uncapped_countries(snakemake.wildcards.planning_horizons):
             # the CO2Limit global constraint counts every country's emissions
             raise ValueError("co2_uncapped needs local_co2 (the split CO2 constraints).")
         countries = snakemake.params.countries
@@ -2705,7 +2963,21 @@ if __name__ == "__main__":
         )
 
     # Uncapped countries must not become a sink for captured CO2.
-    restrict_carbon_exports_to_uncapped(n, getattr(snakemake.params, "co2_uncapped", []))
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    restrict_carbon_exports_to_uncapped(n, uncapped_countries(investment_year))
+
+    # CBAM study: cables, gas pipelines and coal plants of the exporters. Before the
+    # split, so that the class copies inherit the changes.
+    planned = uk_settings.get("planned_interconnectors") or {}
+    if planned:
+        plan_interconnectors(n, planned["file"], planned["countries"], investment_year)
+    restrict_new_gas_pipelines(n, uk_settings.get("no_new_gas_pipelines") or [])
+    retirement = uk_settings.get("early_retirement") or {}
+    # the base year keeps the fleet in operation
+    if retirement and investment_year > base_year:
+        allow_early_retirement(
+            n, retirement["carriers"], retirement.get("countries", []), snakemake.input.costs
+        )
 
     # CBAM: split the electricity network by CO2 intensity class and add the
     # border charge. The split runs on the complete network of the horizon,
@@ -2719,10 +2991,12 @@ if __name__ == "__main__":
         cbam_split = uk_settings_prepare["cbam_split"]
         basis = uk_settings_prepare["cbam_charge_basis"]
         transfer = get(uk_settings_prepare["cbam_emission_transfer"], investment_year)
-        if not cbam_split and (basis == "nonclean" or transfer is True):
+        if not cbam_split and (
+            basis in ("nonclean", "label") or transfer in (True, "import_only_all")
+        ):
             raise ValueError(
-                "A CBAM charge on nonclean imports and the symmetric emission "
-                "transfer need cbam_split: true."
+                "A CBAM charge on nonclean imports and the symmetric or every-border "
+                "emission transfer need cbam_split: true."
             )
         if cbam_split:
             split_components_by_co2_intensity_levels(
@@ -2742,15 +3016,42 @@ if __name__ == "__main__":
             country: get(paid, investment_year)
             for country, paid in uk_settings_prepare["cbam_deduction"].items()
         }
+
         add_cbam_import_charge(
             n,
             uk_settings_prepare["cbam_regions"],
             get(uk_settings_prepare["cbam_price"], investment_year),
             basis=basis,
-            default_intensity=uk_settings_prepare["cbam_default_intensity"],
+            default_intensity=intensity_by_year(
+                uk_settings_prepare["cbam_default_intensity"], investment_year
+            ),
             exempt=uk_settings_prepare["cbam_exempt"],
             deduction=deduction,
         )
+        # hydrogen imports through pipelines (H2_network): default values, or by
+        # label (needs the hydrogen split)
+        hydrogen = uk_settings_prepare.get("cbam_hydrogen") or {}
+        if hydrogen:
+            h2_basis = hydrogen.get("basis", "default")
+            if h2_basis in ("nonclean", "label") and not (
+                cbam_split and uk_settings_prepare["cbam_split_hydrogen"]
+            ):
+                raise ValueError(
+                    "A CBAM charge on nonclean hydrogen needs cbam_split and cbam_split_hydrogen."
+                )
+            add_cbam_import_charge(
+                n,
+                uk_settings_prepare["cbam_regions"],
+                get(uk_settings_prepare["cbam_price"], investment_year),
+                basis=h2_basis,
+                default_intensity=intensity_by_year(
+                    hydrogen.get("default_intensity"), investment_year
+                ),
+                exempt=uk_settings_prepare["cbam_exempt"],
+                deduction=deduction,
+                carrier="H2 pipeline",
+                class_intensity={"clean": 0.0, "nonclean": hydrogen.get("nonclean_intensity", 0.0)},
+            )
 
     logging_frequency = snakemake.config.get("solving", {}).get(
         "mem_logging_frequency", 30

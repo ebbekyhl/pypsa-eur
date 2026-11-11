@@ -1,0 +1,80 @@
+# National-caps study: one continental CO2 budget (x1) vs the same budget split into
+# national caps (x2) vs national caps with a border adjustment at every border (x3).
+# Every setting the three runs take beyond config.default.yaml is in this file; each
+# run adds only its own overlay:
+#   snakemake solve_sector_networks --configfile config/config.split.yaml \
+#     config/config_x1_continental.yaml -j32 --rerun-incomplete
+# Myopic, 2025-2050, 5-hourly sector networks.
+
+scenario:
+  sector_opts:
+  - '5h'
+
+# All input data is local. The retrieve rules would assert at DAG parse, as no WDPA
+# file is published for the current months.
+enable:
+  retrieve: false
+
+# Western Balkan coal fleet from the Global Coal Plant Tracker (GEM, July 2026),
+# retiring as adopted plans foresee (data/cbam/make_custom_powerplants.py). The
+# filter drops the PyPSA-Eur entries it replaces; it runs after the ISO2
+# conversion, so it needs country codes.
+electricity:
+  custom_powerplants: Bound == 'plans'
+  powerplants_filter: (DateOut >= 2024 or DateOut != DateOut) and not (Country == 'Germany' and Fueltype == 'Nuclear') and not (Country in ['AL', 'BA', 'ME', 'MK', 'RS'] and Fueltype in ['Lignite', 'Hard Coal'])
+
+sector:
+  # European hydrogen pipeline network (cost-optimal, no retrofitting of gas
+  # pipelines), for cross-border hydrogen flows
+  H2_network: true
+  # Coal for industry by country (otherwise one EU-level load), so that its CO2
+  # counts in the national caps
+  regional_coal_demand: true
+
+# 1990 CO2 excluding LULUCF [MtCO2] for the countries whose co2_totals row is empty
+# (BA, ME) or partial (AL, MK, RS), from the national inventories in
+# data/cbam/inventories/. Used for the caps (fraction x 1990 CO2) of these
+# countries and in the continental budget alike.
+co2_1990_override:
+  AL: 9.62   # BTR1 2025: CO2 excl. LULUCF 9,622 kt in 1990
+  BA: 28.0   # NIR 2019-2022: GHG excl. LULUCF 1990 = 28,031 Gg (2022) / (1 - 17.66%) = 34.0 Mt, times the CO2 share of 2022 (0.822); no 1990 CO2 table
+  ME: 2.57   # NC4/BTR1 2024, Table 22: energy 2,358 + IPPU 210 + agriculture 0.5 kt
+  MK: 10.04  # NIR 2024, Table 3: CO2 10,038.7 Gg
+  RS: 67.75  # BTR1 2024, Table 3: CO2 67,747 kt
+
+# Oil refining sits at the EU-level oil bus; with every country capped, its CO2 is
+# shared among the countries by their demand for oil products.
+co2_unlocated: oil_demand
+# every country is capped
+co2_uncapped: []
+
+uk_settings:
+  prepare:
+    # CBAM: off in x1 and x2. x3 switches it on for the border adjustment only
+    # (cbam_emission_transfer); no run has a CBAM charge. With the split,
+    # electricity and hydrogen (incl. the pipelines) get a clean and a nonclean
+    # copy that share one capacity.
+    cbam: false
+    cbam_split: true
+    cbam_split_hydrogen: true
+    cbam_shared_transmission_capacity: true
+    cbam_emission_transfer: false
+    cbam_price: 0
+    # read by the charge, unused at a price of 0
+    cbam_regions: [GB]
+    cbam_exempt: []
+    cbam_charge_basis: nonclean
+    cbam_deduction: {}
+    cbam_default_intensity: {GB: 0.430, AL: 0.0, BA: 1.148, ME: 0.979, MK: 0.887, RS: 1.041, UA: 0.907}
+  solve:
+    # Cross-border cables of GB and the Balkans follow planned projects only
+    # (TYNDP 2024, in permitting or under construction).
+    planned_interconnectors:
+      file: data/cbam/interconnectors_tyndp2024.csv
+      countries: [GB, AL, BA, ME, MK, RS]
+    # No new gas pipelines into or within the Balkans.
+    no_new_gas_pipelines: [AL, BA, ME, MK, RS]
+    # Balkan coal may retire early, at its fixed O&M cost.
+    early_retirement:
+      carriers: [coal, lignite]
+      countries: [AL, BA, ME, MK, RS]

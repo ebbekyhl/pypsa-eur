@@ -1,0 +1,43 @@
+# x1: one continental CO2 budget for all 33 countries, as in PyPSA-Eur's default
+# (co2_budget: 0.628 of 1990 in 2025, 0.45 / 0.25 / 0.10 / 0.05 / 0 in 2030-2050).
+# Written as the same fraction for every country, all pooled into one constraint,
+# so that its total equals the sum of the national caps of x2 (incl. GB, whose own
+# target config.default would otherwise keep, and the Balkans' 1990 CO2 from
+# co2_1990_override). Run it on top of config.split.yaml.
+run:
+  name: "x1_continental"
+local_co2:
+  AL: &caps {2025: 0.628, 2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+  AT: *caps
+  BA: *caps
+  BE: *caps
+  BG: *caps
+  CH: *caps
+  CZ: *caps
+  DE: *caps
+  DK: *caps
+  EE: *caps
+  ES: *caps
+  FI: *caps
+  FR: *caps
+  GB: *caps
+  GR: *caps
+  HR: *caps
+  HU: *caps
+  IE: *caps
+  IT: *caps
+  LT: *caps
+  LU: *caps
+  LV: *caps
+  ME: *caps
+  MK: *caps
+  NL: *caps
+  'NO': *caps
+  PL: *caps
+  PT: *caps
+  RO: *caps
+  RS: *caps
+  SE: *caps
+  SI: *caps
+  SK: *caps
+co2_pooled: [AL, AT, BA, BE, BG, CH, CZ, DE, DK, EE, ES, FI, FR, GB, GR, HR, HU, IE, IT, LT, LU, LV, ME, MK, NL, 'NO', PL, PT, RO, RS, SE, SI, SK]

@@ -3782,8 +3782,12 @@ def add_methanol(
     methanol_options = options["methanol"]
 
     if methanol_options["transport"]:
+        # One link per connection and direction, as for biomass transport: the
+        # links are one-way (the transport cost applies to the energy sent), so a
+        # single link per connection would carry methanol only from the node that
+        # comes first in the alphabet to the other one.
         methanol_transport = create_network_topology(
-            n, "methanol transport ", bidirectional=True
+            n, "methanol transport ", bidirectional=False
         )
         n.add(
             "Link",

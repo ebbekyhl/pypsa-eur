@@ -1,0 +1,49 @@
+# caps_national: the budget of caps_continental split into national caps, every
+# country at the same fraction of its own 1990 CO2 (0.45 / 0.25 / 0.10 / 0.05 / 0 in
+# 2030-2050), with the border rules for carbon carriers between the national
+# budgets. Captured CO2 may enter a country only to be stored (its net CO2 imports
+# may not exceed what it sequesters), and methanol carries its carbon: the exporter
+# books it, the importer deducts it. Without these rules (caps_national_ccucredit),
+# high-price countries kept the credit for captured CO2 that low-price countries
+# turned into Fischer-Tropsch fuel or into methanol reformed back into hydrogen. No
+# border adjustment for electricity, hydrogen or methanol. National caps from 2030 only; the run starts from the solved 2025 network of
+# caps_continental (staged by job_x_stage.sh).
+# Run it on top of config.caps.yaml.
+run:
+  name: "caps_national"
+co2_imports_for_storage_only: true
+methanol_carries_carbon: true
+local_co2:
+  AL: &caps {2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+  AT: *caps
+  BA: *caps
+  BE: *caps
+  BG: *caps
+  CH: *caps
+  CZ: *caps
+  DE: *caps
+  DK: *caps
+  EE: *caps
+  ES: *caps
+  FI: *caps
+  FR: *caps
+  GB: *caps
+  GR: *caps
+  HR: *caps
+  HU: *caps
+  IE: *caps
+  IT: *caps
+  LT: *caps
+  LU: *caps
+  LV: *caps
+  ME: *caps
+  MK: *caps
+  NL: *caps
+  'NO': *caps
+  PL: *caps
+  PT: *caps
+  RO: *caps
+  RS: *caps
+  SE: *caps
+  SI: *caps
+  SK: *caps

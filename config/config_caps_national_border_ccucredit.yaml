@@ -1,13 +1,16 @@
-# x3: the national caps of x2 plus a border adjustment at every border. With the
-# clean/nonclean split, each country's cap also counts the nonclean-labelled
+# caps_national_border_ccucredit: the border adjustment of caps_national_border
+# without the border rules for carbon carriers and without the methanol split. With
+# the clean/nonclean split, each country's cap also counts the nonclean-labelled
 # electricity (0.35 tCO2/MWh) and hydrogen (0.422 tCO2/MWh_H2, the EU default for
 # hydrogen) it imports from any other country; the exporter still counts its own
-# emissions (no credit). No CBAM charge. Run it on top of config.split.yaml, which
-# holds the split settings.
+# emissions (no credit). No CBAM charge. National caps from 2030 only; the run starts from the solved 2025 network of
+# caps_continental (staged by job_x_stage.sh). The 2030 brownfield collapses
+# the split, a no-op on that unsplit network. Run it on top of config.caps.yaml,
+# which holds the split settings.
 run:
-  name: "x3_national_split"
+  name: "caps_national_border_ccucredit"
 local_co2:
-  AL: &caps {2025: 2.0, 2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+  AL: &caps {2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
   AT: *caps
   BA: *caps
   BE: *caps

@@ -1,11 +1,13 @@
-# x1: one continental CO2 budget for all 33 countries, as in PyPSA-Eur's default
-# (co2_budget: 0.628 of 1990 in 2025, 0.45 / 0.25 / 0.10 / 0.05 / 0 in 2030-2050).
-# Written as the same fraction for every country, all pooled into one constraint,
-# so that its total equals the sum of the national caps of x2 (incl. GB, whose own
-# target config.default would otherwise keep, and the Balkans' 1990 CO2 from
-# co2_1990_override). Run it on top of config.split.yaml.
+# caps_continental: one continental CO2 budget for all 33 countries, as in
+# PyPSA-Eur's default (co2_budget: 0.628 of 1990 in 2025, 0.45 / 0.25 / 0.10 / 0.05 /
+# 0 in 2030-2050). Written as the same fraction for every country, all pooled into
+# one constraint, so that its total equals the sum of the national caps of
+# caps_national (incl. GB, whose own target config.default would otherwise keep, and
+# the Balkans' 1990 CO2 from co2_1990_override). Its solved 2025 network is the 2025
+# of every run with national caps (job_x_stage.sh). Run it on top of
+# config.caps.yaml.
 run:
-  name: "x1_continental"
+  name: "caps_continental"
 local_co2:
   AL: &caps {2025: 0.628, 2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
   AT: *caps

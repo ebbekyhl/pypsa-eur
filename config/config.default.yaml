@@ -103,14 +103,25 @@ uk_settings:
     uk_scale_up_offwind_potential: 2 # to align with UK government's offshore wind targets, we increase the estimated offshore wind potential in the UK by 2 
     uk_only: false # whether the study is intended to only include the UK. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
     uk_include_offshore_buses: false # whether offshore buses (not to be confused with offshore regions) are included.
-    electrolysis_p_min_pu: false # minimum output of electrolysis units 
+    electrolysis_p_min_pu: false # minimum output of electrolysis units (not supported with cbam_split_hydrogen, whose class copies cannot share a minimum)
     reduce_model_in_the_east: false # whether to reduce the model in the eastern part of Europe by clustering Balkan, Baltic and East European countries into three representative regions, respectively. 
     use_dynamic_gas_prices: false
     gas_prices: 
       UK: 36.0 # [EUR/MWh], source: https://tradingeconomics.com/commodity/uk-natural-gas (2025 average)
       EU: 34.0 # [EUR/MWh], source: https://tradingeconomics.com/commodity/eu-natural-gas (2025 average)
       imports: 50.0 # [EUR/MWh], source: https://lngprice.com/ (17.92 USD / MMBtu)
-    cbam: true # whether to include CBAM in the model. If true, the model will include a carbon border adjustment mechanism for imports of electricity and hydrogen into the UK.
+    cbam: true # whether to include a carbon border adjustment mechanism (CBAM) on electricity imports into cbam_regions
+    cbam_split: true # whether to split electricity (and hydrogen) into a clean and a nonclean class at solve time; needed for cbam_charge_basis: nonclean and the emission transfer
+    cbam_regions: ["GB"] # regions applying the CBAM: their electricity imports from outside the regions are charged / counted. Matched as prefixes of the bus location (e.g. GBNI for Northern Ireland alone)
+    cbam_exempt: [] # exporting regions whose electricity is not charged (e.g. NO and CH under the EU CBAM), matched like cbam_regions
+    cbam_charge_basis: nonclean # nonclean: nonclean-labelled imports at 0.35 tCO2/MWh (actual emissions by label). default: every import at the exporter's cbam_default_intensity, independent of labels
+    cbam_default_intensity: {GB: 0.430, AL: 0.0, BA: 1.148, ME: 0.979, MK: 0.887, RS: 1.041, UA: 0.907} # [tCO2/MWh] default values by exporting country for cbam_charge_basis: default (as reported for Annex III of Implementing Regulation (EU) 2025/2621)
+    cbam_price: 90 # [EUR/tCO2] CBAM certificate price, a number or {year: price}; 90 at 0.35 tCO2/MWh is 31.5 EUR/MWh
+    cbam_deduction: {} # [EUR/tCO2] carbon price paid in each exporting country, deducted from cbam_price: {country: a number or {year: price}}
+    cbam_emission_transfer: import_only # a value or {year: value}. import_only: the CO2 budget zone (local target or collective) that receives the CBAM imports counts their embodied emissions (at cbam_charge_basis), exporters get no credit. true: symmetric transfer of nonclean labels between all CO2 budget zones (gameable through the labels of exports; needs the split). false: off
+    cbam_shared_transmission_capacity: true # whether the clean and nonclean copies of a transmission link share its capacity (false only to quantify the effect of that constraint)
+    cbam_split_hydrogen: true # whether to also split hydrogen into a clean and a nonclean class (electrolysis, fuel cells, H2 stores, SMR)
+    cbam_split_methanol: false # whether to also split methanol into a clean and a nonclean class (methanolisation on the hydrogen and electricity of its class, biomass and biogas routes clean, stores, methanol transport); needs cbam_split_hydrogen
   solve:
     uk_freeze_base_year_capacities: true # only in the base year: if true, only brownfield capacities are allowed in the UK, i.e., disallowing capacity expansion.
     uk_freeze_wind_projects: 
@@ -164,6 +175,20 @@ local_co2:
     2040: 0.092 # Exponential decay
     2045: 0.038 # Exponential decay
     2050: 0.000 # Target of reaching net zero by 2050
+
+# Countries outside every CO2 constraint (no local target, not in the collective
+# budget), i.e. without a carbon price. Needs local_co2.
+co2_uncapped: []
+
+# Carbon carriers between zones with their own CO2 budget (local caps, collective).
+# Captured CO2 counts where it is captured, wherever it goes. With
+# co2_imports_for_storage_only, a zone's net CO2 imports by pipeline may not exceed
+# what it sequesters, so captured CO2 crosses a border only to be stored (as
+# national inventories and the EU ETS credit it). With methanol_carries_carbon, the
+# exporter of methanol books its carbon and the importer deducts it, so imported
+# methanol is carbon-neutral for the importer. Both need local_co2.
+co2_imports_for_storage_only: false
+methanol_carries_carbon: false
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#co2-budget
 co2_budget:

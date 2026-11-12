@@ -1,0 +1,58 @@
+# caps_national_border: the national caps of caps_national with the same border rules
+# for carbon carriers (captured CO2 enters a country only to be stored; methanol
+# carries its carbon), plus a border adjustment at every border. With the
+# clean/nonclean split, which here covers methanol too, each country's cap also
+# counts the nonclean-labelled electricity (0.35 tCO2/MWh), hydrogen (0.422
+# tCO2/MWh_H2, the EU default for hydrogen) and methanol it imports from any other
+# country; the exporter still counts its own emissions (no credit). Methanol is
+# clean if made from clean hydrogen and clean electricity, or from biomass or
+# biogas; its nonclean default, 0.575 tCO2/MWh_MeOH, is the hydrogen default and
+# 0.35 tCO2/MWh_el on the inputs of methanolisation (1/0.8787 MWh_H2 and
+# 0.2381/0.8787 MWh_el per MWh_MeOH). No CBAM charge. National caps from 2030 only; the run starts from the solved 2025 network of
+# caps_continental (staged by job_x_stage.sh). The 2030
+# brownfield collapses the split, a no-op on that unsplit network. Run it on top of
+# config.caps.yaml, which holds the split settings.
+run:
+  name: "caps_national_border"
+co2_imports_for_storage_only: true
+methanol_carries_carbon: true
+local_co2:
+  AL: &caps {2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+  AT: *caps
+  BA: *caps
+  BE: *caps
+  BG: *caps
+  CH: *caps
+  CZ: *caps
+  DE: *caps
+  DK: *caps
+  EE: *caps
+  ES: *caps
+  FI: *caps
+  FR: *caps
+  GB: *caps
+  GR: *caps
+  HR: *caps
+  HU: *caps
+  IE: *caps
+  IT: *caps
+  LT: *caps
+  LU: *caps
+  LV: *caps
+  ME: *caps
+  MK: *caps
+  NL: *caps
+  'NO': *caps
+  PL: *caps
+  PT: *caps
+  RO: *caps
+  RS: *caps
+  SE: *caps
+  SI: *caps
+  SK: *caps
+uk_settings:
+  prepare:
+    cbam: true
+    cbam_split_methanol: true
+    cbam_emission_transfer: import_only_all
+    cbam_transfer_intensity: {DC: 0.35, H2 pipeline: 0.422, methanol transport: 0.575}

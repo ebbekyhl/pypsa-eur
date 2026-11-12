@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
-# CO2 intensity split without the joint transmission capacity constraint, i.e.
-# the behaviour at commit 26fb608d. Every emission class gets a full copy of
-# each interconnector, so the transfer capability and the investment cost of
-# every HVDC link are multiplied by the number of classes.
+# Same as config_cbam.yaml except that the per-class copies of each DC link are
+# independent cables (no joint transmission capacity constraint): the transfer
+# capability and the investment cost of every interconnector are multiplied by
+# the number of classes. Storage and H2 still share capacity. Between myopic
+# horizons the largest class copy's capacity is carried for every class (an
+# approximation, as the network between rules is unsplit).
 # Only meaningful as a comparison against config_cbam.yaml.
 # Overlay on config/config.default.yaml.
 
@@ -16,3 +18,6 @@ uk_settings:
   prepare:
     cbam: true
     cbam_shared_transmission_capacity: false
+    cbam_regions: ["GB"]
+    cbam_price: 90  # EUR/tCO2
+    cbam_emission_transfer: import_only

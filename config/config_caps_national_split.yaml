@@ -1,0 +1,53 @@
+# caps_national_split: the control for caps_national_border. The national caps and
+# the border rules for carbon carriers of caps_national (captured CO2 enters a
+# country only to be stored; methanol carries its carbon), solved on the network
+# split into clean and nonclean electricity, hydrogen and methanol, but without any
+# border adjustment: no rule reads the labels. Its difference from caps_national is
+# what the split itself changes (each storage compartment cyclic on its own,
+# unlabelled supply kept at its node, the shared envelopes), so caps_national_border
+# minus this run is the effect of the border adjustment alone. National caps from 2030 only; the run starts from the solved 2025 network of
+# caps_continental (staged by job_x_stage.sh).
+# Run it on top of config.caps.yaml, which holds the split settings.
+run:
+  name: "caps_national_split"
+co2_imports_for_storage_only: true
+methanol_carries_carbon: true
+local_co2:
+  AL: &caps {2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+  AT: *caps
+  BA: *caps
+  BE: *caps
+  BG: *caps
+  CH: *caps
+  CZ: *caps
+  DE: *caps
+  DK: *caps
+  EE: *caps
+  ES: *caps
+  FI: *caps
+  FR: *caps
+  GB: *caps
+  GR: *caps
+  HR: *caps
+  HU: *caps
+  IE: *caps
+  IT: *caps
+  LT: *caps
+  LU: *caps
+  LV: *caps
+  ME: *caps
+  MK: *caps
+  NL: *caps
+  'NO': *caps
+  PL: *caps
+  PT: *caps
+  RO: *caps
+  RS: *caps
+  SE: *caps
+  SI: *caps
+  SK: *caps
+uk_settings:
+  prepare:
+    cbam: true
+    cbam_split_methanol: true
+    cbam_emission_transfer: false

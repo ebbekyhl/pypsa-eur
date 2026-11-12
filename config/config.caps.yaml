@@ -1,9 +1,16 @@
-# National-caps study: one continental CO2 budget (x1) vs the same budget split into
-# national caps (x2) vs national caps with a border adjustment at every border (x3).
-# Every setting the three runs take beyond config.default.yaml is in this file; each
-# run adds only its own overlay:
-#   snakemake solve_sector_networks --configfile config/config.split.yaml \
-#     config/config_x1_continental.yaml -j32 --rerun-incomplete
+# National-caps study: one continental CO2 budget against the same budget split into
+# national caps. Every setting the runs take beyond config.default.yaml is in this
+# file; each run adds its overlay config/config_caps_<variant>.yaml (run name
+# caps_<variant>):
+#   continental        one budget for all 33 countries
+#   national           a cap for every country, at the same share of its 1990 CO2, with
+#                      the border rules for carbon carriers (captured CO2 enters a
+#                      country only to be stored; methanol carries its carbon)
+#   national_split     as national, on the network split into clean and nonclean carriers
+#   national_border    as national_split, plus a border adjustment at every border
+#   ..._ccucredit      without the border rules for carbon carriers
+#   snakemake solve_sector_networks --configfile config/config.caps.yaml \
+#     config/config_caps_continental.yaml -j32 --rerun-incomplete
 # Myopic, 2025-2050, 5-hourly sector networks.
 
 scenario:
@@ -50,10 +57,11 @@ co2_uncapped: []
 
 uk_settings:
   prepare:
-    # CBAM: off in x1 and x2. x3 switches it on for the border adjustment only
-    # (cbam_emission_transfer); no run has a CBAM charge. With the split,
-    # electricity and hydrogen (incl. the pipelines) get a clean and a nonclean
-    # copy that share one capacity.
+    # CBAM: off in the runs without the split. The runs on the split network switch
+    # it on, and the border adjustment (cbam_emission_transfer) comes on top; no run
+    # has a CBAM charge. With the split, electricity, hydrogen (incl. the pipelines)
+    # and, with cbam_split_methanol, methanol get a clean and a nonclean copy that
+    # share one capacity.
     cbam: false
     cbam_split: true
     cbam_split_hydrogen: true

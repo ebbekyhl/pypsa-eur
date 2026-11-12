@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: CC0-1.0
 
-# CO2 intensity split with the joint transmission capacity constraint, so the
-# copies of an interconnector share the rating and the cost of one cable.
+# CO2 intensity split with both CBAM levers: a charge of cbam_price x 0.35 tCO2/MWh
+# on nonclean electricity imports into GB, and GB counting the embodied emissions
+# of those imports in its CO2 target (import_only, no credit for exporters). The
+# copies of an interconnector, a storage or an H2 asset share its capacity.
 # Overlay on config/config.default.yaml.
 
 run:
@@ -13,3 +15,6 @@ uk_settings:
   prepare:
     cbam: true
     cbam_shared_transmission_capacity: true
+    cbam_regions: ["GB"]
+    cbam_price: 90  # EUR/tCO2
+    cbam_emission_transfer: import_only

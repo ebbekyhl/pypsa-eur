@@ -6913,12 +6913,19 @@ CO2_INTENSITY_LVLS = {
     "nonclean": 0.35,  # tCO2/MWh_el (gas at ~0.57 CCGT efficiency)
 }
 
-def _share_capacity_across_levels(n, component, originals, co2_intensity_lvls):
+def _share_capacity_across_levels(
+    n, component, originals, co2_intensity_lvls, joint_minimum=False
+):
     """
     Make the per-level copies "<name> <lvl>" of each original asset compartments of
     one physical asset: the first level's copy keeps the capital cost, initial
     energy and inflow, every copy points to it via "capacity_owner", and
     solve_network.add_cbam_shared_capacity_constraints caps their sum at its rating.
+
+    A positive minimum would apply to every copy, so the split refuses it, unless
+    ``joint_minimum`` (links with a constant p_min_pu only): the minimum part load
+    then moves to "shared_p_min_pu", which add_cbam_shared_capacity_constraints
+    imposes on the sum of the copies and collapse_co2_split restores.
     """
     originals = pd.Index(originals)
     if originals.empty:
@@ -6941,7 +6948,13 @@ def _share_capacity_across_levels(n, component, originals, co2_intensity_lvls):
 
         varying = c.dynamic[minimum]
         varying = varying[varying.columns.intersection(copies)]
-        if (df.loc[copies, minimum] > 0).any() or (varying > 0).any().any():
+        positive = (df.loc[copies, minimum] > 0).any() or (varying > 0).any().any()
+        if positive and joint_minimum and component == "Link" and varying.empty:
+            if "shared_p_min_pu" not in df.columns:
+                df["shared_p_min_pu"] = 0.0
+            df.loc[copies, "shared_p_min_pu"] = df.loc[copies, minimum].values
+            df.loc[copies, minimum] = 0.0
+        elif positive:
             raise NotImplementedError(
                 f"{component}s duplicated per CO2 class must not have a positive "
                 f"{minimum}: it would be imposed on every class copy."
@@ -7354,35 +7367,160 @@ def split_and_duplicate_hydrogen(n, co2_intensity_lvls):
         f"duplicated, {len(smr_i)} SMR->nonclean, {len(smr_cc_i)} SMR CC->clean."
     )
 
-def duplicate_h2_pipelines(n, co2_intensity_lvls, shared_capacity=True):
+def split_and_duplicate_methanol(n, co2_intensity_lvls):
     """
-    Duplicate the hydrogen pipelines once per CO2 class, between the class buses of
-    the hydrogen hubs (see split_and_duplicate_hydrogen), so that hydrogen keeps its
-    label across borders and the CBAM can charge nonclean hydrogen imports. As for
-    the HVDC cables (duplicate_transmission), the copies are accounting layers of
-    one pipe: the first level's copy owns the capacity and the investment cost, and
-    solve_network caps the flows of all copies, in both directions, at that one
-    capacity. The compression electricity (bus2) stays at the node's common bus.
+    Split methanol by CO2 class with the pattern of the hydrogen split. The common
+    "<node> methanol" bus is KEPT for the consumers (shipping and industry demand,
+    power and heat plants, steam reforming, methanol-to-kerosene); class buses
+    "<node> methanol clean" / "<node> methanol nonclean" take the producers and the
+    store and feed the common bus through one-way connection links, so nothing made
+    from mixed methanol (e.g. hydrogen from steam reforming) can enter a class.
+
+    - Methanolisation: duplicated per class. The clean copy draws hydrogen from the
+      clean H2 bus and electricity from the clean AC layer, so methanol is clean
+      only if both were. The nonclean copy keeps the common H2 and AC buses: any
+      hydrogen and any power make nonclean methanol (nonclean = not proven clean).
+      On the nonclean class buses instead, a plant on grey hydrogen would also need
+      nonclean power in every hour, which most nodes rarely have. The copies share
+      the plant's capacity and its minimum part load.
+    - Biomass- and biogas-to-methanol (with or without capture) -> clean methanol.
+    - Fossil methanol supply (base year) -> nonclean methanol.
+    - Methanol store: one per class on the class bus, sharing its capacity.
+
+    Runs after split_and_duplicate_hydrogen, whose class buses it needs. Methanol
+    transport between the nodes is duplicated per class by
+    duplicate_methanol_transport.
+    """
+    buses = getattr(n, "buses")
+    links = getattr(n, "links")
+    stores = getattr(n, "stores")
+
+    # Methanol hubs = carrier-"methanol" buses that carry a store.
+    store_buses = set(stores.bus)
+    hubs = pd.Index([b for b in buses.index[buses.carrier == "methanol"] if b in store_buses])
+    if hubs.empty:
+        logger.info("No methanol hub buses with a store; skipping methanol split.")
+        return
+
+    lvls = list(co2_intensity_lvls)
+    clean = min(co2_intensity_lvls, key=co2_intensity_lvls.get)      # "clean"
+    nonclean = max(co2_intensity_lvls, key=co2_intensity_lvls.get)   # "nonclean"
+
+    methanolisation_i = links.index[
+        (links.carrier == "methanolisation") & links.bus1.isin(hubs)
+    ]
+    biogenic_i = links.index[
+        links.carrier.isin(
+            ["biomass-to-methanol", "biomass-to-methanol CC",
+             "biogas-to-methanol", "biogas-to-methanol CC"]
+        )
+        & links.bus1.isin(hubs)
+    ]
+    fossil_i = n.generators.index[
+        (n.generators.carrier == "fossil methanol supply") & n.generators.bus.isin(hubs)
+    ]
+    stores_i = stores.index[stores.bus.isin(hubs)]
+
+    # Methanolisation needs its hydrogen and electricity split by class (the
+    # nonclean copy stays on the common buses).
+    inputs = links.loc[methanolisation_i, ["bus0", "bus2"]]
+    missing = sorted(
+        {f"{b} {lvl}" for b in inputs.values.ravel() for lvl in lvls if lvl != nonclean}
+        - set(buses.index)
+    )
+    if missing:
+        raise ValueError(
+            "The methanol split needs the AC and hydrogen class buses that "
+            f"methanolisation draws on: {missing[:3]}"
+        )
+
+    # 1. Per-class methanol bus + store, and a class -> common connection link.
+    for lvl in lvls:
+        cb = buses.loc[hubs].rename(index=lambda x: x + " " + lvl)
+        for j in range(len(cb)):
+            buses.loc[cb.index[j]] = cb.iloc[j]
+
+        s = stores.loc[stores_i].copy()
+        s.index = s.index + " " + lvl
+        s.bus = s.bus + " " + lvl
+        for j in range(len(s)):
+            stores.loc[s.index[j]] = s.iloc[j]
+
+        n.add("Link",
+              hubs + " " + lvl + " methanol connection",
+              bus0=hubs + " " + lvl,
+              bus1=hubs,
+              p_nom_extendable=True, p_min_pu=0, p_max_pu=1,
+              carrier=lvl + " methanol connection")
+
+    # n.add() above reassigns n.links to a new frame, so re-fetch the live one
+    # before the in-place edits below (the cached reference is now stale).
+    links = getattr(n, "links")
+
+    # 2. Methanolisation: duplicate per class onto the methanol class buses. The
+    #    nonclean copy keeps the common H2 and AC buses (any input), every other
+    #    copy draws on the H2 class bus and the AC layer of its class.
+    for lvl in lvls:
+        m = links.loc[methanolisation_i].copy()
+        m.index = m.index + " " + lvl
+        m.bus1 = m.bus1 + " " + lvl   # common methanol -> methanol class
+        if lvl != nonclean:
+            m.bus0 = m.bus0 + " " + lvl   # common H2 -> H2 class
+            m.bus2 = m.bus2 + " " + lvl   # common AC -> AC layer
+        for j in range(len(m)):
+            links.loc[m.index[j]] = m.iloc[j]
+
+    # 3. Biogenic routes -> clean, fossil supply -> nonclean (retarget the
+    #    methanol endpoint only).
+    links.loc[biogenic_i, "bus1"] = links.loc[biogenic_i, "bus1"] + " " + clean
+    n.generators.loc[fossil_i, "bus"] = n.generators.loc[fossil_i, "bus"] + " " + nonclean
+
+    # 4. Drop the originals that were duplicated; KEEP the common methanol bus.
+    stores.drop(index=stores_i, inplace=True)
+    links.drop(index=methanolisation_i, inplace=True)
+
+    # 5. Class copies share the capacity of the asset, and methanolisation its
+    #    minimum part load.
+    _share_capacity_across_levels(
+        n, "Link", methanolisation_i, co2_intensity_lvls, joint_minimum=True
+    )
+    _share_capacity_across_levels(n, "Store", stores_i, co2_intensity_lvls)
+
+    logger.info(
+        f"Split {len(hubs)} methanol hubs across {len(lvls)} CO2 layers: "
+        f"{len(methanolisation_i)} methanolisation plants duplicated, "
+        f"{len(biogenic_i)} biogenic routes->clean, {len(fossil_i)} fossil supplies->nonclean."
+    )
+
+
+def _duplicate_class_links(n, carrier, hub_carrier, co2_intensity_lvls, shared_capacity):
+    """
+    Duplicate the links of a carrier between two split hubs (buses of hub_carrier
+    with class buses) once per CO2 class, between the class buses, and drop the
+    originals. Returns the duplicated originals.
     """
     links = getattr(n, "links")
     lvls = list(co2_intensity_lvls)
-    hubs = [b for b in n.buses.index[n.buses.carrier == "H2"] if f"{b} {lvls[0]}" in n.buses.index]
-    pipeline = links.carrier.str.startswith("H2 pipeline")
-    pipes = links.index[pipeline & links.bus0.isin(hubs) & links.bus1.isin(hubs)]
-    if pipeline.sum() > len(pipes):
+    hubs = [
+        b for b in n.buses.index[n.buses.carrier == hub_carrier]
+        if f"{b} {lvls[0]}" in n.buses.index
+    ]
+    selected = links.carrier.str.startswith(carrier)
+    originals = links.index[selected & links.bus0.isin(hubs) & links.bus1.isin(hubs)]
+    if selected.sum() > len(originals):
         logger.warning(
-            f"{pipeline.sum() - len(pipes)} hydrogen pipelines do not connect two split "
-            "hubs and keep no CO2 label."
+            f"{selected.sum() - len(originals)} {carrier} links do not connect two "
+            "split hubs and keep no CO2 label."
         )
-    if pipes.empty:
-        return
+    if originals.empty:
+        return originals
 
     for col in ["capacity_owner", "co2_class"]:
         if col not in links.columns:
             links[col] = ""
-    owner_names = (pipes + " " + lvls[0]).values
+    owner_names = (originals + " " + lvls[0]).values
     for k, lvl in enumerate(lvls):
-        p = links.loc[pipes].copy()
+        p = links.loc[originals].copy()
         p.index = p.index + " " + lvl
         p.bus0 = p.bus0 + " " + lvl
         p.bus1 = p.bus1 + " " + lvl
@@ -7393,11 +7531,36 @@ def duplicate_h2_pipelines(n, co2_intensity_lvls, shared_capacity=True):
                 p["capital_cost"] = 0.0
         for j in range(len(p)):
             links.loc[p.index[j]] = p.iloc[j]
-    links.drop(index=pipes, inplace=True)
+    links.drop(index=originals, inplace=True)
 
     logger.info(
-        f"Duplicated {len(pipes)} hydrogen pipelines across {len(lvls)} CO2 classes "
+        f"Duplicated {len(originals)} {carrier} links across {len(lvls)} CO2 classes "
         f"{lvls}. Joint capacity enforced in solve_network: {shared_capacity}."
+    )
+    return originals
+
+
+def duplicate_h2_pipelines(n, co2_intensity_lvls, shared_capacity=True):
+    """
+    Duplicate the hydrogen pipelines once per CO2 class, between the class buses of
+    the hydrogen hubs (see split_and_duplicate_hydrogen), so that hydrogen keeps its
+    label across borders and the CBAM can charge nonclean hydrogen imports. As for
+    the HVDC cables (duplicate_transmission), the copies are accounting layers of
+    one pipe: the first level's copy owns the capacity and the investment cost, and
+    solve_network caps the flows of all copies, in both directions, at that one
+    capacity. The compression electricity (bus2) stays at the node's common bus.
+    """
+    _duplicate_class_links(n, "H2 pipeline", "H2", co2_intensity_lvls, shared_capacity)
+
+
+def duplicate_methanol_transport(n, co2_intensity_lvls, shared_capacity=True):
+    """
+    Duplicate the methanol transport links once per CO2 class, between the class
+    buses of the methanol hubs (see split_and_duplicate_methanol), so that methanol
+    keeps its label across borders, as hydrogen in duplicate_h2_pipelines.
+    """
+    _duplicate_class_links(
+        n, "methanol transport", "methanol", co2_intensity_lvls, shared_capacity
     )
 
 
@@ -7505,9 +7668,11 @@ def split_components_by_co2_intensity_levels(
     carriers=["AC"],
     shared_capacity=True,
     split_hydrogen=True,
+    split_methanol=False,
 ):
     """
-    Split the electricity network by CO2 intensity class (CBAM).
+    Split the electricity network by CO2 intensity class (CBAM), and optionally
+    hydrogen and, on top of it, methanol.
 
     Called by solve_network on the complete network of a horizon, brownfield
     included, so that every asset is labelled by its carrier. The networks written
@@ -7555,8 +7720,9 @@ def split_components_by_co2_intensity_levels(
                             "lignite": "nonclean",
                             "oil": "nonclean",
                             # CHPs by fuel; CC counts as clean, as for SMR CC.
-                            # Plants burning methanol or NH3 stay unlabelled
-                            # until those carriers are split.
+                            # Plants burning methanol or NH3 stay unlabelled:
+                            # they draw on the common methanol bus even when
+                            # methanol is split (split_methanol).
                             "urban central gas CHP": "nonclean",
                             "urban central gas CHP CC": "clean",
                             "urban central solid biomass CHP": "clean",
@@ -7584,6 +7750,14 @@ def split_components_by_co2_intensity_levels(
     if split_hydrogen:
         split_and_duplicate_hydrogen(n, co2_intensity_lvls)
         duplicate_h2_pipelines(n, co2_intensity_lvls, shared_capacity)
+
+    # Methanol carbon labelling, on top of the hydrogen classes that
+    # methanolisation draws on.
+    if split_methanol:
+        if not split_hydrogen:
+            raise ValueError("The methanol split needs the hydrogen split.")
+        split_and_duplicate_methanol(n, co2_intensity_lvls)
+        duplicate_methanol_transport(n, co2_intensity_lvls, shared_capacity)
 
     # Class copies must be unidirectional (p >= 0): the shared envelope, the import
     # charge and the emission transfer rely on it. Time-varying limits of
@@ -7706,9 +7880,17 @@ def collapse_co2_split(n, co2_intensity_lvls=CO2_INTENSITY_LVLS):
         for df in c.dynamic.values():
             df.rename(columns=rename, inplace=True)
 
+    # Plants split into compartments get their minimum part load back.
+    links = n.components["Link"].static
+    if "shared_p_min_pu" in links.columns:
+        shared = links.shared_p_min_pu.fillna(0.0) > 0
+        links.loc[shared, "p_min_pu"] = links.loc[shared, "shared_p_min_pu"]
+
     for component in ["Link", "Store", "StorageUnit"]:
         n.components[component].static.drop(
-            columns=["capacity_owner", "co2_class"], errors="ignore", inplace=True
+            columns=["capacity_owner", "co2_class", "shared_p_min_pu"],
+            errors="ignore",
+            inplace=True,
         )
 
     # 3. Nothing of the split may survive into the brownfield.

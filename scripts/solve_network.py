@@ -648,6 +648,20 @@ def intensity_by_year(intensity: dict | None, investment_year: int) -> dict:
     return {c: get(v, investment_year) for c, v in (intensity or {}).items()}
 
 
+def _co2_budget_zones(local_co2_regions: list, uncapped: list = ()) -> dict:
+    """
+    CO2 budget zones of a horizon, {zone: countries}: each local region, and
+    "collective" for the other countries apart from the uncapped ones.
+    """
+    zones = {r: [r] for r in local_co2_regions}
+    zones["collective"] = [
+        c
+        for c in snakemake.params.countries
+        if c not in local_co2_regions and c not in uncapped
+    ]
+    return zones
+
+
 def _build_emission_transfer_expressions(
     n: pypsa.Network,
     local_co2_regions: list,
@@ -678,12 +692,7 @@ def _build_emission_transfer_expressions(
     country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
     country0, country1 = n.links.bus0.map(country), n.links.bus1.map(country)
 
-    zones = {r: [r] for r in local_co2_regions}
-    zones["collective"] = [
-        c
-        for c in snakemake.params.countries
-        if c not in local_co2_regions and c not in uncapped
-    ]
+    zones = _co2_budget_zones(local_co2_regions, uncapped)
 
     if transfer == "import_only":
         intensity = cbam_import_intensity(
@@ -705,7 +714,13 @@ def _build_emission_transfer_expressions(
         }
         intensity = pd.Series(0.0, index=n.links.index)
         for prefix, value in by_carrier.items():
-            intensity[n.links.carrier.str.startswith(prefix)] = value
+            carrier = n.links.carrier.str.startswith(prefix)
+            if not (carrier & co2_class.eq("nonclean")).any():
+                raise ValueError(
+                    f"cbam_transfer_intensity lists {prefix!r}, but no nonclean copies "
+                    "of it exist (e.g. methanol needs cbam_split_methanol)."
+                )
+            intensity[carrier] = value
         cross = country0.notna() & country1.notna() & (country0 != country1)
         intensity = intensity[co2_class.eq("nonclean") & cross & (intensity > 0)]
         logger.info(
@@ -714,6 +729,16 @@ def _build_emission_transfer_expressions(
         )
     elif "co2_class" in n.links.columns:
         intensity = n.links.co2_class.map(CO2_INTENSITY_LVLS)
+        # The symmetric transfer counts every nonclean copy at the intensity of
+        # electricity, so it covers electricity only.
+        cross = country0.notna() & country1.notna() & (country0 != country1)
+        other = sorted(set(n.links.carrier[(intensity > 0) & cross]) - {"DC"})
+        if other:
+            raise ValueError(
+                "cbam_emission_transfer: true covers electricity only, but "
+                f"{other} are split by CO2 class and cross borders; use "
+                "import_only_all with cbam_transfer_intensity."
+            )
         intensity = intensity[(intensity > 0) & (country0 != country1)]
     else:
         return {}
@@ -766,6 +791,115 @@ def restrict_carbon_exports_to_uncapped(n: pypsa.Network, uncapped: list) -> Non
         f"Blocked CO2 and methanol flows from capped countries into {list(uncapped)} "
         f"on {len(outward)} + {len(inward)} links."
     )
+
+
+def _methanol_carbon(n: pypsa.Network) -> float:
+    """
+    CO2 [tCO2/MWh_MeOH] that the model books when methanol is burnt, i.e. the
+    carbon it carries, read from the links that deliver it to shipping.
+    """
+    links = n.links[n.links.carrier == "shipping methanol"]
+    if links.empty:
+        raise ValueError("The carbon of methanol is read from 'shipping methanol' links.")
+    co2 = n.buses.carrier == "co2"
+    carbon = pd.Series(0.0, index=links.index)
+    for port in [c for c in links.columns if re.fullmatch(r"bus[2-9]", c)]:
+        to_co2 = links[port].map(co2).fillna(False).astype(bool)
+        carbon += links["efficiency" + port[3:]].where(to_co2, 0.0)
+    if carbon.round(6).nunique() != 1:
+        raise ValueError(f"Methanol links book different CO2: {carbon.unique()[:3]}")
+    return float(carbon.iloc[0])
+
+
+def _build_methanol_carbon_expressions(n: pypsa.Network, zones: dict) -> dict:
+    """
+    Carbon of the methanol that crosses between CO2 budget zones [tCO2], per zone:
+    sum_t w_t * c * (exports_t - imports_t), with the carbon c of methanol
+    (_methanol_carbon), added to the zone's CO2 constraint.
+
+    Methanol carries carbon that the zone which captured it, or grew the biomass,
+    was credited for, while the zone that burns or reforms it books the release.
+    Moving the carbon with the fuel counts it where it was captured and makes
+    imported methanol carbon-neutral for the importer, as the EU ETS does for CO2
+    put into fuels and for renewable fuels. Without it, a zone with a high carbon
+    price could make methanol from its captured CO2 and export the release to a
+    zone with a lower one. All class copies of the transport links count; flows
+    from countries outside every zone are left out, as their carbon was never
+    credited.
+    """
+    country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    zone_of = pd.Series({c: z for z, cs in zones.items() for c in cs}, dtype=object)
+    links = n.links[n.links.carrier == "methanol transport"]
+    zone0 = links.bus0.map(country).map(zone_of)
+    zone1 = links.bus1.map(country).map(zone_of)
+    cross = zone0.notna() & zone1.notna() & (zone0 != zone1)
+    if not cross.any():
+        return {}
+
+    carbon = _methanol_carbon(n)
+    p = n.model["Link-p"]
+    weights = n.snapshot_weightings.generators
+    exprs = {}
+    for zone in zones:
+        sign = pd.concat(
+            [
+                pd.Series(carbon, index=links.index[cross & (zone0 == zone)]),
+                pd.Series(-carbon, index=links.index[cross & (zone1 == zone)]),
+            ]
+        ).rename_axis(n.links.index.name)
+        if not sign.empty:
+            exprs[zone] = (p.loc[:, sign.index] * weights * sign).sum()
+    logger.info(
+        f"Methanol carries {carbon:.3f} tCO2/MWh across {cross.sum()} links between "
+        f"{len(exprs)} CO2 budget zones."
+    )
+    return exprs
+
+
+def add_co2_imports_for_storage_only(n: pypsa.Network, zones: dict) -> None:
+    """
+    Let captured CO2 cross from one CO2 budget zone into another only to be
+    stored. For each zone, its net imports through CO2 pipelines over the year may
+    not exceed the CO2 it sequesters:
+
+        sum_t w_t (imports_t - exports_t - sequestered_t) <= 0
+
+    The zone that captures CO2 keeps the credit wherever the CO2 goes (zones are
+    territorial), so without this rule a zone with a high carbon price can pipe
+    captured CO2 to a zone with a lower one, which turns it into fuels or releases
+    it (e.g. as methanol reformed back into hydrogen). National inventories and the
+    EU ETS credit captured CO2 only when it is stored, also abroad. Molecules mix,
+    so the rule is on the annual balance: the stored tonnes back the credits of the
+    exporters.
+    """
+    country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    links = n.links
+    pipes = links.index[links.carrier == "CO2 pipeline"]
+    country0 = links.bus0[pipes].map(country)
+    country1 = links.bus1[pipes].map(country)
+    sequestration = links.index[links.bus1.map(n.buses.carrier) == "co2 sequestered"]
+    stored_in = links.bus0[sequestration].map(country)
+
+    p = n.model["Link-p"]
+    weights = n.snapshot_weightings.generators
+    constrained = []
+    for zone, countries in zones.items():
+        # CO2 pipelines run both ways (p < 0 flows from bus1 to bus0), so every
+        # pipeline across the border of the zone can import.
+        inside0, inside1 = country0.isin(countries), country1.isin(countries)
+        if not (inside0 ^ inside1).any():
+            continue
+        sign = pd.concat(
+            [
+                pd.Series(1.0, index=pipes[(inside1 & ~inside0).values]),
+                pd.Series(-1.0, index=pipes[(inside0 & ~inside1).values]),
+                pd.Series(-1.0, index=sequestration[stored_in.isin(countries).values]),
+            ]
+        ).rename_axis(n.links.index.name)
+        lhs = (p.loc[:, sign.index] * weights * sign).sum()
+        n.model.add_constraints(lhs <= 0, name=f"co2 imports for storage only {zone}")
+        constrained.append(zone)
+    logger.info(f"Captured CO2 may enter {constrained} only to be stored.")
 
 
 def _link_countries(n: pypsa.Network) -> pd.Series:
@@ -949,6 +1083,10 @@ def add_split_co2_constraints(
       products, for setups in which every country has its own cap. Only oil
       refining may be unlocated then (coal for industry needs
       regional_coal_demand: true).
+    - co2_imports_for_storage_only: captured CO2 crosses into a zone with its own
+      budget only to be stored (add_co2_imports_for_storage_only).
+    - methanol_carries_carbon: methanol crossing between such zones takes its
+      carbon along (_build_methanol_carbon_expressions).
     """
     co2_totals_file = snakemake.input.co2_totals
     co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0) # convert Mt to tCO2
@@ -1066,6 +1204,15 @@ def add_split_co2_constraints(
             n, local_co2_regions, transfer, uncapped
         )
 
+    # Carbon carriers between zones with their own budget: captured CO2 crosses a
+    # border only to be stored, and methanol takes its carbon along.
+    zones = _co2_budget_zones(local_co2_regions, uncapped) if local_co2_regions else {}
+    carbon_exprs = {}
+    if zones and snakemake.config.get("methanol_carries_carbon", False):
+        carbon_exprs = _build_methanol_carbon_expressions(n, zones)
+    if zones and snakemake.config.get("co2_imports_for_storage_only", False):
+        add_co2_imports_for_storage_only(n, zones)
+
     # add local CO2 emissions constraints
     for region in local_co2_regions:
 
@@ -1086,6 +1233,10 @@ def add_split_co2_constraints(
         # Emission transfer: add net imported embodied emissions to this region.
         if region in transfer_exprs:
             lhs = lhs + transfer_exprs[region]
+
+        # Carbon of the methanol this region exports, less that of its imports.
+        if region in carbon_exprs:
+            lhs = lhs + carbon_exprs[region]
 
         rhs = net_co2_allowance
 
@@ -1125,6 +1276,8 @@ def add_split_co2_constraints(
     # Emission transfer: add net imported embodied emissions to collective zone.
     if "collective" in transfer_exprs:
         lhs = lhs + transfer_exprs["collective"]
+    if "collective" in carbon_exprs:
+        lhs = lhs + carbon_exprs["collective"]
 
     rhs = net_co2_allowance
 
@@ -2123,13 +2276,17 @@ def add_cbam_shared_capacity_constraints(
         storage units:  sum_copies p_dispatch_t <= p_max_pu_t * p_nom_owner
                         sum_copies p_store_t    <= -p_min_pu_t * p_nom_owner
                         sum_copies soc_t        <= max_hours * p_nom_owner
+        minimum load:   sum_copies p_t          >= shared_p_min_pu * p_nom_owner
+                        (plants split into compartments, e.g. methanolisation)
         extendable:     nom_copy = nom_owner
 
-    Both directions of a cable ("<line>"/"<line>_reverse" of a converted AC line,
-    "<link>"/"<link>-reversed" of a lossy HVDC link) share one envelope, so that
+    Both directions of a cable or pipeline ("<line>"/"<line>_reverse" of a converted
+    AC line, "<link>"/"<link>-reversed" of a lossy HVDC link, "<pipe>-<year>"/
+    "<pipe>-reversed-<year>" of a hydrogen pipeline) share one envelope, so that
     the classes cannot swap labels across a border without using the cable. Link
     copies are unidirectional (the split refuses others), so no lower bound is
-    needed; stores get one where a copy can go negative.
+    needed apart from a joint minimum part load; stores get one where a copy can
+    go negative.
     """
     # Links: one envelope per physical cable or converter, over both directions.
     owner = _capacity_owners(n.links)
@@ -2140,8 +2297,11 @@ def add_cbam_shared_capacity_constraints(
             [name.removesuffix(" " + lvl) for name, lvl in co2_class.items()],
             index=owner.index,
         )
-        reverse = base.str.endswith(("_reverse", "-reversed"))
-        asset = base.str.replace(r"(_reverse|-reversed)$", "", regex=True)
+        # The reverse half is marked before the build year of vintaged links,
+        # e.g. "H2 pipeline A -> B-reversed-2030".
+        reverse_mark = r"(?:_reverse|-reversed)(?=(?:-\d{4})?$)"
+        reverse = base.str.contains(reverse_mark)
+        asset = base.str.replace(reverse_mark, "", regex=True)
         # The owner of the forward half sets the envelope (rating, p_max_pu).
         forward_owners = owner.index[(owner.index == owner.values) & ~reverse.values]
         owner_of = pd.Series(forward_owners, index=asset[forward_owners].values)
@@ -2156,6 +2316,16 @@ def add_cbam_shared_capacity_constraints(
         _add_shared_bound(
             n, "flow_upper", total, owner_of, "Link", "p_nom", p_max_pu, "<="
         )
+        if "shared_p_min_pu" in n.links.columns:
+            minimum = n.links.shared_p_min_pu.reindex(owner_of.values).fillna(0.0)
+            minimum.index = owner_of.index
+            lower = owner_of[minimum > 0]
+            if not lower.empty:
+                p_min_pu = pd.DataFrame(1.0, index=sns, columns=lower.index)
+                _add_shared_bound(
+                    n, "flow_lower", total, lower, "Link", "p_nom",
+                    p_min_pu * minimum[lower.index], ">=",
+                )
         _tie_shared_capacity(n, "Link", "p_nom", owner)
         n_links = len(owner_of)
 
@@ -3003,6 +3173,7 @@ if __name__ == "__main__":
                 n,
                 shared_capacity=uk_settings_prepare["cbam_shared_transmission_capacity"],
                 split_hydrogen=uk_settings_prepare["cbam_split_hydrogen"],
+                split_methanol=uk_settings_prepare.get("cbam_split_methanol", False),
             )
         # CBAM certificate price, net of the carbon price paid by each exporter.
         if not all(

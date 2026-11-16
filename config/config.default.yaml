@@ -122,6 +122,7 @@ uk_settings:
     cbam_shared_transmission_capacity: true # whether the clean and nonclean copies of a transmission link share its capacity (false only to quantify the effect of that constraint)
     cbam_split_hydrogen: true # whether to also split hydrogen into a clean and a nonclean class (electrolysis, fuel cells, H2 stores, SMR)
     cbam_split_methanol: false # whether to also split methanol into a clean and a nonclean class (methanolisation on the hydrogen and electricity of its class, biomass and biogas routes clean, stores, methanol transport); needs cbam_split_hydrogen
+    cbam_methanol_clean: production # which methanol is clean for the border adjustment (needs cbam_split_methanol). production: made from clean hydrogen and clean electricity, or from biomass or biogas. carbon: in addition, its CO2 captured from the air or from biomass in the same country (annual mass balance). rfnbo: the RED rule for RFNBO, i.e. hydrogen from electrolysis on clean electricity (annual certificates that travel with clean hydrogen through pipelines) and CO2 that the RED accepts (fossil from power plants until 2035 and from other EU ETS activities until 2040, afterwards only from the air or from biomass)
   solve:
     uk_freeze_base_year_capacities: true # only in the base year: if true, only brownfield capacities are allowed in the UK, i.e., disallowing capacity expansion.
     uk_freeze_wind_projects: 

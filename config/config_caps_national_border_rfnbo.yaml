@@ -1,0 +1,54 @@
+# caps_national_border_rfnbo: caps_national_border with the RED rule for renewable
+# fuels of non-biological origin (RFNBO) for clean methanol (cbam_methanol_clean: rfnbo).
+# Its hydrogen must come from electrolysis on clean electricity, by an annual
+# book-and-claim in which certificates travel with clean hydrogen through pipelines,
+# and its CO2 may be fossil while the RED accepts it (from power plants until 2035,
+# from other activities under the EU ETS until 2040), afterwards only from the air or
+# from biomass. Everything else as in caps_national_border; the run starts from the
+# solved 2025 network of caps_continental (staged by job_x_stage.sh). Run it on top of
+# config.caps.yaml.
+run:
+  name: "caps_national_border_rfnbo"
+co2_imports_for_storage_only: true
+methanol_carries_carbon: true
+local_co2:
+  AL: &caps {2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+  AT: *caps
+  BA: *caps
+  BE: *caps
+  BG: *caps
+  CH: *caps
+  CZ: *caps
+  DE: *caps
+  DK: *caps
+  EE: *caps
+  ES: *caps
+  FI: *caps
+  FR: *caps
+  GB: *caps
+  GR: *caps
+  HR: *caps
+  HU: *caps
+  IE: *caps
+  IT: *caps
+  LT: *caps
+  LU: *caps
+  LV: *caps
+  ME: *caps
+  MK: *caps
+  NL: *caps
+  'NO': *caps
+  PL: *caps
+  PT: *caps
+  RO: *caps
+  RS: *caps
+  SE: *caps
+  SI: *caps
+  SK: *caps
+uk_settings:
+  prepare:
+    cbam: true
+    cbam_split_methanol: true
+    cbam_methanol_clean: rfnbo
+    cbam_emission_transfer: import_only_all
+    cbam_transfer_intensity: {DC: 0.35, H2 pipeline: 0.422, methanol transport: 0.575}

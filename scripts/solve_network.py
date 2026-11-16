@@ -2408,6 +2408,159 @@ def add_cbam_rooftop_constraints(n: pypsa.Network, sns: pd.DatetimeIndex) -> Non
     )
 
 
+# Origin of captured CO2, for the rules on clean methanol (cbam_methanol_clean): the
+# carrier of the link that sends the CO2 to a CO2-storage bus decides, first match wins,
+# and every other source counts as fossil CO2 from industry.
+CO2_ORIGIN = {
+    "atmospheric": ("DAC", "biomass", "biogas"),  # from the air, or from biomass and biogas
+    "power": ("CHP", "CCGT", "OCGT", "allam"),  # from power plants (fossil or methanol)
+}
+# Last horizon in which fossil CO2 may go into clean methanol under the RFNBO rule: the
+# RED accepts CO2 captured from electricity generation until 2036 and from the other
+# activities under the EU ETS until 2041 (Delegated Regulation (EU) 2023/1185).
+RFNBO_FOSSIL_CO2_UNTIL = {"power": 2035, "industry": 2040}
+CLEAN_METHANOL_RULES = ("production", "carbon", "rfnbo")
+
+
+def co2_origin(carrier: str) -> str:
+    """Origin of the CO2 that a link of this carrier captures (CO2_ORIGIN)."""
+    for origin, keys in CO2_ORIGIN.items():
+        if any(k in carrier for k in keys):
+            return origin
+    return "industry"
+
+
+def _static_coefficients(n: pypsa.Network, links: pd.Index, attr: str) -> pd.Series:
+    """A static efficiency of the given links; refuses time-varying ones."""
+    varying = n.links_t[attr].columns.intersection(links) if attr in n.links_t else []
+    if len(varying):
+        raise NotImplementedError(f"Time-varying {attr} of {list(varying[:3])} is not supported here.")
+    return n.links.loc[links, attr].astype(float)
+
+
+def _co2_storage_ports(n: pypsa.Network) -> pd.DataFrame:
+    """Every link with a port at a CO2-storage bus ("co2 stored"), apart from CO2 pipelines:
+    tCO2 per unit of p0 at that port (positive: sent to storage, negative: taken from it),
+    carrier and country."""
+    stored = n.buses.index[n.buses.carrier == "co2 stored"]
+    L = n.links
+    parts = []
+    for col in sorted(c for c in L.columns if re.fullmatch(r"bus[1-9]", c)):
+        attr = "efficiency" if col == "bus1" else "efficiency" + col[3:]
+        at = L.index[L[col].isin(stored) & (L.carrier != "CO2 pipeline")]
+        if len(at):
+            parts.append(_static_coefficients(n, at, attr).rename("coef"))
+    coef = pd.concat(parts).groupby(level=0).sum()
+    df = coef.to_frame()
+    df["carrier"] = L.carrier[df.index]
+    df["country"] = _link_countries(n)[df.index]
+    return df
+
+
+def _annual(n: pypsa.Network, coef: pd.Series) -> linopy.LinearExpression:
+    """sum_t w_t sum_l coef_l p_l,t over the links in the index of ``coef``."""
+    p = n.model["Link-p"]
+    coef = coef.rename_axis(n.links.index.name)
+    return (p.loc[:, coef.index] * n.snapshot_weightings.generators * coef).sum()
+
+
+def _add_electrolysis_certificates(n: pypsa.Network, clean_meoh: pd.Index, country: pd.Series) -> None:
+    """
+    Annual book-and-claim for the hydrogen of clean methanol under the RFNBO rule. Clean
+    hydrogen in pipelines mixes hydrogen from electrolysis and from gas with carbon
+    capture, so certificates for hydrogen from electrolysis on clean electricity travel
+    with it, up to the annual flow of each clean pipeline copy that crosses a border. Every
+    country may spend (on clean methanolisation) and pass on no more certificates than its
+    electrolysis on clean electricity makes plus those it receives.
+    """
+    L = n.links
+    cls = L.co2_class.fillna("")
+    bus_country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    c0, c1 = L.bus0.map(bus_country), L.bus1.map(bus_country)
+    pipes = L.index[L.carrier.str.startswith("H2 pipeline") & cls.eq("clean") & c0.notna() & c1.notna()
+                    & (c0 != c1)]
+    electrolysis = L.index[(L.carrier == "H2 Electrolysis") & cls.eq("clean")]
+    made = _static_coefficients(n, electrolysis, "efficiency")
+    p = n.model["Link-p"]
+    dim = next(d for d in p.dims if d != "snapshot")
+    if len(pipes):
+        cert = n.model.add_variables(lower=0, coords=[pd.Index(pipes, name=dim)], name="Link-electrolysis_certificate")
+        flow = (p.loc[:, pipes] * n.snapshot_weightings.generators).sum("snapshot")
+        n.model.add_constraints(cert - flow <= 0, name="Link-electrolysis_certificate_flow")
+    zones = sorted(set(country[clean_meoh].dropna()) | set(c0[pipes]))
+    for z in zones:
+        lhs = 0
+        used = clean_meoh[country[clean_meoh].eq(z).to_numpy()]
+        if len(used):
+            lhs = lhs + _annual(n, pd.Series(1.0, index=used))
+        own = electrolysis[country[electrolysis].eq(z).to_numpy()]
+        if len(own):
+            lhs = lhs - _annual(n, made[own])
+        out, inn = pipes[(c0[pipes] == z).to_numpy()], pipes[(c1[pipes] == z).to_numpy()]
+        if len(out):
+            lhs = lhs + cert.loc[list(out)].sum()
+        if len(inn):
+            lhs = lhs - cert.loc[list(inn)].sum()
+        n.model.add_constraints(lhs <= 0, name=f"clean methanol hydrogen {z}")
+    logger.info(
+        f"RFNBO rule: hydrogen of clean methanol from electrolysis on clean electricity, with "
+        f"certificates on {len(pipes)} clean cross-border pipeline copies, for {len(zones)} countries."
+    )
+
+
+def add_clean_methanol_rules(n: pypsa.Network, rule: str, investment_year: int) -> None:
+    """
+    Which methanol may carry the clean label (uk_settings: prepare: cbam_methanol_clean),
+    i.e. pass a border without being counted under the border adjustment.
+
+    - "production" (default): methanol made from clean hydrogen and clean electricity, or
+      from biomass or biogas, as the split routes it; no constraint here.
+    - "carbon": in addition, the CO2 that clean methanolisation uses in a country over the
+      year may not exceed the CO2 captured there from the air or from biomass and biogas,
+      so methanol whose carbon is fossil is nonclean. Captured CO2 crosses a border only to
+      be stored (co2_imports_for_storage_only), so the CO2 a country uses is its own and the
+      annual mass balance is exact at that resolution.
+    - "rfnbo": the RED rule for renewable fuels of non-biological origin. The hydrogen of
+      clean methanol comes from electrolysis on clean electricity, by an annual
+      book-and-claim (_add_electrolysis_certificates), and its CO2 may be fossil while the
+      RED accepts it (RFNBO_FOSSIL_CO2_UNTIL), afterwards only from the air or from biomass.
+      Clean electricity includes nuclear power, which the RED does not count as renewable.
+    """
+    if rule not in CLEAN_METHANOL_RULES:
+        raise ValueError(f"cbam_methanol_clean must be one of {CLEAN_METHANOL_RULES}, not {rule!r}.")
+    if rule == "production":
+        return
+    cls = n.links.get("co2_class", pd.Series("", index=n.links.index)).fillna("")
+    clean_meoh = n.links.index[(n.links.carrier == "methanolisation") & cls.eq("clean")]
+    if clean_meoh.empty:
+        raise ValueError(f"cbam_methanol_clean: {rule} needs the methanol split (cbam_split_methanol).")
+    country = _link_countries(n)
+
+    if rule == "carbon":
+        eligible = {"atmospheric"}
+    else:
+        eligible = {"atmospheric"} | {o for o, last in RFNBO_FOSSIL_CO2_UNTIL.items() if investment_year <= last}
+    if eligible != {"atmospheric", "power", "industry"}:
+        ports = _co2_storage_ports(n)
+        used = -ports.coef.reindex(clean_meoh)
+        if used.isna().any() or (used <= 0).any():
+            raise ValueError("Clean methanolisation copies without a CO2 input at a CO2-storage bus.")
+        captures = ports[(ports.coef > 0) & ports.carrier.map(co2_origin).isin(eligible)]
+        zones = sorted(set(country[clean_meoh].dropna()))
+        for z in zones:
+            lhs = _annual(n, used[clean_meoh[country[clean_meoh].eq(z).to_numpy()]])
+            source = captures[captures.country.eq(z)]
+            if len(source):
+                lhs = lhs - _annual(n, source.coef)
+            n.model.add_constraints(lhs <= 0, name=f"clean methanol co2 origin {z}")
+        logger.info(
+            f"Clean methanol ({rule}): its CO2 comes from {sorted(eligible)} capture in the same "
+            f"country, for {len(zones)} countries."
+        )
+    if rule == "rfnbo":
+        _add_electrolysis_certificates(n, clean_meoh, country)
+
+
 def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex, type: str, limit_sense: str = "<=", limit: dict | None = None) -> None:
     """
     Add constraint for limiting green energy imports (synthetic and biomass).
@@ -2579,6 +2732,11 @@ def extra_functionality(
     if uk_settings_prepare.get("cbam", False):
         add_cbam_shared_capacity_constraints(n, snapshots)
         add_cbam_rooftop_constraints(n, snapshots)
+        add_clean_methanol_rules(
+            n,
+            uk_settings_prepare.get("cbam_methanol_clean", "production"),
+            int(snakemake.wildcards.planning_horizons),
+        )
 
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality
@@ -3168,6 +3326,15 @@ if __name__ == "__main__":
                 "A CBAM charge on nonclean imports and the symmetric or every-border "
                 "emission transfer need cbam_split: true."
             )
+        methanol_rule = uk_settings_prepare.get("cbam_methanol_clean", "production")
+        if methanol_rule not in CLEAN_METHANOL_RULES:
+            raise ValueError(
+                f"cbam_methanol_clean must be one of {CLEAN_METHANOL_RULES}, not {methanol_rule!r}."
+            )
+        if methanol_rule != "production" and not (
+            cbam_split and uk_settings_prepare.get("cbam_split_methanol", False)
+        ):
+            raise ValueError(f"cbam_methanol_clean: {methanol_rule} needs cbam_split_methanol: true.")
         if cbam_split:
             split_components_by_co2_intensity_levels(
                 n,

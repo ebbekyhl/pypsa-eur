@@ -1,0 +1,53 @@
+# caps_national_border_carbon: caps_national_border with a stricter rule for clean
+# methanol. Methanol from methanolisation is clean only as far as its CO2 was captured
+# from the air or from biomass and biogas in the same country (an annual mass balance,
+# cbam_methanol_clean: carbon), so methanol whose carbon is fossil, e.g. from gas
+# reforming with carbon capture, is nonclean and counts under the border adjustment.
+# Everything else as in caps_national_border; the run starts from the solved 2025
+# network of caps_continental (staged by job_x_stage.sh). Run it on top of
+# config.caps.yaml.
+run:
+  name: "caps_national_border_carbon"
+co2_imports_for_storage_only: true
+methanol_carries_carbon: true
+local_co2:
+  AL: &caps {2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+  AT: *caps
+  BA: *caps
+  BE: *caps
+  BG: *caps
+  CH: *caps
+  CZ: *caps
+  DE: *caps
+  DK: *caps
+  EE: *caps
+  ES: *caps
+  FI: *caps
+  FR: *caps
+  GB: *caps
+  GR: *caps
+  HR: *caps
+  HU: *caps
+  IE: *caps
+  IT: *caps
+  LT: *caps
+  LU: *caps
+  LV: *caps
+  ME: *caps
+  MK: *caps
+  NL: *caps
+  'NO': *caps
+  PL: *caps
+  PT: *caps
+  RO: *caps
+  RS: *caps
+  SE: *caps
+  SI: *caps
+  SK: *caps
+uk_settings:
+  prepare:
+    cbam: true
+    cbam_split_methanol: true
+    cbam_methanol_clean: carbon
+    cbam_emission_transfer: import_only_all
+    cbam_transfer_intensity: {DC: 0.35, H2 pipeline: 0.422, methanol transport: 0.575}

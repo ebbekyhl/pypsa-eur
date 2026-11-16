@@ -22,6 +22,7 @@ gurobi.log
 /benchmarks
 /logs
 /notebooks
+/analysis/_comparison_cache*.pkl
 /data
 /cutouts
 /tmp
@@ -88,3 +89,6 @@ dev/*
 CLAUDE.md
 .claude/
 .github/copilot-instructions.md
+
+/z_figures/
+/x_figures/

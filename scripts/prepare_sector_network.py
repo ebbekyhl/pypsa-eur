@@ -17,10 +17,13 @@ import pandas as pd
 import geopandas as gpd
 import pypsa
 import xarray as xr
+import geopandas as gpd
+from shapely.geometry import Point
 from networkx.algorithms import complement
 from networkx.algorithms.connectivity.edge_augmentation import k_edge_augmentation
 from pypsa.geo import haversine_pts
 from scipy.stats import beta
+from scipy.spatial.distance import cdist
 
 from cluster_countries import map_countries_to_regions, calculate_centroids
 
@@ -72,7 +75,7 @@ def scale_up_offwind_potential(n, country, factor):
 
         logger.info(f"Scaled up offshore wind potential in {country} by a factor of {factor}.")
 
-def define_spatial(nodes, options):
+def define_spatial(nodes, options, industry_config=None):
     """
     Namespace for spatial.
 
@@ -126,11 +129,13 @@ def define_spatial(nodes, options):
         spatial.co2.locations = nodes
         spatial.co2.vents = nodes + " co2 vent"
         spatial.co2.process_emissions = nodes + " process emissions"
+        spatial.co2.process_emissions_petrochemicals = nodes + " process emissions petrochemicals"
     else:
         spatial.co2.nodes = ["co2 stored"]
         spatial.co2.locations = ["EU"]
         spatial.co2.vents = ["co2 vent"]
         spatial.co2.process_emissions = ["process emissions"]
+        spatial.co2.process_emissions_petrochemicals = ["process emissions petrochemicals"]
 
     spatial.co2.df = pd.DataFrame(vars(spatial.co2), index=nodes)
 
@@ -196,9 +201,36 @@ def define_spatial(nodes, options):
             spatial.methanol.industry = nodes + " industry methanol"
         else:
             spatial.methanol.demand_locations = ["EU"]
-            spatial.methanol.industry = ["EU industry methanol"]    
+            spatial.methanol.industry = ["EU industry methanol"]
 
     spatial.methanol.df = pd.DataFrame(vars(spatial.methanol), index=nodes)
+
+    # ethylene / propylene / aromatics (always nodally resolved via plant locations)
+    if (industry_config if industry_config is not None else snakemake.config["industry"]).get("HVC_detailed", False):
+
+        # ethylene
+        spatial.ethylene = SimpleNamespace()
+        spatial.ethylene.nodes = nodes + " ethylene"
+        spatial.ethylene.locations = nodes
+        spatial.ethylene.df = pd.DataFrame(vars(spatial.ethylene), index=nodes)
+
+        # propylene
+        spatial.propylene = SimpleNamespace()
+        spatial.propylene.nodes = nodes + " propylene"
+        spatial.propylene.locations = nodes
+        spatial.propylene.df = pd.DataFrame(vars(spatial.propylene), index=nodes)
+
+        # aromatics
+        spatial.aromatics = SimpleNamespace()
+        spatial.aromatics.nodes = nodes + " aromatics"
+        spatial.aromatics.locations = nodes
+        spatial.aromatics.df = pd.DataFrame(vars(spatial.aromatics), index=nodes)
+
+        # butadiene
+        spatial.butadiene = SimpleNamespace()
+        spatial.butadiene.nodes = nodes + " butadiene"
+        spatial.butadiene.locations = nodes
+        spatial.butadiene.df = pd.DataFrame(vars(spatial.butadiene), index=nodes)
 
     # oil
     spatial.oil = SimpleNamespace()
@@ -224,6 +256,14 @@ def define_spatial(nodes, options):
         spatial.oil.land_transport = ["EU land transport oil"]
 
     spatial.oil.non_sequestered_hvc.df = pd.DataFrame(vars(spatial.oil.non_sequestered_hvc), index=nodes)
+
+    # ethane, propane and butane is always EU-wide (standalone import bus)
+    spatial.oil.ethane = ["EU ethane for industry"]
+    spatial.oil.propane = ["EU propane for industry"]
+    spatial.oil.butane = ["EU butane for industry"]
+
+    # ethanol is always EU-wide (intermediate carrier: Biomass-to-Ethanol → Ethanol-to-X)
+    spatial.oil.ethanol = ["EU ethanol for industry"]
 
     # uranium
     spatial.uranium = SimpleNamespace()
@@ -463,6 +503,39 @@ def create_network_topology(
         topo = pd.concat([topo, topo_reverse])
 
     return topo
+
+
+
+def _ramp_per_step(rate_per_h, dt_h):
+    """Convert a per-hour ramp rate to PyPSA's per-step fraction.
+
+    Returns NaN (no constraint) when rate × Δt ≥ 1, so the constraint
+    is silently dropped at coarse resolution instead of being a redundant
+    `Δp ≤ p_nom` row.
+    """
+    if rate_per_h is None or pd.isna(rate_per_h):
+        return float("nan")
+    scaled = rate_per_h * dt_h
+    return scaled if scaled < 1.0 else float("nan")
+
+
+def _snapshot_hours_after_aggregation(n):
+    """
+    Mean length [h] of the snapshots that set_temporal_aggregation will give the
+    network. add_industry runs before it, on the network at native resolution,
+    whose snapshot weightings would turn every ramp limit into an hourly one.
+    """
+    resolution = snakemake.params.time_resolution
+    native = float(n.snapshot_weightings.objective.mean())
+    if not resolution:
+        return native
+    if "sn" in resolution.lower():
+        return native * int(resolution[:-2])
+    weightings = pd.read_csv(
+        snakemake.input.snapshot_weightings, index_col=0, parse_dates=True
+    )
+    return float(weightings["objective"].mean())
+
 
 
 def update_wind_solar_costs(
@@ -4629,6 +4702,23 @@ def add_biomass(
             lifetime=25,  # TODO: add value to technology-data
         )
 
+def prepare_steam_crackers(regions):
+    """
+    Load steam cracker plants and map onto bus regions.
+    """
+
+    df = pd.read_excel(snakemake.input.existing_crackers, index_col=0)
+
+    geometry = gpd.points_from_xy(df.Longitude, df.Latitude)
+    gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
+
+    gdf = gpd.sjoin(gdf, regions, how="inner", predicate="within")
+
+    gdf.rename(columns={"name": "bus"}, inplace=True)
+    gdf["country"] = gdf.bus.str[:2]
+
+    return gdf
+
 
 def add_industry(
     n: pypsa.Network,
@@ -5292,6 +5382,7 @@ def add_industry(
         / nhours
     )
 
+
     if not options["regional_oil_demand"]:
         p_set_naphtha = p_set_naphtha.sum()
 
@@ -5303,19 +5394,49 @@ def add_industry(
         unit="MWh_LHV",
     )
 
-    n.add(
-        "Load",
-        spatial.oil.naphtha,
-        bus=spatial.oil.naphtha,
-        carrier="naphtha for industry",
-        p_set=p_set_naphtha,
-    )
+    if not cf_industry.get("HVC_detailed", False):
+        n.add(
+            "Load",
+            spatial.oil.naphtha,
+            bus=spatial.oil.naphtha,
+            carrier="naphtha for industry",
+            p_set=p_set_naphtha,
+        )
     # some CO2 from naphtha are process emissions from steam cracker
     # rest of CO2 released to atmosphere either in waste-to-energy or decay
-    process_co2_per_naphtha = (
+
+    if cf_industry.get("HVC_detailed", False):
+
+        total_cracker_today = (cf_industry["ethylene_production_today"] + cf_industry["propylene_production_today"])  # Mt/a
+
+        if snakemake.config["industry"].get("aromatics_split", False):
+            total_cracker_today +=   (cf_industry["benzene_production_today"] + cf_industry["toluene_production_today"]+cf_industry["xylene_production_today"])
+        else:
+            total_cracker_today += cf_industry["aromatics_production_today"]
+
+        if snakemake.config["industry"].get("butadiene_incl", False):
+            total_cracker_today += cf_industry["butadiene_production_today"]
+
+        # mirror the subtraction done in build_industry_sector_ratios.py (line 468)
+        # and scale to industrial_demand units (MWh, via × 1e6 × nyears as in line 4620)
+        cracker_naphtha = (
+                total_cracker_today
+                * cf_industry["t_naphtha_per_t_steam_cracker_product"]
+                * cf_industry["MWh_Naphtha_per_tNaphtha"]  # TWh naphtha (Mt × MWh/t)
+                * 1e6  # Mt → GWh → TWh → MWh (net ×1e6)
+                * nyears
+        )
+
+        process_co2_per_naphtha = (
+                industrial_demand.loc[nodes, "process emission from feedstock"].sum()
+                / (industrial_demand.loc[nodes, "naphtha"].sum() + cracker_naphtha)
+        )
+    else:
+        process_co2_per_naphtha = (
         industrial_demand.loc[nodes, "process emission from feedstock"].sum()
         / industrial_demand.loc[nodes, "naphtha"].sum()
     )
+
     # link to supply the naphtha for industry load
     n.add(
         "Link",
@@ -5328,6 +5449,195 @@ def add_industry(
         efficiency2=process_co2_per_naphtha,
     )
 
+    if cf_industry.get("HVC_detailed", False):
+
+        # --- Residual (non-cracker) naphtha -----------------------------------
+        # Catalytic reforming, gasoline blending and solvents. This carbon is
+        # released in-year, unlike cracker naphtha whose carbon is embodied in HVC
+        # and accounted via process emissions and the waste pool. It gets its own
+        # bus so that (a) the CO2 can be booked without also charging the cracker
+        # stream, which shares the naphtha bus, and (b) it does not enter the
+        # plastic waste pool as pyrolysis / waste-to-energy feedstock.
+        # With regional oil demand the bus is per node, so that its CO2 counts
+        # where the naphtha is used (national CO2 caps); one EU bus would let the
+        # optimisation book it in whichever country it likes. With one EU naphtha
+        # bus it is "EU residual naphtha".
+        # Where the carbon of the residual naphtha counts (residual_naphtha_co2):
+        # "in_year" (as above) in the same year where the naphtha is used, or
+        # "end_of_life" with the plastic waste, like the four products: the
+        # residual naphtha is feedstock (JRC-IDEES "energy used as raw material")
+        # of the HVC that the four products leave over, and its carbon ends up in
+        # products. The pool is shared out by population (see HVC_residual_total).
+        residual_mode = cf_industry.get("residual_naphtha_co2", "in_year")
+        if residual_mode not in ("in_year", "end_of_life"):
+            raise ValueError(
+                "industry: residual_naphtha_co2 must be 'in_year' or 'end_of_life', "
+                f"not {residual_mode!r}."
+            )
+
+        n.add("Carrier", "residual naphtha")
+
+        residual_naphtha = pd.Index(spatial.oil.demand_locations) + " residual naphtha"
+
+        n.add(
+            "Bus",
+            residual_naphtha,
+            location=spatial.oil.demand_locations,
+            carrier="residual naphtha",
+            unit="MWh_LHV",
+        )
+
+        residual_co2 = {}
+        if residual_mode == "in_year":
+            residual_co2 = dict(
+                bus2="co2 atmosphere",
+                # deliberately NOT spatial.co2.process_emissions: vehicle exhaust and
+                # solvent evaporation are not capturable, and that bus would make them
+                # eligible for process-emissions CCS
+                efficiency2=costs.at["oil", "CO2 intensity"],
+            )
+        n.add(
+            "Link",
+            spatial.oil.naphtha,
+            suffix=" residual",
+            bus0=spatial.oil.naphtha,
+            bus1=residual_naphtha,
+            carrier="residual naphtha",
+            p_nom_extendable=True,
+            efficiency=1.0,
+            **residual_co2,
+        )
+
+        n.add(
+            "Load",
+            spatial.oil.naphtha,          # same names as before, for reporting
+            bus=residual_naphtha,
+            carrier="naphtha for industry",
+            p_set=p_set_naphtha,
+        )
+
+        # --- Liquid fuels of the other industry sectors ------------------------
+        # Cement kilns, ceramics, food and other industry burn oil at the plant.
+        # build_industry_sector_ratios_intermediate keeps these liquids apart
+        # ("oil") from the naphtha, which upstream would add them to; their CO2
+        # counts in the same year at the plant, not with the plastic waste. They
+        # fade out with the sector ratios of today.
+        if "oil" in industrial_demand.columns:
+            p_set_oil = (
+                industrial_demand.loc[nodes, "oil"].rename(
+                    lambda x: x + " oil for industry"
+                )
+                / nhours
+            )
+            if not options["regional_oil_demand"]:
+                p_set_oil = p_set_oil.sum()
+
+            oil_for_industry = (
+                pd.Index(spatial.oil.demand_locations) + " oil for industry"
+            )
+
+            n.add("Carrier", "oil for industry")
+
+            n.add(
+                "Bus",
+                oil_for_industry,
+                location=spatial.oil.demand_locations,
+                carrier="oil for industry",
+                unit="MWh_LHV",
+            )
+
+            n.add(
+                "Load",
+                oil_for_industry,
+                bus=oil_for_industry,
+                carrier="oil for industry",
+                p_set=p_set_oil,
+            )
+
+            n.add(
+                "Link",
+                oil_for_industry,
+                bus0=spatial.oil.nodes,
+                bus1=oil_for_industry,
+                bus2="co2 atmosphere",
+                carrier="oil for industry",
+                p_nom_extendable=True,
+                efficiency2=costs.at["oil", "CO2 intensity"],
+            )
+
+    # Gas-liquid feedstocks and ethanol feed the cracker and HVC expansion links,
+    # which exist only with the detailed HVC model.
+    if cf_industry.get("HVC_detailed", False):
+        # --- Ethane, Propane and Butane bus and supply link (standalone import) ---
+        n.add(
+            "Bus",
+            spatial.oil.ethane,
+            location="EU",
+            carrier="ethane for industry",
+            unit="MWh_LHV",
+        )
+
+        n.add(
+            "Bus",
+            spatial.oil.propane,
+            location="EU",
+            carrier="propane for industry",
+            unit="MWh_LHV",
+        )
+
+        n.add(
+            "Bus",
+            spatial.oil.butane,
+            location="EU",
+            carrier="butane for industry",
+            unit="MWh_LHV",
+        )
+
+        # --- Ethanol bus (intermediate: Biomass-to-Ethanol → Ethanol-to-X) ---
+        n.add(
+            "Bus",
+            "EU ethanol for industry",
+            location="EU",
+            carrier="ethanol for industry",
+            unit="MWh_LHV",
+        )
+
+        # Ethane
+        ethane_import_cap = get(cf_industry["ethane_import_capacity_MW"], investment_year)
+        ethane_import_cost = cf_industry.get("ethane_import_cost", 25)  # €/MWh
+        n.add(
+            "Generator",
+            "EU ethane import",
+            bus="EU ethane for industry",
+            carrier="ethane for industry",
+            p_nom=ethane_import_cap,  # fixed capacity, not extendable
+            marginal_cost=ethane_import_cost,
+        )
+
+        # Propane
+        propane_import_cap = get(cf_industry["propane_import_capacity_MW"], investment_year)
+        propane_import_cost = cf_industry.get("propane_import_cost", 25)  # €/MWh
+        n.add(
+            "Generator",
+            "EU propane import",
+            bus="EU propane for industry",
+            carrier="propane for industry",
+            p_nom=propane_import_cap,  # fixed capacity, not extendable
+            marginal_cost=propane_import_cost,
+        )
+
+        # Butane
+        butane_import_cap = get(cf_industry["butane_import_capacity_MW"], investment_year)
+        butane_import_cost = cf_industry.get("butane_import_cost", 25)  # €/MWh
+        n.add(
+            "Generator",
+            "EU butane import",
+            bus="EU butane for industry",
+            carrier="butane for industry",
+            p_nom=butane_import_cap,  # fixed capacity, not extendable
+            marginal_cost=butane_import_cost,
+        )
+
     non_sequestered = 1 - get(
         cf_industry["HVC_environment_sequestration_fraction"],
         investment_year,
@@ -5337,16 +5647,69 @@ def add_industry(
         costs.at["oil", "CO2 intensity"] - process_co2_per_naphtha
     ) / costs.at["oil", "CO2 intensity"]
 
-    # distribute HVC waste across population
-    if len(spatial.oil.non_sequestered_hvc) == 1:
-        HVC_potential = p_set_naphtha.sum() * nhours * non_sequestered * HVC_per_naphtha
-    else:
-        HVC_potential_sum = (
-            p_set_naphtha.sum() * nhours * non_sequestered * HVC_per_naphtha
+    # Total non-sequestered HVC that must be disposed of during the horizon.
+    # When HVC_detailed=True, derive directly from the HVC product demand columns
+    # (feedstock-agnostic: covers both naphtha crackers and bio-based routes).
+    # When False, back-calculate from naphtha demand via HVC_per_naphtha.
+    if cf_industry.get("HVC_detailed", False):
+        # Explicitly modelled HVC products (supplied by crackers / bio-routes)
+        hvc_carriers_pot = ["ethylene", "propylene"]
+        if snakemake.config["industry"].get("aromatics_split", False):
+            hvc_carriers_pot += ["benzene", "toluene", "xylene"]
+        else:
+            hvc_carriers_pot += ["aromatics"]
+        if snakemake.config["industry"].get("butadiene_incl", False):
+            hvc_carriers_pot += ["butadiene"]
+        hvc_from_products = industrial_demand.loc[nodes, hvc_carriers_pot].sum(axis=1).sum()
+
+        # Residual HVC not separated out: still embedded in the remaining naphtha
+        # load (industrial_demand["naphtha"] after build_industry_sector_ratios.py
+        # has subtracted the cracker naphtha and renormalised).
+        #hvc_from_residual_naphtha = p_set_naphtha.sum() * nhours * HVC_per_naphtha
+
+        HVC_stream_total = hvc_from_products
+
+        # residual naphtha booked at end of life (residual_naphtha_co2): its carbon
+        # joins the waste to dispose of; the recycling gates and the existing
+        # incinerators stay sized on the four products
+        HVC_residual_total = (
+            p_set_naphtha.sum() * nhours * HVC_per_naphtha
+            if residual_mode == "end_of_life"
+            else 0.0
         )
+    else:
+        HVC_stream_total = p_set_naphtha.sum() * nhours * HVC_per_naphtha
+        HVC_residual_total = 0.0
+
+    # waste that must be disposed of: follows the sequestration path
+    HVC_potential_total = (HVC_stream_total + HVC_residual_total) * non_sequestered
+
+    # recyclable share: sizes the recycling gates. Without the setting it falls
+    # back to non_sequestered, i.e. the old coupled behaviour.
+    cap_basis = cf_industry.get("HVC_recycling_cap_basis")
+    cap_basis = non_sequestered if cap_basis is None else get(cap_basis, investment_year)
+    HVC_cap_total = HVC_stream_total * cap_basis
+
+    # existing incinerators: sized on a fixed basis so they do not grow for free
+    wte_basis = get(cf_industry.get("waste_to_energy_existing_basis", cap_basis),
+                    investment_year)
+    HVC_wte_total = HVC_stream_total * wte_basis
+
+    # distribute across population if regionally resolved
+    if len(spatial.oil.non_sequestered_hvc) == 1:
+        HVC_potential = HVC_potential_total
+        HVC_cap = HVC_cap_total
+        HVC_wte = HVC_wte_total
+    else:
         shares = pop_layout.total / pop_layout.total.sum()
-        HVC_potential = shares.mul(HVC_potential_sum)
-        HVC_potential.index = HVC_potential.index + " non-sequestered HVC"
+        suffix = " non-sequestered HVC"
+        HVC_potential = shares.mul(HVC_potential_total)
+        HVC_potential.index = HVC_potential.index + suffix
+        HVC_cap = shares.mul(HVC_cap_total)
+        HVC_cap.index = HVC_cap.index + suffix
+        HVC_wte = shares.mul(HVC_wte_total)
+        HVC_wte.index = HVC_wte.index + suffix
+
 
     n.add("Carrier", "non-sequestered HVC")
 
@@ -5374,16 +5737,84 @@ def add_industry(
         e_max_pu=e_max_pu,
     )
 
+    # Scenario switch. When petrochemical CO2 is not priced, emissions are booked
+    # to a store outside the carbon budget instead of to the atmosphere. Physical
+    # flows, mass balance and the capture option are unchanged; only the
+    # accounting differs, so the three scenarios stay strictly comparable.
+    def co2_sink(priced_key):
+        if cf_industry.get(priced_key, True):
+            return "co2 atmosphere"
+        if "EU co2 unpriced" not in n.buses.index:
+            n.add("Carrier", "co2 unpriced")
+            n.add("Bus", "EU co2 unpriced", location="EU",
+                  carrier="co2 unpriced", unit="t_co2")
+            n.add("Store", "EU co2 unpriced", bus="EU co2 unpriced",
+                  carrier="co2 unpriced", e_nom_extendable=True)
+        return "EU co2 unpriced"
+
+    petro_sink = co2_sink("petrochemical_co2_priced")
+
     n.add(
         "Link",
         spatial.oil.demand_locations,
         suffix=" HVC to air",
         bus0=spatial.oil.non_sequestered_hvc,
-        bus1="co2 atmosphere",
+        bus1=co2_sink("hvc_eol_co2_priced"),
         carrier="HVC to air",
         p_nom_extendable=True,
+        # unmanaged disposal is not free: EU landfill gate fees are 50-150 EUR/t,
+        # i.e. ~5-15 EUR/MWh at 10.27 MWh/t, and uncontrolled release is largely
+        # prohibited under the Landfill Directive (config.default.yaml: 0, as
+        # before the petrochemical model; the petrochemical study uses 8)
+        marginal_cost=cf_industry.get("hvc_disposal_cost", 8.0),
         efficiency=costs.at["oil", "CO2 intensity"],
     )
+
+    # --- Pyrolysis feed gate ------------------------------------------------
+    # Caps TOTAL plastic waste going to chemical recycling at a share of the
+    # standing waste stream, while leaving the split between pyrolysis routes
+    # to the optimisation. Non-extendable and lifetime-free, so add_brownfield
+    # drops it and each horizon is sized on its own waste potential.
+    if cf_industry.get("plastic_pyrolysis", False):
+        max_frac = get(cf_industry.get("thermochemical_recycling_max_fraction", 0.0),
+                       investment_year)
+
+        # max_frac is a share of total HVC feed. The gate sits on the collected
+        # stream (HVC_cap = cap_basis x feed): convert, and never exceed it.
+        frac_of_collected = min(max_frac / cap_basis, 1.0) if cap_basis else 0.0
+
+        if max_frac:
+            if len(spatial.oil.non_sequestered_hvc) > 1:
+                gate_p_nom = (
+                        HVC_cap.rename(lambda x: x.replace(" non-sequestered HVC", ""))
+                        .reindex(spatial.oil.demand_locations)
+                        .values / nhours * frac_of_collected
+                )
+            else:
+                gate_p_nom = HVC_cap / nhours * frac_of_collected / len(spatial.nodes)
+
+            n.add("Carrier", "thermochemical recycling feed")
+            n.add("Bus", "EU thermochemical recycling feed", location="EU",
+                  carrier="thermochemical recycling feed", unit="MWh_LHV")
+            n.add("Link", spatial.oil.demand_locations + " thermochemical recycling gate",
+                  bus0=spatial.oil.non_sequestered_hvc,
+                  bus1="EU thermochemical recycling feed",
+                  carrier="thermochemical recycling gate",
+                  p_nom=gate_p_nom, efficiency=1.0)
+
+            pyro_frac = get(cf_industry.get("plastic_pyrolysis_max_fraction", 0.0),
+                            investment_year)
+            if pyro_frac:
+                n.add("Carrier", "pyrolysis feed")
+                n.add("Bus", "EU pyrolysis feed", location="EU",
+                      carrier="pyrolysis feed", unit="MWh_LHV")
+                n.add("Link", "EU pyrolysis gate",
+                      bus0="EU thermochemical recycling feed",
+                      bus1="EU pyrolysis feed",
+                      carrier="pyrolysis gate",
+                      p_nom=HVC_cap_total / nhours * pyro_frac,
+                      efficiency=1.0)
+
 
     if cf_industry["waste_to_energy"] or cf_industry["waste_to_energy_cc"]:
         if options["biomass"] and options["municipal_solid_waste"]:
@@ -5392,7 +5823,7 @@ def add_industry(
                 spatial.msw.locations,
                 bus0=spatial.msw.nodes,
                 bus1=spatial.oil.non_sequestered_hvc,
-                bus2="co2 atmosphere",
+                bus2=co2_sink("hvc_eol_co2_priced"),
                 carrier="municipal solid waste",
                 p_nom_extendable=True,
                 efficiency=1.0,
@@ -5415,7 +5846,7 @@ def add_industry(
                 bus0=spatial.oil.non_sequestered_hvc,
                 bus1=spatial.nodes,
                 bus2=urban_central_nodes,
-                bus3="co2 atmosphere",
+                bus3=co2_sink("hvc_eol_co2_priced"),
                 carrier="waste CHP",
                 p_nom_extendable=True,
                 capital_cost=costs.at["waste CHP", "capital_cost"]
@@ -5427,6 +5858,46 @@ def add_industry(
                 lifetime=costs.at["waste CHP", "lifetime"],
             )
 
+            # brownfield incinerators: fixed capacity, re-added each horizon until
+            # build_year + lifetime is passed, same convention as the crackers.
+            # Sized as a share of the non-sequestered HVC stream of the horizon.
+            share = cf_industry.get("waste_to_energy_existing_share", 0.0)
+            build_year = cf_industry.get("waste_to_energy_existing_build_year", 2020)
+            life = cf_industry.get("waste_to_energy_existing_lifetime",costs.at["waste CHP", "lifetime"])
+            #life = costs.at["waste CHP", "lifetime"]
+            if share and build_year + life > investment_year:
+                if len(spatial.oil.non_sequestered_hvc) == 1:
+                    # single EU stream: distribute by population
+                    shares = pop_layout.total.reindex(spatial.nodes)
+                    p_nom = (shares / shares.sum()).values * HVC_wte / nhours * share
+                else:
+                    # regional streams: take each node's own potential
+                    p_nom = (
+                            HVC_wte.reindex(spatial.nodes + " non-sequestered HVC").values
+                            / nhours
+                            * share
+                    )
+                n.add(
+                    "Link",
+                    spatial.nodes + " waste CHP existing",
+                    bus0=spatial.oil.non_sequestered_hvc,
+                    bus1=spatial.nodes,
+                    bus2=urban_central_nodes,
+                    bus3=co2_sink("hvc_eol_co2_priced"),
+                    carrier="waste CHP",
+                    p_nom=p_nom,  # MW plastic input
+                    p_nom_extendable=False,
+                    build_year=build_year,
+                    lifetime=life,
+                    capital_cost=costs.at["waste CHP", "capital_cost"]
+                                 * costs.at["waste CHP", "efficiency"],
+                    marginal_cost=costs.at["waste CHP", "VOM"],
+                    efficiency=costs.at["waste CHP", "efficiency"],
+                    efficiency2=costs.at["waste CHP", "efficiency-heat"],
+                    efficiency3=costs.at["oil", "CO2 intensity"],
+                )
+
+
         if cf_industry["waste_to_energy_cc"]:
             n.add(
                 "Link",
@@ -5434,7 +5905,7 @@ def add_industry(
                 bus0=spatial.oil.non_sequestered_hvc,
                 bus1=spatial.nodes,
                 bus2=urban_central_nodes,
-                bus3="co2 atmosphere",
+                bus3=co2_sink("hvc_eol_co2_priced"),
                 bus4=spatial.co2.nodes,
                 carrier="waste CHP CC",
                 p_nom_extendable=True,
@@ -5546,6 +6017,48 @@ def add_industry(
         lifetime=costs.at["cement capture", "lifetime"],
     )
 
+    # Only the crackers and HVC expansion links of the detailed HVC model emit here.
+    if cf_industry.get("HVC_detailed", False):
+        # --- Petrochemical process emissions bus (crackers + HVC expansion techs) ---
+        n.add(
+            "Bus",
+            spatial.co2.process_emissions_petrochemicals,
+            location=spatial.co2.locations,
+            carrier="process emissions petrochemicals",
+            unit="t_co2",
+        )
+
+        n.add(
+            "Link",
+            spatial.co2.process_emissions_petrochemicals,
+            bus0=spatial.co2.process_emissions_petrochemicals,
+            bus1=petro_sink,
+            carrier="process emissions petrochemicals",
+            p_nom_extendable=True,
+            efficiency=1.0,
+        )
+
+        n.add(
+            "Link",
+            spatial.co2.locations,
+            suffix=" petrochemical CC",
+            bus0=spatial.co2.process_emissions_petrochemicals,
+            bus1=petro_sink,
+            bus2=spatial.co2.nodes,
+            bus3=nodes,
+            carrier="petrochemical CC",
+            p_nom_extendable=True,
+            capital_cost=costs.at["cement capture", "capital_cost"]
+            * costs.at["cement capture", "capture_rate"],
+            efficiency=1 - costs.at["cement capture", "capture_rate"],
+            efficiency2=costs.at["cement capture", "capture_rate"],
+            efficiency3=-(
+                costs.at["cement capture", "electricity-input"]
+                + costs.at["cement capture", "compression-electricity-input"]
+            ),
+            lifetime=costs.at["cement capture", "lifetime"],
+        )
+
     if options["ammonia"]:
         if options["ammonia"] == "regional":
             p_set = (
@@ -5612,6 +6125,719 @@ def add_industry(
             p_nom_extendable=True,
             efficiency2=costs.at["coal", "CO2 intensity"],
         )
+
+    if snakemake.config["industry"].get("HVC_detailed", False):
+
+        if not options["co2_spatial"]:
+            raise NotImplementedError("HVC_detailed requires co2_spatial: true")
+
+        crackers = prepare_steam_crackers(
+            gpd.read_file(snakemake.input.regions_onshore)
+        )
+
+        cracker_nodes = set(crackers["bus"])
+        locally_restricted = cf_industry.get("HVC_expansion_locally_restricted", True)
+
+        industrial_demand.columns = industrial_demand.columns.str.lower()
+
+        # the network is still at native resolution here; the ramp limits are per
+        # snapshot of the network after the temporal aggregation
+        dt_h = _snapshot_hours_after_aggregation(n)
+        dr = snakemake.config["costs"]["fill_values"]["discount rate"]
+
+        carriers = ["ethylene", "propylene"]
+        if snakemake.config["industry"].get("aromatics_split", False):
+            carriers += ["benzene", "toluene", "xylene"]
+        else:
+            carriers += ["aromatics"]
+
+        if snakemake.config["industry"].get("butadiene_incl", False):
+            carriers += ["butadiene"]
+
+        # --- demand buses and loads ---
+
+        for carrier in carriers:
+            carrier_spatial = getattr(spatial, carrier)
+
+            n.add(
+                "Bus",
+                carrier_spatial.nodes,
+                carrier=carrier,
+                location=carrier_spatial.locations,
+                unit="MWh_LHV",
+            )
+
+            n.add(
+                "Load",
+                carrier_spatial.nodes,
+                bus=carrier_spatial.nodes,
+                carrier=carrier,
+                p_set=industrial_demand.loc[nodes, carrier].rename(
+                    index=lambda x: x + f" {carrier}"
+                ) / nhours,
+            )
+
+        # --- steam cracker links (one per plant) ---
+
+        def make_bus(bus_col_value, region_bus):
+            if bus_col_value == 0 or pd.isna(bus_col_value):
+                return None
+            elif bus_col_value == "naphtha":
+                return f"{region_bus} naphtha for industry" if options[
+                    "regional_oil_demand"] else "EU naphtha for industry"
+            elif bus_col_value == "electricity":
+                return region_bus
+            elif bus_col_value == "methanol":
+                return f"{region_bus} methanol" if options["methanol"]["transport"] else "EU methanol"
+            elif bus_col_value == "ethane":
+                return "EU ethane for industry"
+            elif bus_col_value == "co2":
+                return f"{region_bus} process emissions petrochemicals"
+            elif bus_col_value in ("gas", "fuel (net)"):
+                return f"{region_bus} gas" if options["gas_network"] else "EU gas"
+            elif bus_col_value == "biomass":
+                return f"{region_bus} solid biomass" if options.get("biomass_spatial", options["biomass_transport"]) else "EU solid biomass"
+            elif bus_col_value == "hydrogen":
+                return f"{region_bus} H2"
+            elif bus_col_value == "ethanol":
+                return "EU ethanol for industry"
+            elif bus_col_value == "pyrolysis oil":
+                return f"{region_bus} naphtha for industry" if options["regional_oil_demand"] else "EU naphtha for industry"
+            elif bus_col_value == "plastic waste":
+                return "EU thermochemical recycling feed"
+            elif bus_col_value == "propane":
+                return "EU propane for industry"
+            elif bus_col_value == "butane":
+                return "EU butane for industry"
+            else:
+                return f"{region_bus} {bus_col_value}"
+
+        # Carriers to exclude based on config
+        excluded_carriers = set()
+        if not snakemake.config["industry"].get("butadiene_incl", False):
+            excluded_carriers.add("butadiene")
+        if not snakemake.config["industry"].get("aromatics_split", False):
+            excluded_carriers.update(["benzene", "toluene", "xylene"])
+        else:
+            excluded_carriers.add("aromatics")
+
+        # Horizon bookkeeping and extension parameters
+        horizon = int(snakemake.wildcards.planning_horizons)
+        horizons = sorted(int(h) for h in snakemake.config["scenario"]["planning_horizons"])
+        prev_horizon = max((h for h in horizons if h < horizon), default=None)
+        EXT_LIFE = 10  # years, one extension per plant
+        EXT_SHARE = 0.5  # revamp cost as share of greenfield, assumption
+
+        for plant, row in crackers.iterrows():
+            nameplate = float(row["Name plate Capacity (MW)"])
+            retire_year = int(row["start_year"]) + float(row["lifetime"])
+            p_nom = 0.0 if retire_year <= horizon else nameplate
+
+            buses = {}
+            for i in sorted(int(c[3:]) for c in row.index if c.startswith("bus") and c[3:].isdigit()):
+                col = f"bus{i}"
+                if col in row.index and pd.notna(row[col]) and row[col] != 0:
+                    resolved = make_bus(row[col], row["bus"])
+                    if resolved is not None:
+                        # Skip buses whose carrier is excluded
+                        carrier_of_bus = str(row[col]).split()[0].lower()  # e.g. "butadiene", "benzene"
+                        if carrier_of_bus in excluded_carriers:
+                            continue
+                        buses[i] = resolved
+
+            capital_cost = row["CAPEX"]
+
+            rate_per_h = row.get("ramp_per_h", 0.05)  # default 5%/h for crackers
+
+            kwargs = dict(
+                carrier="steam cracker",
+                p_nom=p_nom,
+                p_nom_extendable=False,
+                ramp_limit_up=_ramp_per_step(rate_per_h, dt_h),
+                ramp_limit_down=_ramp_per_step(rate_per_h, dt_h),
+                capital_cost=capital_cost,
+                marginal_cost=row["OPEX"],
+                build_year=int(row["start_year"]),
+                lifetime=float(row["lifetime"]),
+            )
+
+            for i, bus in buses.items():
+                kwargs[f"bus{i}"] = bus
+                eff_col = "efficiency" if i == 0 else f"efficiency{i}"
+                if eff_col in row.index and pd.notna(row[eff_col]):
+                    kwargs[eff_col] = row[eff_col]
+
+            n.add("Link", f"{plant} steam cracker", **kwargs)
+
+            # life extension, offered only in the horizon the plant reaches its technical lifetime. Parent has p_nom = 0 here, so nothing is double-counted. Idle-closed plants are blocked in add_brownfield.retire_idle_crackers.
+            if prev_horizon is not None and prev_horizon < retire_year <= horizon:
+                overnight = row["CAPEX"] / calculate_annuity(float(row["lifetime"]), dr)
+                ext = dict(kwargs)
+                ext.update(
+                    carrier="steam cracker extension",
+                    p_nom=0.0,
+                    p_nom_extendable=True,
+                    p_nom_max=nameplate,
+                    capital_cost=EXT_SHARE * overnight * calculate_annuity(EXT_LIFE, dr),
+                    lifetime=float(EXT_LIFE),
+                )
+                ext.pop("build_year", None)
+                n.add("Link", f"{plant} steam cracker extension", **ext)
+
+
+        gas_buses = nodes + " gas" if options.get("gas_network") else "EU gas"
+
+        for carrier in carriers:
+            # ethylene and propylene are gases at ambient and can only be placed in
+            # the fuel gas system. Butadiene (as unextracted crude C4 via alkylation)
+            # and aromatics go to gasoline blending.
+            to_oil = carrier in ("butadiene", "aromatics", "benzene", "toluene", "xylene")
+            disposal_bus = spatial.oil.nodes if to_oil else gas_buses
+            co2_correction = 0.0 if to_oil else (
+                    costs.at["oil", "CO2 intensity"] - costs.at["gas", "CO2 intensity"]
+            )
+            n.add(
+                "Link",
+                nodes + f" {carrier} surplus disposal",
+                bus0=nodes + f" {carrier}",
+                bus1=disposal_bus,
+                bus2="co2 atmosphere",
+                carrier="HVC disposal",
+                p_nom_extendable=True,
+                efficiency=1,
+                efficiency2=co2_correction,
+                marginal_cost=0.1,
+            )
+
+        # --- new HVC technologies (extendable investment) ---
+
+        hvc_techs = pd.read_excel(snakemake.input.hvc_technology_expansion, index_col=0)
+        capex_col = f"capital_costs_{investment_year}"
+
+
+
+        for tech_name, row in hvc_techs.iterrows():
+
+            TECH_AVAILABLE_FROM = 2027
+
+            if investment_year < TECH_AVAILABLE_FROM:
+                continue  # technology not yet available
+
+            rate_per_h = row.get("ramp_per_h", 0.10)
+
+            #annuity = calculate_annuity(row["lifetime"], dr)
+            #capital_cost = annuity * row[capex_col]
+
+            for node in nodes:
+                if locally_restricted and node not in cracker_nodes:  # ← was unconditional
+                    continue
+
+                # Dynamically resolve all buses, skipping excluded carriers
+                buses = {}
+                for i in sorted(int(c[3:]) for c in row.index if c.startswith("bus") and c[3:].isdigit()):
+                    col = f"bus{i}"
+                    if col in row.index and pd.notna(row[col]) and row[col] != 0:
+                        resolved = make_bus(row[col], node)
+                        if resolved is not None:
+                            carrier_of_bus = str(row[col]).split()[0].lower()
+                            if carrier_of_bus in excluded_carriers:
+                                continue
+                            buses[i] = resolved
+
+                kwargs = dict(
+                    carrier=row["carrier"],
+                    p_nom_extendable=True,
+                    p_nom_max=1e9,
+                    ramp_limit_up=_ramp_per_step(rate_per_h, dt_h),
+                    ramp_limit_down=_ramp_per_step(rate_per_h, dt_h),
+                    capital_cost=row[capex_col],
+                    marginal_cost=row["OPEX"],
+                    lifetime=row["lifetime"],
+                )
+
+                # Pyrolysis draws from its own gate; gasification stays on the
+                # thermochemical feed. Both limits live on the non-extendable gate
+                # links, not on p_nom_max here -- a p_nom_max would cap each vintage
+                # separately and the allowances would stack across horizons.
+                if row.get("bus0") == "plastic waste" and "pyrolysis" in str(row["carrier"]):
+                    buses[0] = "EU pyrolysis feed"
+
+                # biomass carbon comes from the atmosphere, not from the
+                # process emissions bus, which can only release CO2
+                if row["carrier"] == "biomass-to-ethanol":
+                    buses[3] = co2_sink("hvc_eol_co2_priced")
+
+                for i, bus in buses.items():
+                    kwargs[f"bus{i}"] = bus
+                    eff_col = "efficiency" if i == 0 else f"efficiency{i}"
+                    if eff_col in row.index and pd.notna(row[eff_col]):
+                        kwargs[eff_col] = row[eff_col]
+
+                n.add("Link", f"{node} {tech_name}", **kwargs)
+
+        # --- Cracker slate flexibility ---
+        if cf_industry.get("HVC_yield_shift", False):
+
+            # each plant may move between its average yields and the co-product-rich
+            # end of the literature. The fuel port closes the energy balance; it is
+            # negative where co-products rise by more than the ethylene given up.
+            flex_by_type = cf_industry.get("HVC_yield_shift_by_type", {})
+            products = ["propylene", "aromatics", "butadiene"]
+
+            n.add("Carrier", "yield shift")
+
+            # existing plants: one link per plant
+            for plant, row in crackers.iterrows():
+                flex = flex_by_type.get(row["Cracker type"])
+                if flex is None:
+                    continue  # ethane/NGL crackers keep fixed yields
+
+                node = row["bus"]
+                if not all(f"{node} {c}" in n.buses.index for c in products):
+                    continue
+
+                link = f"{plant} yield shift"
+                n.add(
+                    "Link",
+                    link,
+                    bus0=f"{node} ethylene",
+                    bus1=f"{node} propylene",
+                    bus2=f"{node} aromatics",
+                    bus3=f"{node} butadiene",
+                    bus4=make_bus("gas", node),
+                    carrier="yield shift",
+                    # nameplate only -- the binding limit is imposed in
+                    # solve_network.add_yield_shift_limit
+                    p_nom=float(row["Name plate Capacity (MW)"]),
+                    efficiency=flex["propylene"],
+                    efficiency2=flex["aromatics"],
+                    efficiency3=flex["butadiene"],
+                    efficiency4=1 - sum(flex[c] for c in products),
+                    marginal_cost=cf_industry.get("HVC_yield_shift_cost", 5),
+                )
+                n.links.loc[link, "max_shift"] = flex["max_shift"]
+
+            # new electric naphtha crackers: same slate as conventional naphtha,
+            # scaled by a higher conversion, so the same coefficients apply.
+            # One link per node, since new capacity is built per node.
+            flex = flex_by_type.get("Naphtha")
+
+            for node in nodes:
+                tech = f"{node} Electric Cracker Naphtha"
+                if flex is None or tech not in n.links.index:
+                    continue
+                if not all(f"{node} {c}" in n.buses.index for c in products):
+                    continue
+
+                link = f"{tech} yield shift"
+                n.add(
+                    "Link",
+                    link,
+                    bus0=f"{node} ethylene",
+                    bus1=f"{node} propylene",
+                    bus2=f"{node} aromatics",
+                    bus3=f"{node} butadiene",
+                    bus4=make_bus("gas", node),
+                    carrier="yield shift",
+                    # capacity is decided by the model, so this is only a
+                    # non-binding ceiling; the real limit is in solve_network
+                    p_nom=1e6,
+                    efficiency=flex["propylene"],
+                    efficiency2=flex["aromatics"],
+                    efficiency3=flex["butadiene"],
+                    efficiency4=1 - sum(flex[c] for c in products),
+                    marginal_cost=cf_industry.get("HVC_yield_shift_cost", 5),
+                )
+                n.links.loc[link, "max_shift"] = flex["max_shift"]
+
+        # --- HVC imports ---
+        # One block per importable product. Availability is governed entirely by the
+        # capacity ramp, so a carrier that is "not yet available" simply gets 0 MW in
+        # that horizon rather than a separate year gate.
+        #
+        # Embedded CO2 is 1 t CO2e per tonne of product, converted at each product's
+        # LHV. It is priced as a border charge on the import link, at the CBAM phase-in
+        # factor times an exogenous carbon price taken from the EU-only scenario. It is
+        # NOT injected into the European carbon budget, mirroring the regulation, where
+        # CBAM certificates are created outside the ETS allowance pool. Uncovered
+        # imported carbon therefore appears only in post-processing.
+        cbam = get(cf_industry.get("cbam_factor", 0.0), investment_year)
+        co2_price = get(cf_industry.get("cbam_co2_price", 0.0), investment_year)  # €/t
+
+        for hvc in ["ethylene", "propylene", "butadiene", "aromatics"]:
+            if not cf_industry.get(f"{hvc}_import", False):
+                continue
+            if hvc not in carriers:
+                continue
+
+            import_carrier = f"{hvc} import"
+            import_bus = f"EU {import_carrier}"
+
+
+            co2 = cf_industry.get(f"{hvc}_import_co2", 0.09)  # t_CO2/MWh
+            border_charge = co2 * cbam * co2_price  # €/MWh
+            cap = get(cf_industry[f"{hvc}_import_capacity_MW"], investment_year)
+            cost = get(cf_industry.get(f"{hvc}_import_cost", 90), investment_year)  # €/MWh
+
+            countries = cf_industry.get(
+                f"{hvc}_import_countries",
+                ["ES", "PT", "FR", "BE", "NL", "DE", "GB", "NO", "IE"],
+            )
+
+            n.add("Carrier", import_carrier)
+            n.add("Bus", import_bus, location="EU",
+                  carrier=import_carrier, unit="MWh_LHV")
+            n.add("Generator", import_bus, bus=import_bus,
+                  carrier=import_carrier, p_nom=cap, marginal_cost=cost)
+
+            for node in nodes:
+                if node[:2] not in countries:
+                    continue
+                product_bus = f"{node} {hvc}"
+                if product_bus not in n.buses.index:
+                    continue
+                n.add("Link", f"{node} {import_carrier}",
+                      bus0=import_bus,
+                      bus1=product_bus,
+                      carrier=import_carrier,
+                      p_nom_extendable=True,
+                      efficiency=1.0,
+                      marginal_cost=border_charge)
+
+
+        # --- storage ---
+        for carrier in carriers:
+            carrier_spatial = getattr(spatial, carrier)
+            n.add(
+                "Store",
+                carrier_spatial.nodes,
+                bus=carrier_spatial.nodes,
+                carrier=carrier,
+                e_nom_extendable=True,
+                e_cyclic=True,
+                capital_cost=2.0,  # EUR/MWh/yr — pressurised/refrigerated liquid tank
+            )
+
+        # --- slack generators for co-products ---
+
+        for carrier in carriers:
+            carrier_spatial = getattr(spatial, carrier)
+            n.add(
+                "Generator",
+                carrier_spatial.nodes,
+                suffix=" slack",
+                bus=carrier_spatial.nodes,
+                carrier=carrier,
+                p_nom=1e6,
+                marginal_cost=1e6,
+            )
+
+        # --- HVC transport (real pipeline + shipping topology based on ITOM) ---
+
+        if snakemake.config["industry"].get("HVC_transport", False) and int(
+                snakemake.wildcards.planning_horizons) > 2020:
+            # Load ITOM transport data
+            transport_df = pd.read_excel(snakemake.input.hvc_transport, sheet_name="transport_existing")
+
+            # Choose which column to use as carrier
+            if snakemake.config["industry"].get("aromatics_split", False):
+                carrier_col = "product_detailed"  # benzene / toluene / xylene separately
+            else:
+                carrier_col = "product"  # aromatics as one group
+
+            active_carriers = ["ethylene", "propylene"]
+            active_carriers += ["aromatics"] if not snakemake.config["industry"].get("aromatics_split",
+                                                                                     False) else [
+                "benzene", "toluene", "xylene"]
+            if snakemake.config["industry"].get("butadiene_incl", False):
+                active_carriers.append("butadiene")
+
+            transport_df = transport_df[transport_df[carrier_col].isin(active_carriers)]
+
+            # Cap unconstrained shipping capacity to avoid numerical issues
+            transport_df["capacity_MW"] = transport_df["capacity_MW"].clip(upper=1e6)
+
+            # Deduplication pair key
+            transport_df["pair"] = transport_df.apply(
+                lambda r: tuple(sorted([r["source"], r["target"]])) + (r[carrier_col], r["transport_mode"]),
+                axis=1,
+            )
+
+            # Aggregation — keep carrier_col
+            transport_df = (
+                transport_df.groupby("pair")
+                .agg(
+                    source=("source", "first"),
+                    target=("target", "first"),
+                    product=(carrier_col, "first"),  # ← now stores "benzene"/"toluene"/"xylene" or "aromatics"
+                    transport_mode=("transport_mode", "first"),
+                    capacity_MW=("capacity_MW", "max"),
+                    costs_MWh=("costs_MWh", "min"),
+                    source_lat=("source_lat", "first"),
+                    source_lon=("source_lon", "first"),
+                    target_lat=("target_lat", "first"),
+                    target_lon=("target_lon", "first"),
+                )
+                .reset_index(drop=True)
+            )
+
+            # Missing capacity or cost would propagate into p_nom / marginal_cost and
+            # make the model unbounded or infeasible without a useful error
+            bad = transport_df[["capacity_MW", "costs_MWh"]].isna().any(axis=1)
+            if bad.any():
+                logger.warning(f"HVC transport: dropping {bad.sum()} links with missing capacity/cost")
+                transport_df = transport_df[~bad]
+
+            # Build cluster → NUTS node mapping from embedded coordinates
+            regions = gpd.read_file(snakemake.input.regions_onshore).set_index("name")
+
+            src_coords = transport_df[["source", "source_lat", "source_lon"]].rename(
+                columns={"source": "cluster", "source_lat": "lat", "source_lon": "lon"}
+            )
+            tgt_coords = transport_df[["target", "target_lat", "target_lon"]].rename(
+                columns={"target": "cluster", "target_lat": "lat", "target_lon": "lon"}
+            )
+            all_coords = (
+                pd.concat([src_coords, tgt_coords])
+                .drop_duplicates("cluster")
+                .set_index("cluster")
+            )
+
+            gdf = gpd.GeoDataFrame(
+                all_coords,
+                geometry=[Point(lon, lat) for lon, lat in zip(all_coords["lon"], all_coords["lat"])],
+                crs="EPSG:4326",
+            )
+            joined = gpd.sjoin(gdf, regions[["geometry"]].reset_index(), how="left", predicate="within")
+            cluster_to_node = joined["name"].to_dict()
+
+            # coastal ITOM ports often sit just outside the onshore region polygon;
+            # snap them to the nearest region instead of dropping them
+            missing = joined.index[joined["name"].isna()]
+            if len(missing):
+                fallback = gpd.sjoin_nearest(
+                    gdf.loc[missing].to_crs(3035),
+                    regions[["geometry"]].reset_index().to_crs(3035),
+                    how="left",
+                )
+                cluster_to_node.update(fallback["name"].to_dict())
+                logger.info(f"HVC transport: snapped {len(missing)} offshore clusters to nearest region")
+
+            active_buses = set(n.buses.index)
+            added_links = set()
+
+            for _, row in transport_df.iterrows():
+                src_node = cluster_to_node.get(row["source"])
+                tgt_node = cluster_to_node.get(row["target"])
+                carrier = row["product"]  # always "product" after .agg(product=(carrier_col, "first"), ...)
+                mode = row["transport_mode"]
+
+                if src_node is None or tgt_node is None:
+                    logger.warning(f"HVC transport: unmapped cluster: {row['source']} or {row['target']}")
+                    continue
+                if src_node == tgt_node:
+                    continue  # within same NUTS node — silently skip
+
+                bus0 = f"{src_node} {carrier}"
+                bus1 = f"{tgt_node} {carrier}"
+                if bus0 not in active_buses or bus1 not in active_buses:
+                    continue  # no cracker at this node → no carrier bus exists
+
+                link_key = (min(src_node, tgt_node), max(src_node, tgt_node), carrier, mode)
+                if link_key in added_links:
+                    continue
+
+                added_links.add(link_key)
+
+                link_label = "pipeline" if "PIPELINE" in mode else "ship"
+                # Forward: src → tgt
+                n.add(
+                    "Link",
+                    f"{src_node}-{tgt_node} {carrier} {link_label}",
+                    bus0=bus0, bus1=bus1,
+                    carrier=f"{carrier} transport",
+                    p_nom=row["capacity_MW"],
+                    p_min_pu=0,  # unidirectional
+                    marginal_cost=row["costs_MWh"],
+                    efficiency=1.0,
+                )
+                # Reverse: tgt → src (same capacity and cost)
+                n.add(
+                    "Link",
+                    f"{tgt_node}-{src_node} {carrier} {link_label}",
+                    bus0=bus1, bus1=bus0,
+                    carrier=f"{carrier} transport",
+                    p_nom=row["capacity_MW"],
+                    p_min_pu=0,  # unidirectional
+                    marginal_cost=row["costs_MWh"],
+                    efficiency=1.0,
+                )
+
+            truck_cost_per_mwh_per_1000km = 6.25  # €/MWh per 1000 km --> See refernces from Robin's Excel
+            added_fallback = 0
+
+            for carrier in active_carriers:
+                # nodes must exist in n.buses with valid coordinates, otherwise cdist
+                # returns NaN and argsort silently wires the k-nearest set to arbitrary nodes
+                carrier_nodes = []
+                for b in active_buses:
+                    if not b.endswith(f" {carrier}"):
+                        continue
+                    node = b[: -len(f" {carrier}")]
+                    if node in n.buses.index and pd.notna(n.buses.at[node, "x"]):
+                        carrier_nodes.append(node)
+
+                if len(carrier_nodes) < 2:
+                    continue
+
+                # Get coordinates from n.buses
+                coords = np.array([
+                    [n.buses.at[node, 'x'], n.buses.at[node, 'y']]
+                    for node in carrier_nodes
+                ])
+
+                # --- Option A: distance threshold ---
+                # dist_km = cdist(coords, coords, metric='euclidean') * 111  # rough deg→km
+                # threshold_km = 500
+                # connect_pairs = [(i, j) for i in range(len(carrier_nodes))
+                #                         for j in range(i+1, len(carrier_nodes))
+                #                         if dist_km[i, j] < threshold_km]
+
+                # --- Option B: k-nearest neighbours ---
+                k = 5
+                dist_km = cdist(coords, coords, metric='euclidean') * 111
+                connect_pairs = set()
+                for i in range(len(carrier_nodes)):
+                    neighbours = np.argsort(dist_km[i])[1:k + 1]  # skip self (index 0)
+                    for j in neighbours:
+                        connect_pairs.add((min(i, j), max(i, j)))  # deduplicate
+
+                # Add links for connected pairs
+                for i, j in connect_pairs:
+                    node_a = carrier_nodes[i]
+                    node_b = carrier_nodes[j]
+                    dist = dist_km[i, j]
+                    cost = truck_cost_per_mwh_per_1000km * dist / 1000  # scale by distance
+
+                    for src, dst in [(node_a, node_b), (node_b, node_a)]:
+                        n.add("Link", f"{src}-{dst} {carrier} truck",
+                              bus0=f"{src} {carrier}",
+                              bus1=f"{dst} {carrier}",
+                              carrier=f"{carrier} transport",
+                              p_nom=1e6,
+                              p_min_pu=0,
+                              marginal_cost=cost,
+                              efficiency=1.0)
+                        added_fallback += 1
+
+            logger.info(
+                f"HVC transport: {len(added_links)} ITOM connections, {added_fallback} truck links"
+            )
+
+
+            """# --- Truck/rail fallback transport ---
+            truck_cost = 2.0  # €/MWh
+            #rail_cost = 1.2   # €/MWh
+            added_fallback = 0
+
+            for carrier in carriers:
+                carrier_nodes = [b.replace(f" {carrier}", "")
+                                 for b in active_buses if b.endswith(f" {carrier}")]
+
+                for i, node_a in enumerate(carrier_nodes):
+                    for node_b in carrier_nodes[i + 1:]:
+                        for mode, cost in [("truck", truck_cost)]: #, ("rail", rail_cost)]:
+                            n.add("Link", f"{node_a}-{node_b} {carrier} {mode}",
+                                  bus0=f"{node_a} {carrier}",
+                                  bus1=f"{node_b} {carrier}",
+                                  carrier=f"{carrier} transport",
+                                  p_nom=1e6,
+                                  p_min_pu=0,
+                                  marginal_cost=cost,
+                                  efficiency=1.0)
+                            n.add("Link", f"{node_b}-{node_a} {carrier} {mode}",
+                                  bus0=f"{node_b} {carrier}",
+                                  bus1=f"{node_a} {carrier}",
+                                  carrier=f"{carrier} transport",
+                                  p_nom=1e6,
+                                  p_min_pu=0,
+                                  marginal_cost=cost,
+                                  efficiency=1.0)
+                            added_fallback += 1  # count pairs
+
+            logger.info(
+                f"HVC transport: added {len(added_links)} ITOM pairs = {2 * len(added_links)} pipeline/ship links; "
+                f"{added_fallback} fallback pairs = {2 * added_fallback} truck/rail links"
+            )"""
+
+
+        """# --- HVC transport hub (zero-cost inter-regional trade) ---
+
+        if snakemake.config["industry"].get("HVC_transport", False) and int(snakemake.wildcards.planning_horizons) > 2020:
+            for carrier in ["ethylene", "propylene", "aromatics"]:
+                carrier_spatial = getattr(spatial, carrier)
+                hub_name = f"{carrier.capitalize()} Transport Hub"
+
+                n.add(
+                    "Bus",
+                    hub_name,
+                    carrier=carrier,
+                    unit="MWh_LHV",
+                )
+
+                n.add(
+                    "Link",
+                    carrier_spatial.nodes,
+                    suffix=" transport",
+                    bus0=carrier_spatial.nodes,
+                    bus1=hub_name,
+                    carrier=f"{carrier} transport",
+                    p_nom=1e6,
+                    p_min_pu=-1,
+                    marginal_cost=0.0,
+                    efficiency=1.0,
+                )
+
+        # --- HVC transport (neighbor-to-neighbor, like H2 pipelines) ---
+
+        if snakemake.config["industry"].get("HVC_transport", False) and int(snakemake.wildcards.planning_horizons) > 2020:
+
+            for carrier in ["ethylene", "propylene", "aromatics"]:
+                hvc_pipes = create_network_topology(
+                    n, f"{carrier} pipeline ", carriers=["DC", "gas pipeline"]
+                )
+
+                carrier_locs = set(n.buses.loc[n.buses.carrier == carrier, "location"])
+
+                hvc_pipes = hvc_pipes[
+                    hvc_pipes["bus0"].isin(carrier_locs) &
+                    hvc_pipes["bus1"].isin(carrier_locs)
+                    ]
+
+                logger.info(
+                    f"{carrier}: HVC transport enabled, {len(hvc_pipes)} candidate links"
+                )
+
+                if hvc_pipes.empty:
+                    continue
+
+                n.add(
+                    "Link",
+                    hvc_pipes.index,
+                    bus0=hvc_pipes.bus0.values + f" {carrier}",
+                    bus1=hvc_pipes.bus1.values + f" {carrier}",
+                    p_min_pu=-1,
+                    p_nom=1e6,
+                    p_nom_extendable=False,
+                    # capital_cost=1.0,  # replace with realistic value
+                    marginal_cost=0.1,  # small positive cost to prevent free cycling
+                    efficiency=0.99,  # tiny loss helps too
+                    carrier=f"{carrier} transport",
+                )
+
+                logger.info(
+                    f"{carrier}: added {len(hvc_pipes)} transport links"
+                )"""
 
 
 def add_aviation(
@@ -6693,8 +7919,14 @@ def add_import_options(
     """
 
     import_config = options[f"{type}_imports"]
-    import_options = import_config["price"]
-    logger.info(f"Adding {type} import options:\n{pd.Series(import_options)}")
+    # prices are fixed or {year: price}
+    investment_year = int(snakemake.wildcards.planning_horizons)
+    import_options = {
+        k: get(v, investment_year) for k, v in import_config["price"].items()
+    }
+    logger.info(
+        f"Adding {type} import options for {investment_year}:\n{pd.Series(import_options)}"
+    )
 
     if "methanol" in import_options:
         co2_intensity = costs.at["methanolisation", "carbondioxide-input"]

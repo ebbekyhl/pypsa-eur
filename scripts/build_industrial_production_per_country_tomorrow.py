@@ -93,16 +93,52 @@ if __name__ == "__main__":
     production[key_pri] = fraction_persistent_primary * production[key_pri]
     production[key_sec] = total_aluminium - production[key_pri]
 
-    production["HVC (mechanical recycling)"] = (
-        get(params["HVC_mechanical_recycling_fraction"], investment_year)
-        * production["HVC"]
-    )
-    production["HVC (chemical recycling)"] = (
-        get(params["HVC_chemical_recycling_fraction"], investment_year)
-        * production["HVC"]
-    )
+    if snakemake.config["industry"].get("HVC_detailed", False):
 
-    production["HVC"] *= get(params["HVC_primary_fraction"], investment_year)
+        # Needs to become dynamic:
+        hvc_carriers = ["Ethylene", "Propylene"]
+        if snakemake.config["industry"].get("aromatics_split", False):
+            hvc_carriers += ["Benzene", "Toluene", "Xylene"]
+        else:
+            hvc_carriers.append("Aromatics")
+        if snakemake.config["industry"].get("butadiene_incl", False):
+            hvc_carriers.append("Butadiene")
+
+        # Apply recycling fractions to each separated chemical
+        for chemical in hvc_carriers:
+            if chemical in production.columns:
+                production[f"{chemical} (mechanical recycling)"] = (
+                        get(params["HVC_mechanical_recycling_fraction"], investment_year)
+                        * production[chemical]
+                )
+                production[f"{chemical} (chemical recycling)"] = (
+                        get(params["HVC_chemical_recycling_fraction"], investment_year)
+                        * production[chemical]
+                )
+                production[chemical] *= get(params["HVC_primary_fraction"], investment_year)
+
+        # Also handle residual HVC the same way
+        production["HVC (mechanical recycling)"] = (
+                get(params["HVC_mechanical_recycling_fraction"], investment_year)
+                * production["HVC"]
+        )
+        production["HVC (chemical recycling)"] = (
+                get(params["HVC_chemical_recycling_fraction"], investment_year)
+                * production["HVC"]
+        )
+        production["HVC"] *= get(params["HVC_primary_fraction"], investment_year)
+
+    else:
+        # Original: only aggregated HVC
+        production["HVC (mechanical recycling)"] = (
+                get(params["HVC_mechanical_recycling_fraction"], investment_year)
+                * production["HVC"]
+        )
+        production["HVC (chemical recycling)"] = (
+                get(params["HVC_chemical_recycling_fraction"], investment_year)
+                * production["HVC"]
+        )
+        production["HVC"] *= get(params["HVC_primary_fraction"], investment_year)
 
     fn = snakemake.output.industrial_production_per_country_tomorrow
     production.to_csv(fn, float_format="%.2f")

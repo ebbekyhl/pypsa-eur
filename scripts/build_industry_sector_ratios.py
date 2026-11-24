@@ -71,6 +71,10 @@ index = [
     "naphtha",
     "ammonia",
     "methanol",
+    "ethylene",
+    "propylene",
+    "butadiene",
+    "aromatics",
     "process emission",
     "process emission from feedstock",
 ]
@@ -446,8 +450,52 @@ def chemicals_industry():
     df.loc["methane", sector] -= methanol_total * params["MWh_CH4_per_tMeOH"] * 1e3
     df.loc["elec", sector] -= methanol_total * params["MWh_elec_per_tMeOH"] * 1e3
 
+
+
+
+    # subtract Ethylene, Propylene and Aromatics demand (in Mt/a)
+    if snakemake.config["industry"].get("HVC_detailed", False):
+        production = pd.read_csv(
+            snakemake.input.industrial_production_per_country, index_col=0
+        )
+        eu = production.index.intersection(eu27)
+        products = ["Ethylene", "Propylene", "Aromatics"]
+        if snakemake.config["industry"].get("butadiene_incl", False):
+            products.append("Butadiene")
+        total_cracker_today = production.loc[eu, products].sum().sum() / 1e3  # Mt
+
+        df.loc["naphtha", sector] -= total_cracker_today * params["t_naphtha_per_t_steam_cracker_product"] * params["MWh_Naphtha_per_tNaphtha"] * 1e3
+        df.loc["elec", sector] -= total_cracker_today * params["MWh_elec_per_t_steam_cracker_product"] * 1e3
+        df.loc["methane", sector] -= total_cracker_today * params["MWh_gas_per_t_steam_cracker_product"] * 1e3
+
     # MWh/t material
     df.loc[sources, sector] = df.loc[sources, sector] / s_out
+
+    if snakemake.config["industry"].get("HVC_detailed", False):
+        # correct denominator for HVC process emission (non-feedstock)
+        remaining_hvc_kt = production.loc[eu, "HVC"].sum()
+        df.loc["process emission", sector] = (
+                                                    s_emi["Process emissions"]
+                                                    - params["petrochemical_process_emissions"] * 1e3
+                                                    - params["NH3_process_emissions"] * 1e3
+                                            ) / remaining_hvc_kt  # correct: only remaining HVC in denominator
+
+
+        # Re-normalise cracker-adjusted carriers by remaining (non-cracker) HVC kt
+        # so the rate applies correctly to remaining HVC production in the nodal file
+        # sources were divided by all HVC above; move them to the residual tonnes
+        df.loc[sources, sector] *= s_out / remaining_hvc_kt
+
+        # move feedstock emissions from HVC to cracker products
+        df.loc["process emission from feedstock", sector] = 0.0
+        feedstock_emi_per_t = (
+                params["petrochemical_process_emissions"] * 1e3 / (total_cracker_today * 1e3)
+        )  # tCO2/t cracker product (same rate for all three products)
+        # NOTE: feedstock_emi_per_t is applied to cracker columns after they are
+        # initialised below (to avoid overwriting by df[sector] = 0.0)
+
+
+
 
     df.rename(columns={sector: "HVC"}, inplace=True)
 
@@ -485,6 +533,60 @@ def chemicals_industry():
     sector = "Methanol"
     df[sector] = 0.0
     df.loc["methanol", sector] = params["MWh_MeOH_per_tMeOH"]
+
+    # Ethylene, Propylene and Aromatics
+
+    if snakemake.config["industry"].get("HVC_detailed", False):
+        sector = "Ethylene"
+        df[sector] = 0.0
+        df.loc["ethylene", sector] = params["MWh_Ethylene_per_tEthylene"]
+        #df.loc["process emission from feedstock", sector] = feedstock_emi_per_t
+
+        sector = "Propylene"
+        df[sector] = 0.0
+        df.loc["propylene", sector] = params["MWh_Propylene_per_tPropylene"]
+        #df.loc["process emission from feedstock", sector] = feedstock_emi_per_t
+
+        sector = "Aromatics"
+        df[sector] = 0.0
+        df.loc["aromatics", sector] = params["MWh_Aromatics_per_tAromatics"]
+        #df.loc["process emission from feedstock", sector] = feedstock_emi_per_t
+
+        sector = "Butadiene"
+        df[sector] = 0.0
+        df.loc["butadiene", sector] = params["MWh_Butadiene_per_tButadiene"]
+
+        sector = "Ethylene (mechanical recycling)"
+        df[sector] = 0.0
+        df.loc["elec", sector] = params["MWh_elec_per_tHVC_mechanical_recycling"]
+
+        sector = "Propylene (mechanical recycling)"
+        df[sector] = 0.0
+        df.loc["elec", sector] = params["MWh_elec_per_tHVC_mechanical_recycling"]
+
+        sector = "Aromatics (mechanical recycling)"
+        df[sector] = 0.0
+        df.loc["elec", sector] = params["MWh_elec_per_tHVC_mechanical_recycling"]
+
+        sector = "Butadiene (mechanical recycling)"
+        df[sector] = 0.0
+        df.loc["elec", sector] = params["MWh_elec_per_tHVC_mechanical_recycling"]
+
+        sector = "Ethylene (chemical recycling)"
+        df[sector] = 0.0
+        df.loc["elec", sector] = params["MWh_elec_per_tHVC_chemical_recycling"]
+
+        sector = "Propylene (chemical recycling)"
+        df[sector] = 0.0
+        df.loc["elec", sector] = params["MWh_elec_per_tHVC_chemical_recycling"]
+
+        sector = "Aromatics (chemical recycling)"
+        df[sector] = 0.0
+        df.loc["elec", sector] = params["MWh_elec_per_tHVC_chemical_recycling"]
+
+        sector = "Butadiene (chemical recycling)"
+        df[sector] = 0.0
+        df.loc["elec", sector] = params["MWh_elec_per_tHVC_chemical_recycling"]
 
     # Other chemicals
 

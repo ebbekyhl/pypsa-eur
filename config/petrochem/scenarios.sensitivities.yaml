@@ -1,0 +1,158 @@
+# SPDX-License-Identifier: CC0-1.0
+#
+# Chapter 1 sensitivities around the CBAM reference case.
+#
+# Every scenario starts from the reference block (&ref_industry) and changes one
+# thing only, so each difference to `reference` can be attributed to that change.
+#
+# Required settings in the base config (config.test.yaml) before running:
+#
+#   run:
+#     prefix: "Run-XXXX-sens"          # new prefix, do not reuse an old run
+#     name: all                        # or a list, e.g. [reference, res-24h]
+#     scenarios:
+#       enable: true
+#       file: config/scenarios.sensitivities.yaml
+#
+#   scenario:
+#     sector_opts:
+#     - ''                             # NOT '3h': a resolution in sector_opts
+#                                      # overrides resolution_sector in every
+#                                      # scenario, so res-24h/res-168h would
+#                                      # silently run at 3h
+#   clustering:
+#     temporal:
+#       resolution_sector: 3h          # reference resolution
+#
+# Spatial resolution (clusters) is a wildcard taken from the base config and
+# cannot be varied per scenario; a cluster sensitivity needs a separate run.
+
+
+# --- reference: CBAM case ------------------------------------------------------
+reference:
+  industry: &ref_industry
+    petrochemical_co2_priced: true
+    hvc_eol_co2_priced: true
+    cbam_factor: {2025: 0, 2030: 0.485, 2035: 1.0, 2040: 1.0, 2045: 1.0, 2050: 1.0}
+
+
+# --- temporal resolution ---------------------------------------------------------
+res-24h:
+  industry: *ref_industry
+  clustering:
+    temporal:
+      resolution_sector: 24h
+
+# weekly averaging removes the daily cycle (solar, storage); lower bound only
+res-168h:
+  industry: *ref_industry
+  clustering:
+    temporal:
+      resolution_sector: 168h
+
+
+# --- biomass availability (JRC ENSPRESO; reference is ENS_Med) -------------------
+biomass-low:
+  industry: *ref_industry
+  biomass:
+    scenario: ENS_Low
+
+biomass-high:
+  industry: *ref_industry
+  biomass:
+    scenario: ENS_High
+
+
+# --- ethane availability (reference: HIGH case, 25% of US export capacity) -----
+# LOW case: ~61% utilisation of US export capacity, Europe ~25% of exports,
+# plus 26.3 TWh other origin
+ethane-low:
+  industry:
+    <<: *ref_industry
+    ethane_import_capacity_MW:
+      2025: 6358     # 55.7 TWh
+      2030: 9849     # 86.28 TWh
+      2035: 10582    # 92.70 TWh
+      2040: 11315    # 99.12 TWh
+      2045: 12048    # 105.54 TWh
+      2050: 12781    # 111.96 TWh
+
+# no growth beyond what today's ethane crackers use
+ethane-frozen:
+  industry:
+    <<: *ref_industry
+    ethane_import_capacity_MW: {2025: 6358, 2030: 6358, 2035: 6358, 2040: 6358, 2045: 6358, 2050: 6358}
+
+# ethane price +43% (28 -> 40 EUR/MWh)
+ethane-price-high:
+  industry:
+    <<: *ref_industry
+    ethane_import_cost: 40
+
+
+# --- HVC imports -------------------------------------------------------------------
+# no volume cap from 2030 (100 GW per product, far above demand); 2025 stays at 0
+# as the calibration year. Import countries and CBAM are unchanged.
+imports-unrestricted:
+  industry:
+    <<: *ref_industry
+    ethylene_import_capacity_MW:  {2025: 0, 2030: 100000, 2035: 100000, 2040: 100000, 2045: 100000, 2050: 100000}
+    propylene_import_capacity_MW: {2025: 0, 2030: 100000, 2035: 100000, 2040: 100000, 2045: 100000, 2050: 100000}
+    butadiene_import_capacity_MW: {2025: 0, 2030: 100000, 2035: 100000, 2040: 100000, 2045: 100000, 2050: 100000}
+    aromatics_import_capacity_MW: {2025: 0, 2030: 100000, 2035: 100000, 2040: 100000, 2045: 100000, 2050: 100000}
+
+# no HVC imports at all
+imports-none:
+  industry:
+    <<: *ref_industry
+    ethylene_import_capacity_MW:  {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    propylene_import_capacity_MW: {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    butadiene_import_capacity_MW: {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    aromatics_import_capacity_MW: {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+
+
+# --- CBAM price ----------------------------------------------------------------------
+# CBAM charged at the model's own CO2 price instead of the exogenous EU projection.
+# PLACEHOLDER values (|co2 bus price| of an earlier CBAM run): replace with
+# -n.global_constraints.at["CO2Limit", "mu"] per horizon from the new reference.
+cbam-model-price:
+  industry:
+    <<: *ref_industry
+    cbam_co2_price: {2025: 15, 2030: 50, 2035: 200, 2040: 250, 2045: 250, 2050: 300}
+
+
+# --- CO2 storage ----------------------------------------------------------------------
+# sequestration potential doubled; tests how much of the petrochemical CO2 price
+# is storage scarcity rather than capture cost
+co2seq-high:
+  industry: *ref_industry
+  sector:
+    co2_sequestration_potential: {2020: 0, 2025: 0, 2030: 80, 2035: 200, 2040: 360, 2045: 500, 2050: 500}
+
+
+# --- end of life ---------------------------------------------------------------------
+# previous assumption: 35% of end-of-life HVC carbon stays sequestered in all years
+eol-legacy:
+  industry:
+    <<: *ref_industry
+    HVC_environment_sequestration_fraction: 0.35
+
+# thermochemical recycling at the full nova-Institut mean (28.5% in 2050)
+# instead of two thirds of it (19%)
+recycling-high:
+  industry:
+    <<: *ref_industry
+    thermochemical_recycling_max_fraction: {2025: 0.0, 2030: 0.057, 2035: 0.114, 2040: 0.171, 2045: 0.228, 2050: 0.285}
+
+
+# --- numerical robustness ----------------------------------------------------------
+# same model, different random seeds (noisy costs and Gurobi); differences to
+# `reference` give the noise floor for comparing scenarios
+seed-456:
+  industry: *ref_industry
+  solving:
+    options:
+      seed: 456
+    solver_options:
+      gurobi-default:
+        Seed: 456

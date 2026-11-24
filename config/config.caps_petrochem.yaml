@@ -1,0 +1,333 @@
+# Detailed petrochemicals from pypsa-petrochem (branch dev-leander, 116d4416) on top
+# of the caps study. Steam crackers by plant (data/steam_cracker_links.xlsx), with
+# lifetimes, life extension and retirement when idle; ethylene, propylene, aromatics
+# and butadiene as carriers with their own demand (data/* production.csv), storage,
+# transport between nodes (data/transport_of_hvc.xlsx, ITOM) and imports; new
+# routes (electric crackers, ethane crackers, methanol-to-olefins/-aromatics,
+# on-purpose propylene and butadiene, bio-ethanol, plastic pyrolysis, waste to
+# methanol; data/hvc_technology_expansion.xlsx); waste and existing incinerators.
+#
+# The industry settings below are those of the petrochemical study
+# (config/petrochem/config.petrochem.yaml). Its other settings (clusters, countries,
+# transmission limit, CO2 budget and prices, import prices, ...) are not taken
+# over: the caps setup stays as it is. Keys that equal config.default.yaml are left
+# out. Differences from config.default.yaml besides the new model: lower recycling
+# shares (HVC_primary_fraction 1.0 in 2025), landfill as sequestration
+# (HVC_environment_sequestration_fraction 0.35 in 2025 to 0 in 2050),
+# waste_to_energy_cc: true, and a disposal cost of 8 EUR/MWh for "HVC to air".
+#
+# Stack it after config.caps.yaml and before the variant, e.g.
+#   snakemake solve_sector_networks --configfile config/config.caps.yaml \
+#     config/config.caps_petrochem.yaml config/config_caps_national.yaml -j32
+# The run name comes from the variant; the prefix keeps the results apart from the
+# runs without the petrochemical model (results/pypsa-uk-petrochem/<name>/).
+run:
+  prefix: "pypsa-uk-petrochem"
+
+industry:
+  HVC_primary_fraction:
+    2020: 1 # 0.89
+    2025: 1 #0.88
+    2030: 0.976
+    2035: 0.952
+    2040: 0.927
+    2045: 0.903
+    2050: 0.879
+  HVC_mechanical_recycling_fraction:
+    2020: 0 #0.11 #0.12
+    2025: 0 #0.12
+    2030: 0.01 #0.14 #0.18
+    2035: 0.021 #0.16 #0.21
+    2040: 0.031 #0.16 #0.24
+    2045: 0.041 #0.16 #0.27
+    2050: 0.052 #0.16 #0.3
+  HVC_chemical_recycling_fraction: # Plastic-to-Plastic Assumption
+    2020: 0.0
+    2025: 0.0
+    2030: 0.014 #0.04
+    2035: 0.028 #0.08
+    2040: 0.042 #0.12
+    2045: 0.055 #0.16
+    2050: 0.069 #0.2
+  HVC_recycling_cap_basis: { 2025: 0.65, 2030: 0.68, 2035: 0.71, 2040: 0.74, 2045: 0.77, 2050: 0.80 }
+  HVC_environment_sequestration_fraction: { 2025: 0.35, 2030: 0.28, 2035: 0.21, 2040: 0.14, 2045: 0.07, 2050: 0.0 }
+  waste_to_energy_existing_basis: 0.65
+  waste_to_energy_cc: true
+  waste_to_energy_existing_share: 0.496
+  waste_to_energy_existing_build_year: 2020
+  waste_to_energy_existing_lifetime: 35  # 35 years keeps today's fleet available through 2050
+  # Cost of uncontrolled disposal of end-of-life HVC ("HVC to air"), EUR/MWh.
+  # EU landfill gate fees 50-150 EUR/t, i.e. ~5-15 EUR/MWh at 10.27 MWh/t.
+  hvc_disposal_cost: 8.0
+
+  # Caps study, not the petrochemical study: the naphtha that the crackers do not
+  # use is feedstock of the remaining HVC, so its carbon counts with the plastic
+  # waste, shared out by population like that of the four products and as in the
+  # caps runs without this model. The petrochemical study books it in the same
+  # year where the naphtha is used ("in_year"). The liquid fuels of the other
+  # industry sectors count at the plant in either case (oil for industry).
+  residual_naphtha_co2: end_of_life
+
+  # Share of total HVC feed (production minus exogenous recycling) that may enter thermochemical recycling, at most the collected share. 19% of total plastics in 2050 (two thirds of the nova-Institut 2024 mean of 28.5%).
+  thermochemical_recycling_max_fraction:
+    2025: 0.0
+    2030: 0.038
+    2035: 0.076
+    2040: 0.114
+    2045: 0.152
+    2050: 0.19
+
+  HVC_detailed: true # If true, disaggregate basic chemicals further into ethylene, propylene, aromatics
+  HVC_transport: true #If true, connect regional HVC buses via zero-cost transport hub
+  butadiene_incl: true      # include butadiene as separate carrier
+  biomass_to_butadiene: true
+  aromatics_split: false     # not implemented, must stay false
+  HVC_yield_shift: true
+
+  # MWh per MWh of ethylene forgone, from average yields to Boulamanti et al.
+  # max_shift: largest share of a plant's ethylene output that can be shifted.
+  # Cracker types not listed here (ethane/NGL) keep fixed yields.
+  HVC_yield_shift_by_type:
+    Naphtha:         {max_shift: 0.076, propylene: -0.015, aromatics: 0.297, butadiene: 0.284}
+    Flex Standalone: {max_shift: 0.040, propylene: 0.272,  aromatics: 0.699, butadiene: -0.007}
+    Flex Integrated: {max_shift: 0.038, propylene: 0.941,  aromatics: 0.971, butadiene: 0.109}
+  HVC_yield_shift_cost: 5
+  t_naphtha_per_t_steam_cracker_product: 1.4
+  MWh_elec_per_t_steam_cracker_product: 0.052
+  MWh_gas_per_t_steam_cracker_product: -3.6 # negative because steam cracker provide gas as by-product
+  MWh_Naphtha_per_tNaphtha: 12.472   # energy content of naphtha (MWh/t)
+  ethylene_production_today: 16.924      # Mt/a, Petrochemistry Europe 2024
+  propylene_production_today: 8.730      # Mt/a, ex-steam cracker only
+  aromatics_production_today: 4.800      # Mt/a, ex-steam cracker only
+  butadiene_production_today: 2.284        # Mt/a, ex-steam cracker only
+  MWh_Ethylene_per_tEthylene: 13.11       # LHV ~46 MJ/kg
+  MWh_Propylene_per_tPropylene: 12.72     # LHV ~45.2 MJ/kg
+  MWh_Aromatics_per_tAromatics: 11.27     # LHV ~40.5 MJ/kg
+  MWh_Butadiene_per_tButadiene: 12.39     # LHV 44.7 MJ/kg
+
+  ethane_import_cost: 28  # €/MWh — representative European ethane import price
+  ethane_import_capacity_MW: # US share bound + other-origin supply
+    2025: 6358     # 55.7 TWh, 100 % nameplate ethane input capacity
+    2030: 14284    # 125.13 TWh
+    2035: 15492    # 135.71 TWh
+    2040: 16701    # 146.30 TWh
+    2045: 17909    # 156.88 TWh
+    2050: 19117    # 167.47 TWh
+
+  propane_import_cost: 33.5
+  propane_import_capacity_MW:         # theoretically full PDH-based propylene supply
+    2025: 0    # ~today's European PDH feed
+    2030: 15277
+    2035: 15277
+    2040: 15277
+    2045: 15277
+    2050: 15277   # 111 TWh propylene / 0.83
+
+  butane_import_cost: 34.6
+  butane_import_capacity_MW:          # theoretically full Catadiene-based butadiene supply
+    2025: 0       # Europe has essentially no on-purpose butadiene capacity today
+    2030: 5522
+    2035: 5522
+    2040: 5522
+    2045: 5522
+    2050: 5522    # 28 TWh butadiene / 0.59
+
+  ethylene_import: true
+  ethylene_import_cost:          # EUR/MWh, delivered (BACI 2024 -> cheapest exporting asset)
+    2025: 79.2
+    2030: 69.0
+    2035: 58.8
+    2040: 48.5
+    2045: 48.5
+    2050: 48.5
+  ethylene_import_co2:  0.0763   # 1 t CO2e / t, at 13.11 MWh/t
+  ethylene_import_capacity_MW:
+    2025: 0
+    2030: 3865
+    2035: 9158
+    2040: 16405
+    2045: 22798        # capped at demand
+    2050: 21782        # capped at demand
+  ethylene_import_countries: ["ES", "PT", "FR", "BE", "NL", "DE", "GB", "NO", "IE"]
+
+  propylene_import: true
+  propylene_import_cost:
+    2025: 81.1
+    2030: 75.0
+    2035: 68.8
+    2040: 62.6
+    2045: 62.6
+    2050: 62.6
+  propylene_import_co2: 0.0786   # 1 t CO2e / t, at 12.72 MWh/t
+  propylene_import_capacity_MW:
+    2025: 0
+    2030: 1119
+    2035: 2491
+    2040: 4173
+    2045: 6237
+    2050: 8769
+  propylene_import_countries: ["ES", "PT", "FR", "BE", "NL", "DE", "GB", "NO", "IE"]
+
+  butadiene_import: true
+  butadiene_import_cost:
+    2025: 139.5
+    2030: 115.3
+    2035: 91.1
+    2040: 67.0
+    2045: 67.0
+    2050: 67.0
+  butadiene_import_co2: 0.0807   # 1 t CO2e / t, at 12.39 MWh/t
+  butadiene_import_capacity_MW:
+    2025: 0
+    2030: 147
+    2035: 320
+    2040: 521
+    2045: 757
+    2050: 1034
+  butadiene_import_countries: [ "ES", "PT", "FR", "BE", "NL", "DE", "GB", "NO", "IE" ]
+
+  aromatics_import: true
+  aromatics_import_cost:
+    2025: 87.5
+    2030: 84.4
+    2035: 81.2
+    2040: 78.0
+    2045: 78.0
+    2050: 78.0
+  aromatics_import_co2: 0.0887   # 1 t CO2e / t, at 11.27 MWh/t
+  aromatics_import_capacity_MW:
+    2025: 0
+    2030: 1133
+    2035: 2489
+    2040: 4111
+    2045: 5559         # capped at demand
+    2050: 5311         # capped at demand
+  aromatics_import_countries: [ "ES", "PT", "FR", "BE", "NL", "DE", "GB", "NO", "IE" ]
+
+ # CBAM phase-in: share of embedded emissions charged at the European carbon
+  # price, mirroring the free-allocation phase-out under the ETS Directive
+  # (100% from 2034). 0 disables the border adjustment entirely.
+
+  petrochemical_co2_priced: true    # false = cracking and conversion emissions outside the budget
+  hvc_eol_co2_priced: true          # false = end-of-life HVC carbon outside the budget
+
+  cbam_factor:
+    2025: 0
+    2030: 0.485
+    2035: 1.0
+    2040: 1.0
+    2045: 1.0
+    2050: 1.0
+
+  cbam_co2_price:   # assumed based on https://climate.ec.europa.eu/document/download/1ab67b2d-b5b7-46d7-abe4-38273a233080_en?filename=swd_2026_616_part_2_en.pdf
+    2025: 0
+    2030: 70
+    2035: 115
+    2040: 185
+    2045: 230
+    2050: 250
+
+  ITOM_run: false
+  HVC_expansion_locally_restricted: true   # false = allow builds at all nodes
+  cracker_idle_threshold: 0.4   # close a cracker permanently below this capacity factor in the previous horizon
+  cracker_ccs: true
+  plastic_pyrolysis: true
+  # Near-term values are deployment-limited: 240 kt/yr operating in Europe today
+  # against 2.8 Mt/yr of announced projects, ~9% delivery rate [EUWID 2025].
+  # From 2040 the cap reflects technical potential instead: pyrolysis requires
+  # polyolefin-rich feed (PE/PP/PS ~55% of European plastics; PVC and PET are
+  # unsuitable), giving ~40-45% of the mixed residual stream after mechanical
+  # and dissolution recycling have taken the sorted fraction.
+  plastic_pyrolysis_max_fraction:
+    2025: 1.0
+    2030: 1.0
+    2035: 1.0
+    2040: 1.0
+    2045: 1.0
+    2050: 1.0
+
+# New-build limits per five-year step, MW of feedstock input (bus0), the unit
+# in which HVC expansion links are dimensioned.
+#
+# total: aggregate limit. 2030 is anchored on confirmed European petrochemical
+# investments 2022-25: 3.8 Mt/a of product (Cefic/BCG), 87% in five projects,
+# i.e. 47 TWh/a of HVC output, divided by the unweighted mean HVC yield of the
+# expansion table (0.60 MWh/MWh_feed) = 9 GW input. Later steps grow 1.5x per
+# horizon
+#
+# per_carrier: bounds the composition, not the volume (their 2030 sum exceeds
+# the total). Two reference plants per route to 2030, five per horizon after.
+#   ethane cracker   INEOS Project ONE, 1.45 Mt/a ethylene        ~2,900 MW
+#   e-cracker        same scale assumed, generous: only a 6 MW
+#                    demonstration furnace exists (BASF/SABIC/Linde 2024)
+#   PDH              Borealis Kallo, 750 kt/a propylene           ~1,300 MW
+#   Catadiene        largest operating units, 270 kt/a butadiene    ~650 MW
+#   MTO              DMTO-III Baofeng, 1.35 Mt/a olefins; no
+#                    European plant announced, generous            ~2,400 MW
+#   MtA              no commercial reference; MTO scale halved    ~1,200 MW
+#
+# Life extensions of existing crackers are bounded by nameplate capacity in
+# prepare_sector_network and are not new builds.
+
+  hvc_new_build_limit_MW:
+    total:
+      2030: 9000
+      2035: 13500
+      2040: 20250
+      2045: 30375
+      2050: 45550
+    per_carrier:
+      electric steam cracker ethane: { 2030: 2900, 2035: 14500, 2040: 14500, 2045: 14500, 2050: 14500 }
+      electric steam cracker naphtha: { 2030: 2900, 2035: 14500, 2040: 14500, 2045: 14500, 2050: 14500 }
+      fossil steam cracker ethane: { 2030: 2900, 2035: 14500, 2040: 14500, 2045: 14500, 2050: 14500 }
+      on purpose propylene: { 2030: 1300, 2035: 6500, 2040: 6500, 2045: 6500, 2050: 6500 }
+      on purpose butadiene: { 2030: 650, 2035: 3250, 2040: 3250, 2045: 3250, 2050: 3250 }
+      methanol-to-olefines: { 2030: 2400, 2035: 12000, 2040: 12000, 2045: 12000, 2050: 12000 }
+      methanol-to-aromatics: { 2030: 1200, 2035: 6000, 2040: 6000, 2045: 6000, 2050: 6000 }
+
+  # --- HVC policy instruments (all zero = off) ---
+
+  # 1a. maximum share of each product's annual demand met by imports
+  max_import_share:
+    ethylene: { 2030: null, 2035: null, 2040: null, 2045: null, 2050: null }
+    propylene: { 2030: null, 2035: null, 2040: null, 2045: null, 2050: null }
+    butadiene: { 2030: null, 2035: null, 2040: null, 2045: null, 2050: null }
+    aromatics: { 2030: null, 2035: null, 2040: null, 2045: null, 2050: null }
+
+  # 1b. import tariff on HVC products, EUR/MWh on top of the import price
+  hvc_import_tariff: { 2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0 }
+
+  # 2. CAPEX subsidy, fraction of annualised capital cost waived
+  hvc_capex_subsidy: { 2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0 }
+
+  # 3. OPEX subsidy for new build, EUR per MWh of HVC output
+  hvc_opex_subsidy: { 2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0 }
+
+  # 4. OPEX subsidy for the inherited fleet, EUR per MWh of HVC output
+  hvc_existing_opex_subsidy: { 2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0 }
+
+  hvc_expansion_carriers:
+    - fossil steam cracker naphtha
+    - fossil steam cracker flex standalone
+    - fossil steam cracker flex integrated
+    - fossil steam cracker ethane
+    - electric steam cracker ethane
+    - electric steam cracker naphtha
+    - methanol-to-olefines
+    - methanol-to-aromatics
+    - on purpose propylene
+    - on purpose butadiene
+    - pyrolysis aromatics
+    - pyrolysis oil
+    - ethanol-to-x
+    - waste-to-methanol
+
+  hvc_existing_carriers:
+    - steam cracker
+    - steam cracker extension
+
+  # 1e. fossil feedstock to HVC incl. imported HVC, reduction against what this
+  #     year's HVC demand would need at today's yield (null = off)
+  hvc_fossil_feed_reduction: { 2030: null, 2035: null, 2040: null, 2045: null, 2050: null }
+  # oil supply that petrochemicals may claim as non-fossil (book and claim)
+  oil_nonfossil_carriers: [Fischer-Tropsch, biomass to liquid, biomass to liquid CC, import oil]

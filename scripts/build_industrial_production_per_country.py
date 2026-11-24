@@ -37,6 +37,11 @@ The following subcategories [kton/a] are considered:
 - Other industrial sectors
 - Ammonia
 - HVC
+    - Ethylene
+    - Propylene
+    - Butadiene (if included)
+    - Aromatics or Benzene, Toluene & Xylene (depending on config)
+
 - Chlorine
 - Methanol
 """
@@ -299,15 +304,97 @@ def separate_basic_chemicals(demand, year):
     col = "Basic chemicals"
     demand[col] = demand[col].clip(lower=0.0)
 
+
+    # Disaggregate basic chemicals if detailed HVC modeling is enabled
+    if snakemake.config["industry"].get("HVC_detailed", False):
+
+        if snakemake.config["industry"].get("ITOM_run", False):
+            chemicals = {
+                "Ethylene": snakemake.input.ethylene_production_itom,
+                "Propylene": snakemake.input.propylene_production_itom,
+            }
+            if snakemake.config["industry"].get("aromatics_split", False):
+                raise NotImplementedError(
+                    "aromatics_split needs benzene/toluene/xylene data that is not in the repository."
+                )
+                chemicals.update({
+                    "Benzene": snakemake.input.benzene_production_itom,
+                    "Toluene": snakemake.input.toluene_production_itom,
+                    "Xylene": snakemake.input.xylene_production_itom,
+                })
+            else:
+                chemicals["Aromatics"] = snakemake.input.aromatics_production_itom
+
+            if snakemake.config["industry"].get("butadiene_incl", False):
+                chemicals["Butadiene"] = snakemake.input.butadiene_production_itom
+
+
+        else:
+            chemicals = {
+                "Ethylene": snakemake.input.ethylene_production,
+                "Propylene": snakemake.input.propylene_production,
+            }
+            if snakemake.config["industry"].get("aromatics_split", False):
+                raise NotImplementedError(
+                    "aromatics_split needs benzene/toluene/xylene data that is not in the repository."
+                )
+                chemicals.update({
+                    "Benzene": snakemake.input.benzene_production,
+                    "Toluene": snakemake.input.toluene_production,
+                    "Xylene": snakemake.input.xylene_production,
+                })
+            else:
+                chemicals["Aromatics"] = snakemake.input.aromatics_production
+
+            if snakemake.config["industry"].get("butadiene_incl", False):
+                chemicals["Butadiene"] = snakemake.input.butadiene_production
+
+
+        total_separated = 0.0
+
+        for chemical, filepath in chemicals.items():
+            production = pd.read_csv(filepath, index_col=0, sep=";")
+
+            there = production.index.intersection(demand.index)
+            missing = demand.index.symmetric_difference(there)
+
+            logger.info(f"Following countries have no {chemical.lower()} demand: {missing.tolist()}")
+
+            demand[chemical] = 0.0
+            demand.loc[there, chemical] = production.loc[there, "2024"]
+            demand["Basic chemicals"] -= demand[chemical]
+
+            # Accumulate total separated production (in Mt)
+            total_separated += production["2024"].sum() / 1e3
+
+        demand["Basic chemicals"] = demand["Basic chemicals"].clip(lower=0.0)
+
+        # Adjust distribution key and HVC
+        adjusted_basic_chem_today = (
+                params["basic_chemicals_without_NH3_production_today"] - total_separated
+        )
+
+        distribution_key = (
+                demand["Basic chemicals"]
+                / adjusted_basic_chem_today
+                / 1e3
+        )
+
+        adjusted_hvc_today = params["HVC_production_today"] - total_separated
+        demand["HVC"] = adjusted_hvc_today * 1e3 * distribution_key
+        demand["Chlorine"] = params["chlorine_production_today"] * 1e3 * distribution_key
+        demand["Methanol"] = params["methanol_production_today"] * 1e3 * distribution_key
+
+    else:
     # assume HVC, methanol, chlorine production proportional to non-ammonia basic chemicals
-    distribution_key = (
-        demand["Basic chemicals"]
-        / params["basic_chemicals_without_NH3_production_today"]
-        / 1e3
-    )
-    demand["HVC"] = params["HVC_production_today"] * 1e3 * distribution_key
-    demand["Chlorine"] = params["chlorine_production_today"] * 1e3 * distribution_key
-    demand["Methanol"] = params["methanol_production_today"] * 1e3 * distribution_key
+        distribution_key = (
+            demand["Basic chemicals"]
+            / params["basic_chemicals_without_NH3_production_today"]
+            / 1e3
+        )
+        demand["HVC"] = params["HVC_production_today"] * 1e3 * distribution_key
+        demand["Chlorine"] = params["chlorine_production_today"] * 1e3 * distribution_key
+        demand["Methanol"] = params["methanol_production_today"] * 1e3 * distribution_key
 
     demand.drop(columns=["Basic chemicals"], inplace=True)
 

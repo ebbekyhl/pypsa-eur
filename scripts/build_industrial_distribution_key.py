@@ -192,6 +192,27 @@ def prepare_cement_supplement(regions):
     return gdf
 
 
+def prepare_steam_crackers_database(
+    fn: str, regions: gpd.GeoDataFrame
+) -> gpd.GeoDataFrame:
+    """
+    Load steam cracker database and map onto bus regions.
+
+    Capacities are in kt/a for ethylene, propylene, and aromatics.
+    """
+    df = pd.read_excel(fn, index_col=0)
+
+    geometry = gpd.points_from_xy(df.Longitude, df.Latitude)
+    gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
+
+    gdf = gpd.sjoin(gdf, regions, how="inner", predicate="within")
+
+    gdf.rename(columns={"name": "bus"}, inplace=True)
+    gdf["country"] = gdf.bus.str[:2]
+
+    return gdf
+
+
 def prepare_refineries_supplement(regions):
     """
     Load supplementary refineries from non-EU-(NO-CH) and map onto bus regions.
@@ -273,7 +294,7 @@ def prepare_NAEI_UK(regions, rename_sectors=True):
     return gdf
 
 def build_nodal_distribution_key(
-    hotmaps, gem, ammonia, cement, refineries, regions, countries
+    hotmaps, gem, ammonia, cement, refineries, steam_crackers, regions, countries
 ):
     """
     Build nodal distribution keys for each sector.
@@ -430,6 +451,48 @@ def build_nodal_distribution_key(
 
         keys.loc[regions_ct, "Ammonia"] = key
 
+    # add steam cracker products (ethylene, propylene, aromatics)
+    cracker_products = {
+        "Ethylene": "Ethylene Capacity (kt_ethylene/a)",
+        "Propylene": "Propylene Capacity (kt_propylene/a)",
+    }
+    if snakemake.config["industry"].get("aromatics_split", False):
+        cracker_products.update({
+            "Benzene": "Benzene Capacity (kt_benzene/a)",
+            "Toluene": "Toluene Capacity (kt_toluene/a)",
+            "Xylene": "Xylene Capacity (kt_xylene/a)",
+        })
+    else:
+        cracker_products["Aromatics"] = "Aromatics Capacity (kt_aromatics/a)"
+    if snakemake.config["industry"].get("butadiene_incl", False):
+        cracker_products["Butadiene"] = "Butadiene Capacity (kt_butadiene/a)"
+
+
+    for cracker_product, col in cracker_products.items():
+        for country in countries:
+            regions_ct = regions.index[regions.index.str.contains(country)]
+
+            facilities = steam_crackers.query("country == @country")
+
+            if not facilities.empty:
+                production = facilities[col]
+                if production.sum() == 0:
+                    key = pd.Series(1 / len(facilities), facilities.index)
+                else:
+                    # assume 50% of the minimum production for missing values
+                    production = production.fillna(
+                        0.5 * facilities[col].min()
+                    )
+                    key = production / production.sum()
+                key = (
+                    key.groupby(facilities.bus).sum().reindex(regions_ct, fill_value=0.0)
+                )
+            else:
+                key = 0.0
+
+            keys.loc[regions_ct, cracker_product] = key
+
+
     return keys
 
 
@@ -480,8 +543,13 @@ if __name__ == "__main__":
         # only consider sectors present in hotmaps_sectors
         hotmaps = hotmaps[hotmaps.Subsector.isin(hotmaps_sectors)]
 
+    steam_crackers = prepare_steam_crackers_database(
+        snakemake.input.steam_crackers, regions
+    )
+
+
     keys = build_nodal_distribution_key(
-        hotmaps, gem, ammonia, cement, refineries, regions, countries
+        hotmaps, gem, ammonia, cement, refineries, steam_crackers, regions, countries
     )
 
     keys.to_csv(snakemake.output.industrial_distribution_key)

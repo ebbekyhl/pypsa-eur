@@ -1,0 +1,37 @@
+
+
+cbam-ngl-tight:
+  industry:
+    petrochemical_co2_priced: true
+    hvc_eol_co2_priced: true
+    cbam_factor: {2025: 0, 2030: 0.485, 2035: 1.0, 2040: 1.0, 2045: 1.0, 2050: 1.0}
+    ethane_import_capacity_MW:  {2025: 8000, 2030: 9000, 2035: 11000, 2040: 13000, 2045: 15000, 2050: 16000}
+    propane_import_capacity_MW: {2025: 1500, 2030: 2000, 2035: 3000,  2040: 4000,  2045: 5000,  2050: 6000}
+    butane_import_capacity_MW:  {2025: 0,    2030: 300,  2035: 700,   2040: 1200,  2045: 1600,  2050: 2000}
+
+eu-only-ngl-tight:
+  industry:
+    petrochemical_co2_priced: true
+    hvc_eol_co2_priced: true
+    cbam_factor: 0
+    ethane_import_capacity_MW:  {2025: 8000, 2030: 9000, 2035: 11000, 2040: 13000, 2045: 15000, 2050: 16000}
+    propane_import_capacity_MW: {2025: 1500, 2030: 2000, 2035: 3000,  2040: 4000,  2045: 5000,  2050: 6000}
+    butane_import_capacity_MW:  {2025: 0,    2030: 300,  2035: 700,   2040: 1200,  2045: 1600,  2050: 2000}
+
+no-carbon-price-ngl-tight:
+  industry:
+    petrochemical_co2_priced: false
+    hvc_eol_co2_priced: true
+    cbam_factor: 0
+    ethane_import_capacity_MW:  {2025: 8000, 2030: 9000, 2035: 11000, 2040: 13000, 2045: 15000, 2050: 16000}
+    propane_import_capacity_MW: {2025: 1500, 2030: 2000, 2035: 3000,  2040: 4000,  2045: 5000,  2050: 6000}
+    butane_import_capacity_MW:  {2025: 0,    2030: 300,  2035: 700,   2040: 1200,  2045: 1600,  2050: 2000}
+
+eu-only-ngl-open:
+  industry:
+    petrochemical_co2_priced: true
+    hvc_eol_co2_priced: true
+    cbam_factor: 0
+    ethane_import_capacity_MW: 200000
+    propane_import_capacity_MW: 100000
+    butane_import_capacity_MW: 50000

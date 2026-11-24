@@ -774,6 +774,7 @@ rule build_industry_sector_ratios:
     input:
         ammonia_production=resources("ammonia_production.csv"),
         idees="data/jrc-idees-2021",
+        industrial_production_per_country=resources("industrial_production_per_country.csv"),
     output:
         industry_sector_ratios=resources("industry_sector_ratios.csv"),
     threads: 1
@@ -824,6 +825,14 @@ rule build_industrial_production_per_country:
     input:
         ch_industrial_production="data/ch_industrial_production_per_subsector.csv",
         ammonia_production=resources("ammonia_production.csv"),
+        ethylene_production="data/Ethylene production.csv",
+        propylene_production="data/Propylene production.csv",
+        aromatics_production="data/Aromatics production.csv",
+        butadiene_production="data/Butadiene production.csv",
+        ethylene_production_itom="data/Ethylene production ITOM.csv",
+        propylene_production_itom="data/Propylene production ITOM.csv",
+        aromatics_production_itom="data/Aromatics production ITOM.csv",
+        butadiene_production_itom="data/Butadiene production ITOM.csv",
         jrc="data/jrc-idees-2021",
         eurostat="data/eurostat/Balances-April2023",
     output:
@@ -886,6 +895,7 @@ rule build_industrial_distribution_key:
         ammonia="data/ammonia_plants.csv",
         cement_supplement="data/cement-plants-noneu.csv",
         refineries_supplement="data/refineries-noneu.csv",
+        steam_crackers="data/steam_crackers.xlsx",
     output:
         industrial_distribution_key=resources(
             "industrial_distribution_key_base_s_{clusters}.csv"
@@ -1433,6 +1443,9 @@ rule prepare_sector_network:
         direct_heat_source_utilisation_profiles=resources(
             "direct_heat_source_utilisation_profiles_base_s_{clusters}_{planning_horizons}.nc"
         ),
+        existing_crackers="data/steam_cracker_links.xlsx",
+        hvc_technology_expansion="data/hvc_technology_expansion.xlsx",
+        hvc_transport="data/transport_of_hvc.xlsx",
         ates_potentials=lambda w: (
             resources("ates_potentials_base_s_{clusters}_{planning_horizons}.csv")
             if config_provider("sector", "district_heating", "ates", "enable")(w)

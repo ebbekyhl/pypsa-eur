@@ -168,6 +168,43 @@ def separate_basic_chemicals(demand, production):
 
     demand["HVC"] = demand["Basic chemicals"] - demand["Methanol"] - demand["Chlorine"]
 
+    if snakemake.config["industry"].get("HVC_detailed", False):
+        # Build dict of tracked carriers → production Series
+        tracked = {
+            "Ethylene": production["Ethylene"],
+            "Propylene": production["Propylene"],
+        }
+        if snakemake.config["industry"].get("aromatics_split", False):
+            tracked["Benzene"] = production["Benzene"]
+            tracked["Toluene"] = production["Toluene"]
+            tracked["Xylene"] = production["Xylene"]
+        else:
+            tracked["Aromatics"] = production["Aromatics"]
+        if snakemake.config["industry"].get("butadiene_incl", False):
+            tracked["Butadiene"] = production["Butadiene"]
+
+        total_cracker_output = sum(tracked.values())  # sum of pandas Series → Series
+
+        steam_cracker = pd.DataFrame(
+            {
+                "liquid": total_cracker_output * params["t_naphtha_per_t_steam_cracker_product"]
+                          * params["MWh_Naphtha_per_tNaphtha"],
+                "electricity": total_cracker_output * params["MWh_elec_per_t_steam_cracker_product"],
+                "gas": total_cracker_output * params["MWh_gas_per_t_steam_cracker_product"],
+            }
+        ).T
+
+        for carrier, prod in tracked.items():
+            # countries without cracker output give 0/0; they have no cracker energy to split
+            share = (prod / total_cracker_output).fillna(0.0)
+            demand[carrier] = (
+                (share * steam_cracker)
+                .unstack()
+                .reindex(index=demand.index, fill_value=0.0)
+            )
+
+        demand["HVC"] -= sum(demand[c] for c in tracked)
+
     # Deal with ammonia separately, depending on whether it is modelled endogenously.
     ammonia_exo = pd.DataFrame(
         {

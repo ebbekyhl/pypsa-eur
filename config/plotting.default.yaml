@@ -593,15 +593,74 @@ plotting:
     liquid: '#25c49a'
     kerosene for aviation: '#a1ffe6'
     naphtha for industry: '#57ebc4'
+    oil for industry: '#7a8a5f'
     methanol for industry heat: '#8f8318'
     methanol for industry heat CC: '#80740a'
+    residual naphtha: '#a86a4a'
+    ethylene: '#3a9e8e'
+    propylene: '#2d7a6e'
+    aromatics: '#1f5a50'
+    butadiene: '#1f5a50'
+    steam cracker: "#8c564b"        # brown-ish fossil
+    steam cracker extension: "#5C5C5C"
+    yield shift: "#8c564b"
+    electric steam cracker naphtha: "#f4d03f"   # softer pastel yellow
+    electric steam cracker ethane: "#f4d03f" # softer pastel yellow
+    fossil steam cracker ethane: "#B5679E"
+    fossil steam cracker naphtha: "#D89BC4"
+    fossil steam cracker flex integrated: "#8E4A7C"
+    fossil steam cracker flex standalone: "#EBC6DE"
+    methanol-to-olefins: '#FFA07A'
+    methanol-to-aromatics: '#FFA07A'
     methanol-to-kerosene: '#C98468'
+    ethane for industry: "#8B4513"
+    on purpose propylene: '#7b3f9e'
+    on purpose butadiene: '#a05fbf'
+    waste-to-methanol: '#5e35b1'
+    propane for industry: '#c9a227'
+    butane for industry: '#d4b445'
+    electric cracker: "#1f77b4"
+
+    # --- HVC expansion technologies ---
+    fossil steam cracker: "#7B3F2A"       # dark brown
+    electric steam cracker: "#2E86C1"     # steel blue
+    methanol-to-olefines: "#FFA07A"       # orange (same family as MTO)
+    methanol-to-aromatis: "#FF8C42"       # orange variant
+    biomass-to-ethanol: "#57A55A"         # medium green
+    ethanol-to-x: "#3D8B40"              # darker green
+    pyrolysis oil: "#8BC34A"             # light green (plastic route)
+    pyrolysis aromatics: "#6DAB2F"        # slightly darker green
+    ethanol for industry: "#7BC87B"       # pale green (intermediate carrier)
+    petrochemical CC: "#95A5A6"          # grey
+    process emissions petrochemicals: "#7F8C8D"  # darker grey
+    co2 unpriced: "#b8b8b8"
+    ethylene transport: "#ff6347"
+    propylene transport: "#ffa500"
+    aromatics transport: "#9370DB"
+    butadiene transport: "#9370DB"
+    ethylene import: "#9467bd"
+    propylene import: "#6a4c93"
+    butadiene import: "#c77dbb"
+    aromatics import: "#e3a9d6"
+    electric cracker ethane: "#f4d03f"    # fix typo: you have "etahne" instead of "ethane"
+    ethylene yield shift: "#8c564b"
+    #ethylene transport: "#7bc8bd'"	#Lighter shade of ethylene green #3a9e8e
+    #propylene transport: '#5da89e'	#Lighter shade of propylene #2d7a6e
+    #aromatics transport: "#3d8070"
     methanol-to-olefins/aromatics: '#FFA07A'
     Methanol steam reforming: '#FFBF00'
     Methanol steam reforming CC: '#A2EA8A'
     methanolisation: '#00FFBF'
     biomass-to-methanol: '#EAD28A'
     biomass-to-methanol CC: '#EADBAD'
+    biomass-to-olefins: '#EAD28A'
+    biomass-to-aromatics: '#EAD28A'
+    biomass-to-butadiene: '#8BC34A'
+    plastic pyrolysis: '#8BC34A'
+    thermochemical recycling feed: '#b39ddb'
+    thermochemical recycling gate: '#9575cd'
+    pyrolysis gate: '#8BC34A'
+    pyrolysis feed: '#c5b3e6'
     allam methanol: '#B98F76'
     CCGT methanol: '#B98F76'
     CCGT methanol CC: '#B98F76'
@@ -655,6 +714,7 @@ plotting:
     waste CHP: '#e3d37d'
     waste CHP CC: '#e3d3ff'
     non-sequestered HVC: '#8f79b5'
+    HVC disposal: '#8f79b5'
     HVC to air: 'k'
     import H2: '#db8ccd'
     import gas: '#f7a572'

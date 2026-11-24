@@ -1,0 +1,746 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Contributors to PyPSA-Eur <https://github.com/pypsa/pypsa-eur> -->
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Petrochemical Results</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg:#f6f6f4; --surface:#fcfcfb; --fg:#0b0b0b; --mut:#52514e; --faint:#8a8984; --line:#e4e3de; --grid:#ecebe7;
+  --accent:#2a78d6; --pos:#2a78d6; --neg:#eb6834; --other:#a9a8a2;
+  --ok:#008300; --warn:#a86f00; --fail:#c9302f; --info:#52514e;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6; --s8:#e34948;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --bg:#111110; --surface:#1a1a19; --fg:#f0efec; --mut:#c3c2b7; --faint:#8f8e85; --line:#2f2f2c; --grid:#272725;
+    --accent:#3987e5; --pos:#3987e5; --neg:#d95926; --other:#6f6e68;
+    --ok:#3fae3f; --warn:#d8a12a; --fail:#e66767; --info:#c3c2b7;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#111110; --surface:#1a1a19; --fg:#f0efec; --mut:#c3c2b7; --faint:#8f8e85; --line:#2f2f2c; --grid:#272725;
+  --accent:#3987e5; --pos:#3987e5; --neg:#d95926; --other:#6f6e68;
+  --ok:#3fae3f; --warn:#d8a12a; --fail:#e66767; --info:#c3c2b7;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif; }
+header { position:sticky; top:0; z-index:20; background:var(--surface); border-bottom:1px solid var(--line); }
+.bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; padding:10px 20px; max-width:1500px; margin:0 auto; }
+h1 { font-size:15px; margin:0; font-weight:650; }
+.spacer { flex:1; }
+label.ctl { display:flex; align-items:center; gap:6px; color:var(--mut); font-size:12px; }
+select, input[type=search], button { font:inherit; color:var(--fg); background:var(--surface); border:1px solid var(--line); border-radius:6px; padding:5px 8px; min-height:32px; }
+button { cursor:pointer; }
+button:hover, select:hover { border-color:var(--faint); }
+nav { display:flex; gap:2px; padding:0 20px; max-width:1500px; margin:0 auto; overflow-x:auto; }
+nav button { border:0; border-bottom:2px solid transparent; border-radius:0; background:none; color:var(--mut); padding:8px 12px; white-space:nowrap; }
+nav button.on { color:var(--fg); border-bottom-color:var(--accent); font-weight:600; }
+main { max-width:1500px; margin:0 auto; padding:18px 20px 60px; }
+.view { display:none; } .view.on { display:block; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr)); gap:14px; }
+.card { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:14px 16px; min-width:0; margin-bottom:14px; }
+.grid .card { margin-bottom:0; }
+.grid { margin-bottom:14px; }
+.card h2 { font-size:14px; margin:0 0 2px; font-weight:650; }
+.card .note { color:var(--mut); font-size:12px; margin:0 0 6px; }
+.plot { width:100%; height:360px; }
+.plot.tall { height:540px; }
+.plot.short { height:220px; }
+.filters { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; margin-bottom:14px; }
+.chips { display:flex; flex-wrap:wrap; gap:4px; }
+.chip { border-radius:999px; padding:3px 11px; min-height:28px; font-size:12px; }
+.chip.on { background:var(--fg); color:var(--surface); border-color:var(--fg); }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:14px; }
+.tile { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:10px 14px; }
+.tile .k { color:var(--mut); font-size:12px; }
+.tile .v { font-size:24px; font-weight:650; font-variant-numeric:tabular-nums; line-height:1.3; }
+.tile .d { color:var(--faint); font-size:12px; font-variant-numeric:tabular-nums; }
+.tools { display:flex; gap:6px; margin-top:6px; }
+.tools button { font-size:12px; min-height:26px; padding:2px 8px; color:var(--mut); }
+.tablewrap { overflow:auto; max-height:460px; margin-top:8px; }
+table { border-collapse:collapse; width:100%; font-size:12.5px; font-variant-numeric:tabular-nums; }
+th, td { padding:5px 9px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
+th:first-child, td:first-child { text-align:left; white-space:normal; min-width:150px; }
+th { position:sticky; top:0; background:var(--surface); color:var(--mut); font-weight:600; font-size:12px; cursor:pointer; }
+tbody tr:hover { background:color-mix(in srgb,var(--accent) 8%,transparent); }
+tr.link { cursor:pointer; }
+.status { font-weight:600; white-space:nowrap; }
+.status.ok { color:var(--ok); } .status.warn { color:var(--warn); } .status.fail { color:var(--fail); } .status.info { color:var(--info); }
+td.left, th.left { text-align:left; white-space:normal; }
+.results { max-height:220px; overflow:auto; border:1px solid var(--line); border-radius:6px; margin-top:8px; }
+.results div { padding:4px 9px; cursor:pointer; font-size:12.5px; }
+.results div:hover, .results div.on { background:color-mix(in srgb,var(--accent) 14%,transparent); }
+.results small { color:var(--faint); }
+.small { color:var(--mut); font-size:12px; }
+@media (max-width:640px) { .bar, nav, main { padding-left:16px; padding-right:16px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>Petrochemical Results</h1>
+    <label class="ctl">Run <select id="run"></select></label>
+    <label class="ctl">Horizon <select id="year"></select></label>
+    <span class="spacer"></span>
+    <span class="small" id="stamp"></span>
+    <button id="theme" title="Switch light or dark theme">Theme</button>
+  </div>
+  <nav id="tabs"></nav>
+</header>
+<main>
+
+<section class="view" data-tab="Overview">
+  <div class="tiles" id="tiles"></div>
+  <div class="grid">
+    <div class="card" id="c-cost"></div>
+    <div class="card" id="c-co2"></div>
+  </div>
+  <div class="grid">
+    <div class="card" id="c-origin-o"></div>
+    <div class="card" id="c-transfers"></div>
+  </div>
+</section>
+
+<section class="view" data-tab="HVC supply">
+  <div class="filters"><span class="small">Product</span><div class="chips" id="products"></div></div>
+  <div class="card" id="c-supply"></div>
+  <div class="grid">
+    <div class="card" id="c-origin"></div>
+    <div class="card" id="c-newcap"></div>
+  </div>
+  <div class="grid">
+    <div class="card" id="c-feed"></div>
+    <div class="card" id="c-waste"></div>
+  </div>
+</section>
+
+<section class="view" data-tab="Cracker fleet">
+  <div class="grid">
+    <div class="card" id="c-fleetcap"></div>
+    <div class="card" id="c-fleetheat"></div>
+  </div>
+  <div class="card" id="c-fleet"></div>
+</section>
+
+<section class="view" data-tab="Map">
+  <div class="filters">
+    <label class="ctl">Show <select id="m-kind">
+      <option value="balance">Net flow of a carrier</option>
+      <option value="cap">Installed capacity</option>
+      <option value="price">Average price</option>
+    </select></label>
+    <label class="ctl" id="m-carrier-l">Carrier <select id="m-carrier"></select></label>
+    <label class="ctl" id="m-tech-l">Technology <select id="m-tech"></select></label>
+    <label class="ctl"><input type="checkbox" id="m-fix" checked> Same scale for all horizons</label>
+    <button id="m-play">Play horizons</button>
+  </div>
+  <div class="grid">
+    <div class="card" id="c-map"></div>
+    <div class="card" id="c-maptable"></div>
+  </div>
+</section>
+
+<section class="view" data-tab="Carrier balance">
+  <div class="filters"><label class="ctl">Carrier <select id="t-carrier"></select></label></div>
+  <div class="card" id="c-tsyear"></div>
+  <div class="card" id="c-tsbal"></div>
+  <div class="card" id="c-tsprice"></div>
+</section>
+
+<section class="view" data-tab="Prices">
+  <div class="filters"><span class="small">Carriers</span><div class="chips" id="p-chips"></div></div>
+  <div class="card" id="c-prices"></div>
+  <div class="card">
+    <div class="filters"><label class="ctl">Node view <select id="p-carrier"></select></label></div>
+    <div id="c-priceheat"></div>
+  </div>
+</section>
+
+<section class="view" data-tab="Explorer">
+  <div class="grid">
+    <div class="card">
+      <h2>Any bus</h2>
+      <p class="note">Search by node, carrier or name. What flows in and out, across horizons.</p>
+      <input type="search" id="x-bus" placeholder="e.g. DE ethylene" style="width:100%">
+      <div class="results" id="x-busres"></div>
+      <div id="c-xbus" style="margin-top:12px"></div>
+    </div>
+    <div class="card">
+      <h2>Any technology</h2>
+      <p class="note">What a technology draws and makes, its capacity and its cost, across horizons.</p>
+      <input type="search" id="x-tech" placeholder="e.g. methanol-to-olefines" style="width:100%">
+      <div class="results" id="x-techres"></div>
+      <div id="c-xtech" style="margin-top:12px"></div>
+    </div>
+  </div>
+</section>
+
+<section class="view" data-tab="Compare">
+  <div class="filters">
+    <label class="ctl">Metric <select id="k-metric"></select></label>
+    <label class="ctl">Baseline <select id="k-base"></select></label>
+  </div>
+  <div class="grid">
+    <div class="card" id="c-cmp"></div>
+    <div class="card" id="c-cmpd"></div>
+  </div>
+  <div class="card" id="c-multi"></div>
+  <div class="card" id="c-config"></div>
+</section>
+
+<section class="view" data-tab="Checks">
+  <div class="card" id="c-checks"></div>
+</section>
+
+</main>
+
+<script>/*__PLOTLY__*/</script>
+<script type="application/json" id="payload">/*__DATA__*/</script>
+<script>
+"use strict";
+const D = JSON.parse(document.getElementById("payload").textContent);
+const $ = id => document.getElementById(id);
+const S = { run: D.labels[0], year: D.years[D.years.length - 1], tab: "Overview", product: "All", priceSel: null, bus: null, tech: null };
+const HVC_MAIN = ["ethylene", "propylene", "butadiene", "aromatics"];
+const ORIGINS = ["Existing fleet", "Extended fleet", "New builds", "Imports"];
+
+const net = (run = S.run, year = S.year) => D.nets[`${run}|${year}`];
+const runYears = (run = S.run) => D.years.filter(y => net(run, y));
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const series = i => css(`--s${i + 1}`);
+const fmt = (v, d = 1) => v == null || Number.isNaN(v) ? "–" : Number(v).toLocaleString("en", { maximumFractionDigits: d, minimumFractionDigits: 0 });
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// --- plot helpers ---------------------------------------------------------
+function layout(extra = {}) {
+  const fg = css("--mut"), grid = css("--grid");
+  return Object.assign({
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+    font: { family: "ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif", size: 12, color: fg },
+    margin: { l: 56, r: 12, t: 8, b: 36 },
+    hoverlabel: { bgcolor: css("--surface"), bordercolor: css("--line"), font: { color: css("--fg"), size: 12 } },
+    legend: { orientation: "h", y: -0.14, font: { size: 11 } },
+    xaxis: { gridcolor: grid, zerolinecolor: css("--faint"), linecolor: css("--line"), automargin: true },
+    yaxis: { gridcolor: grid, zerolinecolor: css("--faint"), linecolor: css("--line"), automargin: true },
+  }, extra);
+}
+const CONFIG = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ["select2d", "lasso2d", "autoScale2d"], toImageButtonOptions: { format: "png", scale: 3 } };
+
+function plot(el, traces, extra) {
+  const l = layout(extra);
+  // keep the legend clear of the tick labels at every plot height
+  l.legend.y = -Math.min(0.3, 44 / ((el.clientHeight || 360) * 0.55));
+  l.legend.yanchor = "top";
+  Plotly.react(el, traces, l, CONFIG);
+}
+
+// A card with title, note, plot and a table view that can also be saved.
+function card(id, title, note, cls = "") {
+  const c = $(id);
+  c.innerHTML = `<h2>${esc(title)}</h2>${note ? `<p class="note">${note}</p>` : ""}<div class="plot ${cls}"></div>
+    <div class="tools"><button class="tb">Show table</button><button class="csv">Download CSV</button></div><div class="tablewrap" hidden></div>`;
+  c.querySelector(".tb").onclick = e => { const w = c.querySelector(".tablewrap"); w.hidden = !w.hidden; e.target.textContent = w.hidden ? "Show table" : "Hide table"; };
+  return c.querySelector(".plot");
+}
+function setTable(id, head, rows, digits = 1) {
+  const c = $(id);
+  c.querySelector(".tablewrap").innerHTML = tableHtml(head, rows, digits);
+  sortable(c.querySelector("table"));
+  c.querySelector(".csv").onclick = () => saveCsv(id, head, rows);
+}
+function tableHtml(head, rows, digits = 1) {
+  const cell = v => typeof v === "number" ? fmt(v, digits) : (v == null ? "–" : esc(v));
+  return `<table><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(v => `<td data-v="${typeof v === "number" ? v : esc(v ?? "")}">${cell(v)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+function sortable(table) {
+  if (!table) return;
+  table.querySelectorAll("th").forEach((th, i) => {
+    th.onclick = () => {
+      const dir = th.dataset.dir === "desc" ? 1 : -1; th.dataset.dir = dir === 1 ? "asc" : "desc";
+      const body = table.tBodies[0];
+      [...body.rows].sort((a, b) => {
+        const x = a.cells[i].dataset.v, y = b.cells[i].dataset.v;
+        const nx = parseFloat(x), ny = parseFloat(y);
+        return (Number.isNaN(nx) || Number.isNaN(ny) ? String(x).localeCompare(String(y)) : nx - ny) * dir;
+      }).forEach(r => body.appendChild(r));
+    };
+  });
+}
+function saveCsv(name, head, rows) {
+  const line = r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
+  const blob = new Blob([[line(head), ...rows.map(line)].join("\n")], { type: "text/csv" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${name.replace("c-", "")}_${S.run}.csv`; a.click();
+}
+
+// Stacked bars by year. The eight largest series get a fixed colour; the rest fold into Other.
+function stacked(el, id, xs, dict, opts = {}) {
+  const names = Object.keys(dict).filter(k => dict[k].some(v => Math.abs(v || 0) > (opts.eps ?? 1e-3)));
+  const size = k => dict[k].reduce((s, v) => s + Math.abs(v || 0), 0);
+  // a fixed order keeps every series on the same colour however the data changes
+  const ordered = opts.order
+    ? opts.order.filter(k => names.includes(k))
+    : names.sort((a, b) => size(b) - size(a));
+  const top = ordered.slice(0, 8), rest = ordered.slice(8);
+  const colour = (k, i) => series(opts.slot?.[k] ?? (opts.order ? opts.order.indexOf(k) : i));
+  const traces = top.map((k, i) => ({
+    type: "bar", name: k, x: xs, y: dict[k], marker: { color: colour(k, i), line: { color: css("--surface"), width: 1 } },
+    hovertemplate: `${esc(k)}: %{y:,.1f} ${opts.unit || ""}<extra></extra>`,
+  }));
+  if (rest.length) {
+    const y = xs.map((_, j) => rest.reduce((s, k) => s + (dict[k][j] || 0), 0));
+    traces.push({ type: "bar", name: `Other (${rest.length})`, x: xs, y, marker: { color: css("--other"), line: { color: css("--surface"), width: 1 } },
+      hovertemplate: `Other: %{y:,.1f} ${opts.unit || ""}<extra></extra>` });
+  }
+  if (opts.line) traces.push({ type: "scatter", mode: "markers", name: opts.line.name, x: xs, y: opts.line.y,
+    marker: { color: css("--fg"), size: 11, symbol: "line-ew-open", line: { width: 3, color: css("--fg") } },
+    hovertemplate: `${esc(opts.line.name)}: %{y:,.1f} ${opts.unit || ""}<extra></extra>` });
+  plot(el, traces, { barmode: "relative", bargap: 0.35, hovermode: "x unified",
+    xaxis: Object.assign({ type: "category" }, layout().xaxis), yaxis: Object.assign({ title: { text: opts.unit || "" } }, layout().yaxis), annotations: opts.annotations || [] });
+  if (id) setTable(id, [opts.first || "Series", ...xs], ordered.map(k => [k, ...dict[k]]), opts.digits ?? 1);
+}
+
+// --- reading the balance table ---------------------------------------------
+function flows(n, keep) {
+  // keep(busRow, tech) -> bool; returns {tech: MWh}
+  const out = {};
+  const { b, t, v } = n.bal;
+  for (let i = 0; i < b.length; i++) {
+    const row = D.buses[b[i]], tech = D.techs[t[i]];
+    if (keep(row, tech)) out[tech] = (out[tech] || 0) + v[i];
+  }
+  return out;
+}
+const isProduct = (row, product) => product === "All" ? D.hvc.includes(row[1]) : row[1] === product;
+const isInternal = t => t.startsWith("demand ") || t.includes("transport") || t.includes("disposal");
+function pivot(years, fn, scale = 1e-6) {
+  const res = {};
+  years.forEach((y, i) => { const d = fn(net(S.run, y), y); for (const k in d) { (res[k] ||= years.map(() => 0))[i] = d[k] * scale; } });
+  return res;
+}
+
+// --- Overview ---------------------------------------------------------------
+const COST_GROUPS = ["Power generation", "Heat", "Grid and infrastructure", "Fuels and feedstocks", "Hydrogen, synfuels, carbon", "Storage", "Petrochemicals", "Other"];
+function costGroup(t) {
+  if (TECH_ALL.has(t) || /crack|olefin|aromatic|pyrolysis|yield shift|HVC|ethanol|on purpose|waste-to-methanol|thermochemical/i.test(t)) return "Petrochemicals";
+  if (/ transport$/i.test(t) && !/solid biomass/i.test(t)) return "Grid and infrastructure";
+  if (/heat|boiler|resistive|water (tank|pit)|solar thermal/i.test(t)) return "Heat";
+  if (/wind|solar|^ror$|hydro|PHS|nuclear|uranium|CCGT|OCGT|CHP|coal$|lignite$/i.test(t)) return "Power generation";
+  if (/battery|store|storage/i.test(t)) return "Storage";
+  if (/^(AC|DC|B2B)$|AC line|distribution|pipeline|transmission|charger|V2G|land transport EV/i.test(t)) return "Grid and infrastructure";
+  if (/H2|electrolysis|Fischer|SMR|Sabatier|NH3|ammonia|Haber|DAC|methanol|methanation|co2|sequest|CC$/i.test(t)) return "Hydrogen, synfuels, carbon";
+  if (/oil|gas|biomass|biogas|import|primary|naphtha|kerosene|ethane|propane|butane/i.test(t)) return "Fuels and feedstocks";
+  return "Other";
+}
+function renderOverview() {
+  const n = net(); const ys = runYears(); const prev = ys[ys.indexOf(S.year) - 1];
+  const tiles = [
+    ["System cost", "System cost [bn €/a]", "bn €/a", 1], ["Objective", "Objective [bn €/a]", "bn €/a", 1],
+    ["HVC demand", "HVC demand [TWh]", "TWh", 0], ["Import share", "Import share [%]", "%", 0],
+    ["Petrochemical CO2", "Petrochemical CO2 total [Mt]", "Mt", 1], ["CO2 price", "CO2 price [€/t]", "€/t", 0],
+    ["Open crackers", "Open cracker capacity [GW]", "GW", 1],
+  ];
+  $("tiles").innerHTML = tiles.map(([k, key, unit, d]) => {
+    const v = n.kpi[key], p = prev ? net(S.run, prev).kpi[key] : null;
+    const delta = p == null ? "first horizon" : `${v - p >= 0 ? "+" : "−"}${fmt(Math.abs(v - p), d)} vs ${prev}`;
+    return `<div class="tile"><div class="k">${k}</div><div class="v">${fmt(v, d)} <span class="small">${unit}</span></div><div class="d">${delta}</div></div>`;
+  }).join("");
+
+  const cost = {}, detail = {};
+  ys.forEach((y, i) => { const c = net(S.run, y).cost; for (const t in c) {
+    const v = (c[t][0] || 0) + (c[t][1] || 0), g = costGroup(t);
+    (cost[g] ||= ys.map(() => 0))[i] += v;
+    (detail[t] ||= [g, ...ys.map(() => 0)])[i + 1] = v;
+  } });
+  stacked(card("c-cost", "System cost by sector", "Capex plus opex, including sunk assets. Sectors are assigned by technology name; the table lists every technology and its sector."), null, ys, cost, { unit: "bn €/a", order: COST_GROUPS });
+  setTable("c-cost", ["Technology", "Sector", ...ys], Object.entries(detail).map(([t, r]) => [t, ...r]).sort((a, b) => a[1].localeCompare(b[1])), 2);
+
+  const co2Keys = { "Domestic, charged": "Domestic CO2 charged [Mt]", "Imported, charged": "Imported CO2 charged [Mt]", "Domestic, not charged": "Domestic CO2 not charged [Mt]", "Imported, not charged": "Imported CO2 not charged [Mt]" };
+  const co2 = {}; for (const k in co2Keys) co2[k] = ys.map(y => net(S.run, y).kpi[co2Keys[k]]);
+  stacked(card("c-co2", "Petrochemical CO2 by accounting status", "Process emissions of European HVC supply, end of life excluded. Imports carry embedded CO2; the CBAM factor sets the charged share."), "c-co2", ys, co2, { unit: "Mt/a", order: Object.keys(co2Keys), first: "Status", digits: 2 });
+
+  renderOrigin("c-origin-o");
+
+  const tKeys = Object.keys(n.kpi).filter(k => k.startsWith("Transfer: "));
+  const tr = {}; tKeys.forEach(k => tr[k.replace("Transfer: ", "").replace(" [bn €/a]", "")] = ys.map(y => net(S.run, y).kpi[k]));
+  const c = card("c-transfers", "Policy transfers", "Subsidies and tariff revenue, read from each network's config. The cash grant is not part of the net transfer.");
+  if (Object.values(tr).some(a => a.some(v => Math.abs(v) > 1e-6))) stacked(c, "c-transfers", ys, tr, { unit: "bn €/a", first: "Transfer", digits: 2, eps: 1e-6 });
+  else { c.style.height = "auto"; c.innerHTML = `<p class="small">No subsidies or tariffs are active in this run.</p>`; setTable("c-transfers", ["Transfer", ...ys], Object.keys(tr).map(k => [k, ...tr[k]]), 2); }
+}
+function renderOrigin(id) {
+  const ys = runYears();
+  const dict = {}; ORIGINS.forEach(o => dict[o] = ys.map(y => net(S.run, y).origin[o]));
+  const demand = ys.map(y => net(S.run, y).kpi["HVC demand [TWh]"]);
+  const notes = ys.map((y, i) => ({ x: y, y: ORIGINS.reduce((s, o) => s + Math.max(dict[o][i], 0), 0), text: `${fmt(net(S.run, y).kpi["Import share [%]"], 0)}% imported`, showarrow: false, yanchor: "bottom", font: { size: 11, color: css("--mut") } }));
+  const el = card(id, "HVC supply by origin", "Yield shift counts with the fleet it belongs to. The share above each bar is imports over demand.");
+  stacked(el, id, ys, dict, { unit: "TWh/a", order: ORIGINS, first: "Origin", line: { name: "Demand", y: demand }, annotations: notes });
+}
+
+// --- HVC supply ----------------------------------------------------------------
+function renderHVC() {
+  const ys = runYears(), P = S.product;
+  const chips = ["All", ...HVC_MAIN.filter(p => D.buses.some(b => b[1] === p))];
+  $("products").innerHTML = chips.map(p => `<button class="chip ${p === P ? "on" : ""}" data-p="${p}">${p}</button>`).join("");
+  $("products").querySelectorAll("button").forEach(b => b.onclick = () => { S.product = b.dataset.p; renderHVC(); });
+
+  const supply = pivot(ys, n => flows(n, (row, t) => isProduct(row, P) && !isInternal(t)));
+  const demand = ys.map(y => -Object.entries(flows(net(S.run, y), (row, t) => isProduct(row, P) && t.startsWith("demand "))).reduce((s, [, v]) => s + v, 0) / 1e6);
+  stacked(card("c-supply", `${P === "All" ? "HVC" : P} supply by technology`, "Net flow into the product buses, by horizon. Yield shift is negative on ethylene and positive on co-products. Click a legend entry to hide it; double-click to isolate it.", "tall"),
+    "c-supply", ys, supply, { unit: "TWh/a", first: "Technology", slot: TECH_SLOT, line: { name: "Demand", y: demand } });
+
+  renderOrigin("c-origin");
+
+  const fleet = new Set(["steam cracker", "steam cracker extension"]);
+  const caps = {}; ys.forEach((y, i) => { const c = net(S.run, y).cap; c.t.forEach((t, j) => { const name = D.techs[t];
+    if (c.u[j] === "MW" && !fleet.has(name) && TECH_NEW.has(name)) (caps[name] ||= ys.map(() => 0))[i] += c.v[j] / 1e3; }); });
+  const elCap = card("c-newcap", "New-build capacity", "Measured at bus0, so in GW of feedstock input, as in the expansion sheet. Not comparable with output in TWh.");
+  stacked(elCap, "c-newcap", ys, caps, { unit: "GW input", first: "Technology", digits: 2, slot: TECH_SLOT });
+
+  const feed = {}; ys.forEach((y, i) => net(S.run, y).ports.forEach(([tech, carrier, used]) => { if (TECH_ALL.has(tech) && D.feedstocks.includes(carrier) && used > 0) (feed[carrier.replace(" for industry", "")] ||= ys.map(() => 0))[i] += used; }));
+  stacked(card("c-feed", "Feedstock and energy use", "Drawn only by HVC technologies. Use elsewhere in the system is excluded. Electricity, gas and H2 are process energy."), "c-feed", ys, feed, { unit: "TWh/a", first: "Carrier" });
+
+  const waste = {}; ys.forEach((y, i) => { const w = net(S.run, y).waste; for (const k in w) (waste[k] ||= ys.map(() => 0))[i] = w[k]; });
+  stacked(card("c-waste", "Fate of the plastic waste stream", "Drawn from the non-sequestered HVC store. Recycling gates are resolved into the routes behind them."), "c-waste", ys, waste, { unit: "TWh/a", first: "Route" });
+}
+
+// --- Fleet ---------------------------------------------------------------------
+function fleetTable() {
+  const plants = {};
+  runYears().forEach(y => net(S.run, y).fleet.forEach(r => {
+    const p = plants[r.plant] ||= { plant: r.plant, node: r.node, feed: r.feed, nameplate: 0, build: null, retire: null, years: {}, extended: false };
+    const cur = p.years[y] ||= { cap: 0, out: 0, feedWeighted: 0 };
+    cur.cap += r.cap || 0; cur.out += r.out || 0; cur.feedWeighted += (r.cf || 0) * (r.cap || 0);
+    p.nameplate = Math.max(p.nameplate, cur.cap);
+    if (r.ext) { if ((r.cap || 0) > 0) p.extended = true; }
+    else { p.build = r.build; p.retire = r.retire; }
+  }));
+  return Object.values(plants);
+}
+const statusOf = (p, y) => {
+  const c = p.years[y];
+  if (!c || c.cap <= 0) {
+    // the horizon it first closed tells idle closure from reaching end of life
+    const closed = runYears().find(h => h <= y && !(p.years[h]?.cap > 0));
+    return p.retire != null && p.retire <= closed ? "End of life" : "Closed idle";
+  }
+  const cf = c.feedWeighted / c.cap; return cf < D.idleThreshold ? "Running below threshold" : "Running";
+};
+function renderFleet() {
+  const ys = runYears(), plants = fleetTable();
+  const states = ["Running", "Running below threshold", "Closed idle", "End of life"];
+  const dict = {}; states.forEach(s => dict[s] = ys.map(y => plants.filter(p => statusOf(p, y) === s).reduce((sum, p) => sum + p.nameplate, 0) / 1e3));
+  stacked(card("c-fleetcap", "Fleet status by horizon", `Largest capacity each plant ever reached, in GW of feed. Idle threshold ${Math.round(D.idleThreshold * 100)}%. Plants below it close at the next horizon.`), "c-fleetcap", ys, dict, { unit: "GW", order: states, first: "Status" });
+
+  const sorted = plants.slice().sort((a, b) => (a.retire ?? 9999) - (b.retire ?? 9999));
+  const el = card("c-fleetheat", "Capacity factor per plant", "Earliest end of life at the top. Blank means the plant has no capacity at that horizon.");
+  el.style.height = `${Math.max(360, 70 + sorted.length * 17)}px`;
+  const short = s => s.length > 34 ? `${s.slice(0, 33)}…` : s;
+  const z = sorted.map(p => ys.map(y => { const c = p.years[y]; return c && c.cap > 0 ? c.feedWeighted / c.cap * 100 : null; }));
+  plot(el, [{ type: "heatmap", x: ys.map(String), y: sorted.map(p => p.plant), z, zmin: 0, zmax: 100, xgap: 2, ygap: 2,
+    colorscale: [[0, heatLow()], [1, css("--s1")]], colorbar: { title: { text: "CF %" }, thickness: 10 }, hovertemplate: "%{y}<br>%{x}: %{z:.0f}%<extra></extra>", hoverongaps: false }],
+    { margin: { l: 10, r: 10, t: 8, b: 30 }, xaxis: { type: "category", showgrid: false }, yaxis: { autorange: "reversed", showgrid: false, automargin: true, tickfont: { size: 10 }, tickmode: "array", tickvals: sorted.map(p => p.plant), ticktext: sorted.map(p => short(p.plant)) } });
+  setTable("c-fleetheat", ["Plant", ...ys], sorted.map((p, i) => [p.plant, ...z[i]]), 0);
+
+  const y = S.year;
+  const c = $("c-fleet");
+  c.innerHTML = `<h2>Plants at ${y}</h2><p class="note">Sort by clicking a column. Capacity is feed input. Extended plants carry on past their technical lifetime.</p><div class="tablewrap" style="max-height:640px"></div><div class="tools"><button class="csv">Download CSV</button></div>`;
+  const head = ["Plant", "Node", "Feed", "Status", "Capacity MW", "CF %", "Output TWh", "Start", "End of life", "Extended"];
+  const rows = plants.map(p => { const d = p.years[y] || { cap: 0, out: 0, feedWeighted: 0 };
+    return [p.plant, p.node, p.feed, statusOf(p, y), d.cap, d.cap > 0 ? d.feedWeighted / d.cap * 100 : null, d.out, String(p.build ?? "–"), String(p.retire ?? "–"), p.extended ? "yes" : ""]; });
+  c.querySelector(".tablewrap").innerHTML = tableHtml(head, rows, 1);
+  sortable(c.querySelector("table"));
+  c.querySelector(".csv").onclick = () => saveCsv("fleet", head, rows);
+}
+
+// --- Map --------------------------------------------------------------------------
+function mapValues(year, kind, item, tech) {
+  const n = net(S.run, year), out = {}; if (!n) return out;
+  if (kind === "balance") { const { b, t, v } = n.bal;
+    for (let i = 0; i < b.length; i++) { const row = D.buses[b[i]]; if (row[1] !== item) continue; const name = D.techs[t[i]];
+      if (tech === "__all" ? !(name.startsWith("demand ")) && !name.includes("transport") : name === tech) out[row[2]] = (out[row[2]] || 0) + v[i] / 1e6; } }
+  if (kind === "cap") { const c = n.cap; c.t.forEach((t, j) => { if (D.techs[t] === item) out[c.n[j]] = (out[c.n[j]] || 0) + c.v[j] / 1e3; }); }
+  if (kind === "price") { const { b, v } = n.pb; b.forEach((bi, i) => { const row = D.buses[bi]; if (row[1] === item) out[row[2]] = v[i]; }); }
+  return out;
+}
+function fillMapControls() {
+  const kind = $("m-kind").value;
+  const carriers = [...new Set(D.buses.map(b => b[1]))].filter(Boolean).sort();
+  const opts = kind === "cap" ? [...new Set(Object.values(D.nets).flatMap(n => n.cap.t.map(t => D.techs[t])))].sort() : carriers;
+  const def = kind === "cap" ? "steam cracker" : "ethylene";
+  const keep = $("m-carrier").value;
+  $("m-carrier").innerHTML = opts.map(o => `<option>${esc(o)}</option>`).join("");
+  $("m-carrier").value = opts.includes(keep) ? keep : (opts.includes(def) ? def : opts[0]);
+  $("m-carrier-l").firstChild.textContent = kind === "cap" ? "Technology " : "Carrier ";
+  $("m-tech-l").style.display = kind === "balance" ? "" : "none";
+  fillMapTech();
+}
+function fillMapTech() {
+  const item = $("m-carrier").value, keep = $("m-tech").value;
+  const techs = new Set();
+  Object.values(D.nets).forEach(n => { const { b, t } = n.bal; for (let i = 0; i < b.length; i++) if (D.buses[b[i]][1] === item) techs.add(D.techs[t[i]]); });
+  const opts = [...techs].filter(t => !t.startsWith("demand ") && !t.includes("transport")).sort();
+  $("m-tech").innerHTML = `<option value="__all">All, net of demand and transport</option>` + opts.map(o => `<option>${esc(o)}</option>`).join("");
+  $("m-tech").value = opts.includes(keep) ? keep : "__all";
+}
+function renderMap() {
+  const kind = $("m-kind").value, item = $("m-carrier").value, tech = $("m-tech").value, year = S.year;
+  const unit = kind === "cap" ? "GW or GWh" : kind === "price" ? "€/MWh" : "TWh/a";
+  const vals = mapValues(year, kind, item, tech);
+  const all = $("m-fix").checked ? runYears().flatMap(y => Object.values(mapValues(y, kind, item, tech))) : Object.values(vals);
+  const peak = Math.max(1e-9, ...all.map(v => Math.abs(v)));
+  const names = Object.keys(vals).filter(k => D.nodes[k] && Math.abs(vals[k]) > 1e-6);
+  const offMap = Object.keys(vals).filter(k => !D.nodes[k]).reduce((s, k) => s + vals[k], 0);
+  const traces = [];
+  if (D.regions.length) {
+    const x = [], y = []; D.regions.forEach(r => { x.push(...r.x, null); y.push(...r.y, null); });
+    traces.push({ type: "scatter", mode: "lines", x, y, fill: "toself", fillcolor: css("--bg"), line: { color: css("--line"), width: 0.7 }, hoverinfo: "skip", showlegend: false });
+  }
+  const sizes = names.map(k => 6 + 46 * Math.sqrt(Math.abs(vals[k]) / peak));
+  const posNeg = (test, name, color) => { const idx = names.map((k, i) => i).filter(i => test(vals[names[i]]));
+    if (idx.length) traces.push({ type: "scatter", mode: "markers", name, x: idx.map(i => D.nodes[names[i]][0]), y: idx.map(i => D.nodes[names[i]][1]), customdata: idx.map(i => names[i]),
+      text: idx.map(i => `${names[i]}: ${fmt(vals[names[i]], 2)} ${unit}`), hovertemplate: "%{text}<extra></extra>",
+      marker: { size: idx.map(i => sizes[i]), color, opacity: 0.8, line: { color: css("--surface"), width: 2 } } }); };
+  if (kind === "balance") { posNeg(v => v >= 0, "Net supply", css("--pos")); posNeg(v => v < 0, "Net use", css("--neg")); }
+  else posNeg(() => true, item, css("--pos"));
+  const el = card("c-map", `${item}${kind === "balance" && tech !== "__all" ? ` · ${tech}` : ""} · ${year}`,
+    `Bubble area shows the size. ${Math.abs(offMap) > 1e-6 ? `${fmt(offMap, 2)} ${unit} sits on Europe-wide buses and is not drawn. ` : ""}Click a node to open it in the Explorer.`, "tall");
+  plot(el, traces, { hovermode: "closest", margin: { l: 4, r: 4, t: 4, b: 28 },
+    xaxis: { visible: false, range: [-12, 34] }, yaxis: { visible: false, range: [34, 71.5], scaleanchor: "x", scaleratio: 1.6 } });
+  el.on("plotly_click", ev => { const node = ev.points[0].customdata; if (!node) return; S.tab = "Explorer"; showTab(); $("x-bus").value = node; searchBus(); });
+  const rows = Object.keys(vals).sort((a, b) => Math.abs(vals[b]) - Math.abs(vals[a])).map(k => [k, vals[k]]);
+  const t = $("c-maptable");
+  t.innerHTML = `<h2>Nodes, ranked</h2><p class="note">In ${unit}.</p><div class="tablewrap" style="max-height:510px">${tableHtml(["Node", "Value"], rows, 2)}</div>`;
+  sortable(t.querySelector("table"));
+}
+let playing = null;
+function togglePlay() {
+  if (playing) { clearInterval(playing); playing = null; $("m-play").textContent = "Play horizons"; return; }
+  $("m-play").textContent = "Stop";
+  playing = setInterval(() => { const ys = runYears(); S.year = ys[(ys.indexOf(S.year) + 1) % ys.length]; $("year").value = S.year; renderMap(); }, 1400);
+}
+
+// --- Time series --------------------------------------------------------------------
+function fillTsControls() {
+  const carriers = [...new Set(Object.values(D.nets).flatMap(n => Object.keys(n.ts.bal)))].sort();
+  const keep = $("t-carrier").value;
+  $("t-carrier").innerHTML = carriers.map(c => `<option>${esc(c)}</option>`).join("");
+  $("t-carrier").value = carriers.includes(keep) ? keep : (carriers.includes("ethylene") ? "ethylene" : carriers[0]);
+}
+function renderTS() {
+  const n = net(), c = $("t-carrier").value, ts = n.ts, dict = ts.bal[c] || {};
+  const ys = runYears();
+  const yearly = pivot(ys, m => flows(m, row => row[1] === c));
+  stacked(card("c-tsyear", `${c} balance by horizon`, "Supply above zero, use below, summed over all buses of this carrier. CO2 carriers are in Mt."), "c-tsyear", ys, yearly, { unit: "TWh or Mt per year", first: "Technology", digits: 2 });
+  // ranked across all runs and horizons, so a technology keeps its colour when the horizon changes
+  const total = {};
+  Object.values(D.nets).forEach(m => { const d = m.ts.bal[c] || {}; for (const k in d) total[k] = (total[k] || 0) + d[k].reduce((s, v) => s + Math.abs(v), 0); });
+  const ranked = Object.keys(total).sort((a, b) => total[b] - total[a]);
+  const names = ranked.filter(k => dict[k]);
+  const top = names.filter(k => ranked.indexOf(k) < 8), rest = names.filter(k => ranked.indexOf(k) >= 8);
+  const traces = top.map(k => ({ type: "bar", name: k, x: ts.t, y: dict[k], marker: { color: series(ranked.indexOf(k)), line: { width: 0 } }, hovertemplate: `${esc(k)}: %{y:,.0f} MW<extra></extra>` }));
+  if (rest.length) traces.push({ type: "bar", name: `Other (${rest.length})`, x: ts.t, y: ts.t.map((_, j) => rest.reduce((s, k) => s + dict[k][j], 0)), marker: { color: css("--other"), line: { width: 0 } }, hovertemplate: "Other: %{y:,.0f} MW<extra></extra>" });
+  const el = card("c-tsbal", `${c} balance · ${S.year}`, `All buses of this carrier, ${ts.t.length} time steps. Supply above zero, use below. Drag on the chart to zoom; the price chart follows.`, "tall");
+  plot(el, traces, { barmode: "relative", bargap: 0, hovermode: "x unified", yaxis: Object.assign({ title: { text: "MW" } }, layout().yaxis) });
+  setTable("c-tsbal", ["Technology", "Mean MW", "Peak supply MW", "Peak use MW"], names.map(k => [k, dict[k].reduce((s, v) => s + v, 0) / dict[k].length, Math.max(0, ...dict[k]), Math.min(0, ...dict[k])]), 0);
+
+  const price = ts.price[c];
+  const pe = card("c-tsprice", `${c} price · ${S.year}`, "Average over active buses, weighted by throughput.", "short");
+  plot(pe, price ? [{ type: "scatter", mode: "lines", x: ts.t, y: price, line: { color: css("--s1"), width: 2 }, hovertemplate: "%{x}: %{y:,.1f}<extra></extra>", showlegend: false }] : [], { hovermode: "x unified", yaxis: Object.assign({ title: { text: "€/unit" } }, layout().yaxis) });
+  setTable("c-tsprice", ["Time", "Price"], price ? ts.t.map((t, i) => [t, price[i]]) : [], 2);
+  el.on("plotly_relayout", ev => { if (ev["xaxis.range[0]"]) Plotly.relayout(pe, { "xaxis.range": [ev["xaxis.range[0]"], ev["xaxis.range[1]"]] }); else if (ev["xaxis.autorange"]) Plotly.relayout(pe, { "xaxis.autorange": true }); });
+}
+
+// --- Prices ---------------------------------------------------------------------------
+function renderPrices() {
+  const ys = runYears();
+  const all = [...new Set(ys.flatMap(y => Object.keys(net(S.run, y).prices)))].sort();
+  if (!S.priceSel) S.priceSel = ["ethylene", "propylene", "naphtha for industry", "methanol"].filter(c => all.includes(c));
+  $("p-chips").innerHTML = all.map(c => `<button class="chip ${S.priceSel.includes(c) ? "on" : ""}" data-c="${esc(c)}">${esc(c)}</button>`).join("");
+  // each selected carrier holds its colour slot until it is deselected
+  S.priceSlot ||= {};
+  for (const k in S.priceSlot) if (!S.priceSel.includes(k)) delete S.priceSlot[k];
+  S.priceSel.forEach(c => { if (S.priceSlot[c] == null) S.priceSlot[c] = [0, 1, 2, 3, 4, 5, 6, 7].find(i => !Object.values(S.priceSlot).includes(i)); });
+  $("p-chips").querySelectorAll("button").forEach(b => b.onclick = () => {
+    const c = b.dataset.c;
+    if (S.priceSel.includes(c)) S.priceSel = S.priceSel.filter(x => x !== c);
+    else if (S.priceSel.length < 8) S.priceSel = [...S.priceSel, c];
+    renderPrices();
+  });
+  const el = card("c-prices", "Average prices", "Weighted by throughput over active buses. Whiskers show the range across those buses. Up to eight carriers at once. CO2 buses are in €/t and carry a negative sign.");
+  const traces = S.priceSel.map(c => {
+    const p = ys.map(y => net(S.run, y).prices[c] || {});
+    return { type: "scatter", mode: "lines+markers", name: c, x: ys.map(String), y: p.map(v => v.mean), line: { color: series(S.priceSlot[c]), width: 2 }, marker: { size: 8, line: { color: css("--surface"), width: 2 } },
+      error_y: { type: "data", symmetric: false, array: p.map(v => v.max - v.mean), arrayminus: p.map(v => v.mean - v.min), thickness: 1, width: 3 }, hovertemplate: `${esc(c)}: %{y:,.1f}<extra></extra>` };
+  });
+  plot(el, traces, { hovermode: "x unified", xaxis: Object.assign({ type: "category" }, layout().xaxis), yaxis: Object.assign({ title: { text: "€/unit" } }, layout().yaxis) });
+  setTable("c-prices", ["Carrier", ...ys], all.map(c => [c, ...ys.map(y => net(S.run, y).prices[c]?.mean ?? null)]), 1);
+
+  const keep = $("p-carrier").value;
+  $("p-carrier").innerHTML = all.map(c => `<option>${esc(c)}</option>`).join("");
+  $("p-carrier").value = all.includes(keep) ? keep : (all.includes("ethylene") ? "ethylene" : all[0]);
+  renderPriceHeat();
+}
+function renderPriceHeat() {
+  const ys = runYears(), c = $("p-carrier").value;
+  const nodes = {}; ys.forEach((y, i) => { const { b, v } = net(S.run, y).pb; b.forEach((bi, j) => { const row = D.buses[bi]; if (row[1] === c) (nodes[row[2]] ||= ys.map(() => null))[i] = v[j]; }); });
+  const names = Object.keys(nodes).sort();
+  const box = $("c-priceheat"); box.className = "plot tall"; box.style.height = `${Math.max(240, Math.min(720, 60 + names.length * 16))}px`;
+  plot(box, [{ type: "heatmap", x: ys.map(String), y: names, z: names.map(k => nodes[k]), xgap: 2, ygap: 2, colorscale: [[0, heatLow()], [1, css("--s1")]],
+    colorbar: { title: { text: "€/unit" }, thickness: 10 }, hovertemplate: "%{y}, %{x}: %{z:,.1f}<extra></extra>", hoverongaps: false }],
+    { margin: { l: 70, r: 10, t: 8, b: 30 }, xaxis: { type: "category", showgrid: false }, yaxis: { autorange: "reversed", showgrid: false, tickfont: { size: 10 } } });
+}
+
+// --- Explorer ---------------------------------------------------------------------------
+function searchBus() {
+  const words = $("x-bus").value.toLowerCase().split(/\s+/).filter(Boolean);
+  const hits = D.buses.map((b, i) => [b, i]).filter(([b]) => words.every(w => b[0].toLowerCase().includes(w) || b[1].toLowerCase().includes(w))).slice(0, 120);
+  $("x-busres").innerHTML = hits.map(([b, i]) => `<div data-i="${i}" class="${S.bus === i ? "on" : ""}">${esc(b[0])} <small>${esc(b[1])}</small></div>`).join("") || `<div class="small">No bus matches.</div>`;
+  $("x-busres").querySelectorAll("div[data-i]").forEach(d => d.onclick = () => { S.bus = +d.dataset.i; searchBus(); renderBus(); });
+}
+function renderBus() {
+  if (S.bus == null) return;
+  const ys = runYears(), row = D.buses[S.bus], dict = {};
+  ys.forEach((y, i) => { const { b, t, v } = net(S.run, y).bal; for (let j = 0; j < b.length; j++) if (b[j] === S.bus) (dict[D.techs[t[j]]] ||= ys.map(() => 0))[i] += v[j] / 1e6; });
+  const price = ys.map(y => { const { b, v } = net(S.run, y).pb; const k = b.indexOf(S.bus); return k < 0 ? null : v[k]; });
+  $("c-xbus").innerHTML = `<div id="c-xb"></div>`;
+  const unit = row[3] === "t_co2" ? "Mt/a" : "TWh/a";
+  const el = card("c-xb", row[0], `Carrier ${esc(row[1])}. Average price by horizon: ${ys.map((y, i) => `${y}: ${fmt(price[i], 1)}`).join(", ")}.`);
+  stacked(el, "c-xb", ys, dict, { unit, first: "Technology", digits: 3, eps: 1e-5 });
+}
+function searchTech() {
+  const words = $("x-tech").value.toLowerCase().split(/\s+/).filter(Boolean);
+  const names = [...new Set(Object.values(D.nets).flatMap(n => n.ports.map(p => p[0])))].sort();
+  const hits = names.filter(t => words.every(w => t.toLowerCase().includes(w))).slice(0, 120);
+  $("x-techres").innerHTML = hits.map(t => `<div data-t="${esc(t)}" class="${S.tech === t ? "on" : ""}">${esc(t)}</div>`).join("") || `<div class="small">No technology matches.</div>`;
+  $("x-techres").querySelectorAll("div[data-t]").forEach(d => d.onclick = () => { S.tech = d.dataset.t; searchTech(); renderTech(); });
+}
+function renderTech() {
+  if (!S.tech) return;
+  const ys = runYears(), dict = {};
+  ys.forEach((y, i) => net(S.run, y).ports.forEach(([t, c, used, made]) => { if (t !== S.tech) return; const key = c; (dict[key] ||= ys.map(() => 0))[i] += made - used; }));
+  const cap = ys.map(y => { const n = net(S.run, y); let s = 0; n.cap.t.forEach((t, j) => { if (D.techs[t] === S.tech) s += n.cap.v[j]; }); return s / 1e3; });
+  const cost = ys.map(y => net(S.run, y).cost[S.tech] || [0, 0]);
+  $("c-xtech").innerHTML = `<div id="c-xt"></div>`;
+  const el = card("c-xt", S.tech, `Above zero it makes, below zero it draws, by connected carrier. CO2 carriers are in Mt, the rest in TWh.`);
+  stacked(el, "c-xt", ys, dict, { unit: "TWh or Mt per year", first: "Carrier", digits: 3, eps: 1e-5 });
+  const extra = document.createElement("div"); extra.className = "tablewrap";
+  extra.innerHTML = tableHtml(["", ...ys], [["Capacity GW", ...cap], ["Capex bn €/a", ...cost.map(c => c[0])], ["Opex bn €/a", ...cost.map(c => c[1])]], 3);
+  $("c-xtech").appendChild(extra);
+}
+
+// --- Compare ---------------------------------------------------------------------------
+function renderCompare() {
+  const metric = $("k-metric").value, base = $("k-base").value, ys = D.years;
+  const el = card("c-cmp", metric, "One line per run.");
+  plot(el, D.labels.map((lab, i) => ({ type: "scatter", mode: "lines+markers", name: lab, x: ys.map(String), y: ys.map(y => net(lab, y)?.kpi[metric] ?? null), connectgaps: false,
+    line: { color: i < 8 ? series(i) : css("--other"), width: 2 }, marker: { size: 8, line: { color: css("--surface"), width: 2 } }, hovertemplate: `${esc(lab)}: %{y:,.2f}<extra></extra>` })),
+    { hovermode: "x unified", xaxis: Object.assign({ type: "category" }, layout().xaxis) });
+  setTable("c-cmp", ["Run", ...ys], D.labels.map(lab => [lab, ...ys.map(y => net(lab, y)?.kpi[metric] ?? null)]), 2);
+
+  const others = D.labels.filter(l => l !== base);
+  const de = card("c-cmpd", `Difference to ${base}`, others.length ? "Run minus baseline." : "Pass two or more runs to the build script to compare them.");
+  plot(de, others.map((lab, i) => ({ type: "bar", name: lab, x: ys.map(String), y: ys.map(y => { const a = net(lab, y)?.kpi[metric], b = net(base, y)?.kpi[metric]; return a == null || b == null ? null : a - b; }),
+    marker: { color: series(D.labels.indexOf(lab) % 8) }, hovertemplate: `${esc(lab)}: %{y:+,.2f}<extra></extra>` })), { barmode: "group", hovermode: "x unified", xaxis: Object.assign({ type: "category" }, layout().xaxis) });
+  setTable("c-cmpd", ["Run", ...ys], others.map(lab => [lab, ...ys.map(y => { const a = net(lab, y)?.kpi[metric], b = net(base, y)?.kpi[metric]; return a == null || b == null ? null : a - b; })]), 2);
+
+  // small multiples: same axis across runs
+  const mult = $("c-multi");
+  mult.innerHTML = `<h2>HVC supply by origin, per run</h2><p class="note">Same scale in every panel, so bars can be compared directly.</p><div class="grid" id="multi-grid"></div>`;
+  const peak = Math.max(1, ...D.labels.flatMap(l => D.years.map(y => net(l, y) ? ORIGINS.reduce((s, o) => s + Math.max(net(l, y).origin[o], 0), 0) : 0))) * 1.08;
+  D.labels.forEach((lab, k) => {
+    const box = document.createElement("div"); box.innerHTML = `<div class="small" style="font-weight:600">${esc(lab)}</div><div class="plot short"></div>`;
+    $("multi-grid").appendChild(box);
+    plot(box.querySelector(".plot"), ORIGINS.map((o, i) => ({ type: "bar", name: o, x: ys.map(String), y: ys.map(y => net(lab, y)?.origin[o] ?? null), showlegend: k === 0, legendgroup: o, marker: { color: series(i), line: { color: css("--surface"), width: 1 } }, hovertemplate: `${o}: %{y:,.1f} TWh<extra></extra>` })),
+      { barmode: "relative", hovermode: "x unified", xaxis: Object.assign({ type: "category" }, layout().xaxis), yaxis: Object.assign({ range: [0, peak] }, layout().yaxis) });
+  });
+
+  const cfg = $("c-config"), keys = Object.keys(D.configDiff);
+  cfg.innerHTML = `<h2>Config that differs between runs</h2>` + (keys.length
+    ? `<div class="tablewrap">${tableHtml(["Setting", ...D.labels], keys.map(k => [k, ...D.labels.map(l => D.configDiff[k][l])]))}</div>`
+    : `<p class="note">${D.labels.length > 1 ? "No differences found." : "Only one run is loaded. Its industry settings are listed below."}</p>` +
+      `<div class="tablewrap">${tableHtml(["Setting", "Value"], Object.entries(D.industry).map(([k, v]) => [k.replace("industry.", ""), v]))}</div>`);
+  cfg.querySelectorAll("th:not(:first-child), td:not(:first-child)").forEach(c => { c.style.whiteSpace = "normal"; c.style.textAlign = "left"; });
+  sortable(cfg.querySelector("table"));
+}
+
+// --- Checks ------------------------------------------------------------------------------
+const ICON = { ok: "✓ OK", warn: "▲ Check", fail: "✕ Failed", info: "ℹ Info" };
+function renderChecks() {
+  const ys = runYears(), c = $("c-checks");
+  const rows = ys.flatMap(y => net(S.run, y).checks.map(k => ({ y, ...k })));
+  const fails = rows.filter(r => r.status === "fail" || r.status === "warn").length;
+  c.innerHTML = `<h2>Plausibility checks · ${esc(S.run)}</h2><p class="note">${fails ? `${fails} checks need a look.` : "All checks passed."} These are the same checks to run after each solve.</p>
+    <div class="tablewrap" style="max-height:none"><table><thead><tr><th>Check</th><th class="left">Horizon</th><th class="left">Result</th><th class="left">Detail</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${esc(r.name)}</td><td class="left">${r.y}</td><td class="left"><span class="status ${r.status}">${ICON[r.status]}</span></td><td class="left">${esc(r.detail)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+// --- shell -----------------------------------------------------------------------------------
+const RENDER = { "Overview": renderOverview, "HVC supply": renderHVC, "Cracker fleet": renderFleet, "Map": renderMap, "Carrier balance": renderTS, "Prices": renderPrices, "Explorer": () => { searchBus(); searchTech(); renderBus(); renderTech(); }, "Compare": renderCompare, "Checks": renderChecks };
+const TECH_ALL = new Set(), TECH_NEW = new Set(), TECH_SLOT = {};
+const heatLow = () => matchesDark() ? "#17324f" : "#d7e6f7";
+const matchesDark = () => css("--surface") === "#1a1a19";
+function classify() {
+  // anything feeding an HVC bus is an HVC technology; the same logic as origin in the build script
+  const perProduct = { All: {} };
+  Object.values(D.nets).forEach(n => { const { b, t, v } = n.bal; for (let i = 0; i < b.length; i++) {
+    const name = D.techs[t[i]], product = D.buses[b[i]][1];
+    if (!D.hvc.includes(product) || isInternal(name) || name.startsWith("slack ")) continue;
+    TECH_ALL.add(name);
+    if (!name.includes("import") && !name.includes("yield shift") && !name.startsWith("steam cracker")) TECH_NEW.add(name);
+    for (const key of ["All", product]) { const d = perProduct[key] ||= {}; d[name] = (d[name] || 0) + Math.abs(v[i]); }
+  } });
+  // One colour per technology across all product views: two technologies shown
+  // together in any view never share a slot, as far as eight slots allow.
+  const tops = Object.values(perProduct).map(d => Object.keys(d).sort((a, b) => d[b] - d[a]).slice(0, 8));
+  const totals = perProduct.All;
+  Object.keys(totals).sort((a, b) => totals[b] - totals[a]).forEach(name => {
+    const taken = new Set(tops.filter(top => top.includes(name)).flat().map(k => TECH_SLOT[k]));
+    TECH_SLOT[name] = [0, 1, 2, 3, 4, 5, 6, 7].find(i => !taken.has(i)) ?? 7;
+  });
+}
+function render() { RENDER[S.tab](); requestAnimationFrame(() => document.querySelectorAll(".view.on .plot").forEach(p => p.data && Plotly.Plots.resize(p))); }
+function showTab() {
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.dataset.tab === S.tab));
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === S.tab));
+  render();
+}
+function init() {
+  classify();
+  $("run").innerHTML = D.labels.map(l => `<option>${esc(l)}</option>`).join("");
+  const fillYears = () => { const ys = runYears(); if (!ys.includes(S.year)) S.year = ys[ys.length - 1]; $("year").innerHTML = ys.map(y => `<option>${y}</option>`).join(""); $("year").value = S.year; };
+  fillYears();
+  $("stamp").textContent = `Built ${D.generated}`;
+  $("tabs").innerHTML = Object.keys(RENDER).map(t => `<button data-t="${t}">${t}</button>`).join("");
+  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => { S.tab = b.dataset.t; showTab(); });
+  $("run").onchange = e => { S.run = e.target.value; fillYears(); render(); };
+  $("year").onchange = e => { S.year = +e.target.value; render(); };
+  $("theme").onclick = () => { const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; document.documentElement.dataset.theme = dark ? "light" : "dark"; render(); };
+
+  fillMapControls();
+  $("m-kind").onchange = () => { fillMapControls(); renderMap(); };
+  $("m-carrier").onchange = () => { fillMapTech(); renderMap(); };
+  $("m-tech").onchange = renderMap; $("m-fix").onchange = renderMap; $("m-play").onclick = togglePlay;
+
+  fillTsControls(); $("t-carrier").onchange = renderTS;
+  $("p-carrier").onchange = renderPriceHeat;
+  $("x-bus").oninput = searchBus; $("x-tech").oninput = searchTech;
+
+  const metrics = Object.keys(D.nets[Object.keys(D.nets)[0]].kpi);
+  $("k-metric").innerHTML = metrics.map(m => `<option>${esc(m)}</option>`).join("");
+  $("k-metric").value = "System cost [bn €/a]";
+  $("k-base").innerHTML = D.labels.map(l => `<option>${esc(l)}</option>`).join("");
+  $("k-metric").onchange = renderCompare; $("k-base").onchange = renderCompare;
+
+  showTab();
+}
+init();
+</script>
+</body>
+</html>

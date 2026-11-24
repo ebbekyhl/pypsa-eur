@@ -1037,6 +1037,19 @@ industry:
   hotmaps_locate_missing: false
   reference_year: 2019
   oil_refining_emissions: 0.013
+  # Detailed petrochemicals from pypsa-petrochem (branch dev-leander, 116d4416):
+  # steam crackers by plant, ethylene, propylene, aromatics and butadiene as
+  # carriers with their own demand, transport, imports and new production routes,
+  # plastic recycling and waste. Off here; config/config.caps_petrochem.yaml has
+  # the settings of the petrochemical study (all keys are read there).
+  HVC_detailed: false
+  # EUR/MWh for end-of-life HVC released without treatment ("HVC to air"); 0 as
+  # before the petrochemical model
+  hvc_disposal_cost: 0.0
+  # With HVC_detailed, where the CO2 of the naphtha that the crackers do not use
+  # (feedstock of the remaining HVC) counts: "in_year" where it is used, or
+  # "end_of_life" with the plastic waste, shared out by population
+  residual_naphtha_co2: in_year
 
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#costs

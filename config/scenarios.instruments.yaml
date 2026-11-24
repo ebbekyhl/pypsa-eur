@@ -1,0 +1,32 @@
+
+
+#cbam:
+#  industry:
+#    petrochemical_co2_priced: true
+#    hvc_eol_co2_priced: true
+#    cbam_factor: {2025: 0, 2030: 0.485, 2035: 1.0, 2040: 1.0, 2045: 1.0, 2050: 1.0}
+
+
+local-content:
+  industry:
+    max_import_share:
+      ethylene:  {2025: null, 2030: 0.25, 2035: 0.25, 2040: 0.25, 2045: 0.25, 2050: 0.25}
+      propylene: {2025: null, 2030: 0.25, 2035: 0.25, 2040: 0.25, 2045: 0.25, 2050: 0.25}
+      butadiene: {2025: null, 2030: 0.25, 2035: 0.25, 2040: 0.25, 2045: 0.25, 2050: 0.25}
+      aromatics: {2025: null, 2030: 0.25, 2035: 0.25, 2040: 0.25, 2045: 0.25, 2050: 0.25}
+
+tariff:
+  industry:
+    hvc_import_tariff: {2025: 0, 2030: 10, 2035: 10, 2040: 10, 2045: 10, 2050: 10}
+
+capex-support:
+  industry:
+    hvc_capex_subsidy: {2025: 0, 2030: 0.3, 2035: 0.3, 2040: 0.3, 2045: 0.3, 2050: 0.3}
+
+opex-support:
+  industry:
+    hvc_opex_subsidy: {2025: 0, 2030: 10, 2035: 10, 2040: 10, 2045: 10, 2050: 10}
+
+fleet-retention:
+  industry:
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 10, 2035: 10, 2040: 10, 2045: 10, 2050: 10}

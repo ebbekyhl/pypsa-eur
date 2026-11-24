@@ -1,0 +1,40 @@
+# config/scenarios.combo.yaml
+# Combination scenarios. Subsidies ramp 100/67/33/0/0 from 2030;
+# fleet retention full through 2035 then off; trade instruments constant.
+
+reference:
+  industry:
+    hvc_capex_subsidy:        {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    hvc_opex_subsidy:         {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    hvc_import_tariff:        {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+
+combo-bridge:
+  industry:
+    hvc_opex_subsidy:          {2025: 0, 2030: 10, 2035: 6.7, 2040: 3.3, 2045: 0, 2050: 0}
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 20, 2035: 20,  2040: 0,   2045: 0, 2050: 0}
+
+combo-shield:
+  industry:
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 20, 2035: 20, 2040: 0,  2045: 0,  2050: 0}
+    hvc_import_tariff:         {2025: 0, 2030: 10, 2035: 10, 2040: 10, 2045: 10, 2050: 10}
+
+combo-tech-quota:
+  industry:
+    hvc_capex_subsidy: {2025: 0, 2030: 0.30, 2035: 0.20, 2040: 0.10, 2045: 0, 2050: 0}
+    max_import_share:
+      ethylene:  {2025: 1.0, 2030: 0.15, 2035: 0.15, 2040: 0.15, 2045: 0.15, 2050: 0.15}
+      propylene: {2025: 1.0, 2030: 0.15, 2035: 0.15, 2040: 0.15, 2045: 0.15, 2050: 0.15}
+      butadiene: {2025: 1.0, 2030: 0.15, 2035: 0.15, 2040: 0.15, 2045: 0.15, 2050: 0.15}
+      aromatics: {2025: 1.0, 2030: 0.15, 2035: 0.15, 2040: 0.15, 2045: 0.15, 2050: 0.15}
+
+combo-sequence:
+  industry:
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 20, 2035: 20,   2040: 0,     2045: 0,    2050: 0}
+    hvc_opex_subsidy:          {2025: 0, 2030: 0,  2035: 25,   2040: 16.75, 2045: 8.25, 2050: 0}
+
+combo-broad:
+  industry:
+    hvc_opex_subsidy:          {2025: 0, 2030: 10, 2035: 6.7, 2040: 3.3, 2045: 0,  2050: 0}
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 20, 2035: 20,  2040: 0,   2045: 0,  2050: 0}
+    hvc_import_tariff:         {2025: 0, 2030: 10, 2035: 10,  2040: 10,  2045: 10, 2050: 10}

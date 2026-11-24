@@ -585,6 +585,48 @@ def update_dynamic_ptes_capacity(
     ].values
 
 
+def retire_idle_crackers(n, n_p, threshold, carriers=("steam cracker",)):
+    """Permanently close crackers that ran below `threshold` utilisation last horizon.
+
+    Myopic foresight solves each horizon independently, so a plant can idle in
+    2040 and run again in 2050. Here a plant whose capacity factor fell below the
+    threshold is closed for good; plants already closed stay closed.
+    """
+    w = n_p.snapshot_weightings.objective
+    for carrier in carriers:
+        idx = n.links.index[n.links.carrier == carrier]
+        prev = idx.intersection(n_p.links.index)
+        if prev.empty:
+            continue
+
+        # already closed in the previous horizon -> stay closed
+        closed = prev[n_p.links.loc[prev, "p_nom_opt"] <= 0]
+        n.links.loc[n.links.index.intersection(closed), "p_nom"] = 0.0
+
+        # of those still open, close the ones that barely ran
+        live = prev[n_p.links.loc[prev, "p_nom_opt"] > 0]
+        cols = live.intersection(n_p.links_t.p0.columns)
+
+        energy = n_p.links_t.p0[cols].mul(w, axis=0).sum()
+        cf = energy / (n_p.links.loc[cols, "p_nom_opt"] * w.sum())
+        idle = cf.index[cf < threshold]
+        # an idle-closed plant forfeits its extension option
+        blocked = closed.union(idle)
+        offers = n.links.index[
+            (n.links.carrier == "steam cracker extension") & n.links.p_nom_extendable
+        ]
+        ext_i = offers[offers.str.replace(r" extension-\d+$", "", regex=True).isin(blocked)]
+        if len(ext_i):
+            n.links.loc[ext_i, "p_nom_max"] = 0.0
+            logger.info("%s: extension blocked for %d idle-closed plants", carrier, len(ext_i))
+        n.links.loc[n.links.index.intersection(idle), "p_nom"] = 0.0
+
+        logger.info(
+            "%s: %d already closed, %d newly retired below %.0f%% CF, %d remain",
+            carrier, len(closed), len(idle), threshold * 100,
+            len(live) - len(idle),
+        )
+
 if __name__ == "__main__":
     if "snakemake" not in globals():
         from scripts._helpers import mock_snakemake
@@ -624,6 +666,11 @@ if __name__ == "__main__":
     if snakemake.params.tes and snakemake.params.dynamic_ptes_capacity:
         update_dynamic_ptes_capacity(n, n_p, year)
 
+    idle_threshold = snakemake.config["industry"].get("cracker_idle_threshold", 0.4)
+
+    retire_idle_crackers(n, n_p, threshold=idle_threshold, carriers=("steam cracker",))
+
+
     add_brownfield(
         n,
         n_p,
@@ -638,6 +685,9 @@ if __name__ == "__main__":
     add_planned_generation_capacities(n, year, file_powerplants, onshore_regions, snakemake.params.uk_settings_prepare)
     file_storage = snakemake.input.uk_brownfield_storage
     add_planned_storage_capacities(n, year, file_storage)
+
+    # last horizon's extensions only reach n through add_brownfield
+    retire_idle_crackers(n, n_p, threshold=idle_threshold, carriers=("steam cracker extension",))
 
     disable_grid_expansion_if_limit_hit(n)
 

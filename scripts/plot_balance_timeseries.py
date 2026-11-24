@@ -211,9 +211,14 @@ if __name__ == "__main__":
     os.makedirs(output_dir, exist_ok=True)
 
     # Get month ranges for plotting
-    sns = snakemake.params.snapshots
-    drop_leap_day = snakemake.params.drop_leap_day
-    months = get_snapshots(sns, drop_leap_day, freq="ME").map(
+    #sns = snakemake.params.snapshots
+    #drop_leap_day = snakemake.params.drop_leap_day
+    #months = get_snapshots(sns, drop_leap_day, freq="ME").map(
+    #    lambda x: x.strftime("%Y-%m")
+    #)
+
+    # Get month ranges for plotting
+    months = n.snapshots.to_series().resample("ME").last().dropna().map(
         lambda x: x.strftime("%Y-%m")
     )
 

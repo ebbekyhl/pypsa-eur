@@ -1,0 +1,132 @@
+# HVC policy instrument sweeps, temporary-support variant.
+#
+# Subsidies ramp down linearly and end after 2040 (full rate 2030, two thirds
+# 2035, one third 2040, nothing from 2045). This treats them as transitional
+# support for a technology transition rather than permanent operating aid, and
+# matches how real instruments are written -- Klimaschutzvertraege run 15 years,
+# 45Q runs 12.
+#
+# Fleet retention is a fixed-term bridge: full rate in 2030 and 2035, nothing
+# afterwards. It buys time for the incumbent fleet, it does not underwrite it.
+#
+# Trade instruments (tariff, local content) are held constant, since they are
+# not subsidies and a border measure would not normally sunset. Change them
+# here if you want the whole package to phase out together.
+#
+# Scenario names match scenarios.sweep.yaml so the two runs pair directly.
+
+# --- baseline: CBAM, every instrument off ---------------------------------
+
+reference:
+  industry:
+    max_import_share:
+      ethylene:  {2025: null, 2030: null, 2035: null, 2040: null, 2045: null, 2050: null}
+      propylene: {2025: null, 2030: null, 2035: null, 2040: null, 2045: null, 2050: null}
+      butadiene: {2025: null, 2030: null, 2035: null, 2040: null, 2045: null, 2050: null}
+      aromatics: {2025: null, 2030: null, 2035: null, 2040: null, 2045: null, 2050: null}
+    hvc_import_tariff:         {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    hvc_capex_subsidy:         {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    hvc_opex_subsidy:          {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 0, 2035: 0, 2040: 0, 2045: 0, 2050: 0}
+
+# --- 1. fleet retention, EUR/MWh_HVC, fixed term to 2035 -----------------
+
+fleet-10:
+  industry:
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 10, 2035: 10, 2040: 0, 2045: 0, 2050: 0}
+
+fleet-20:
+  industry:
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 20, 2035: 20, 2040: 0, 2045: 0, 2050: 0}
+
+fleet-30:
+  industry:
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 30, 2035: 30, 2040: 0, 2045: 0, 2050: 0}
+
+fleet-40:
+  industry:
+    hvc_existing_opex_subsidy: {2025: 0, 2030: 40, 2035: 40, 2040: 0, 2045: 0, 2050: 0}
+
+# --- 2. opex support for new build, EUR/MWh_HVC, ramped to zero by 2045 ---
+
+opex-05:
+  industry:
+    hvc_opex_subsidy: {2025: 0, 2030: 5, 2035: 3.3, 2040: 1.7, 2045: 0, 2050: 0}
+
+opex-10:
+  industry:
+    hvc_opex_subsidy: {2025: 0, 2030: 10, 2035: 6.7, 2040: 3.3, 2045: 0, 2050: 0}
+
+opex-25:
+  industry:
+    hvc_opex_subsidy: {2025: 0, 2030: 25, 2035: 16.7, 2040: 8.3, 2045: 0, 2050: 0}
+
+opex-50:
+  industry:
+    hvc_opex_subsidy: {2025: 0, 2030: 50, 2035: 33.3, 2040: 16.7, 2045: 0, 2050: 0}
+
+# --- 3. capex support, share of annualised capital cost waived ------------
+
+capex-15:
+  industry:
+    hvc_capex_subsidy: {2025: 0, 2030: 0.15, 2035: 0.10, 2040: 0.05, 2045: 0, 2050: 0}
+
+capex-30:
+  industry:
+    hvc_capex_subsidy: {2025: 0, 2030: 0.30, 2035: 0.20, 2040: 0.10, 2045: 0, 2050: 0}
+
+capex-45:
+  industry:
+    hvc_capex_subsidy: {2025: 0, 2030: 0.45, 2035: 0.30, 2040: 0.15, 2045: 0, 2050: 0}
+
+# --- 4. import tariff, EUR/MWh, held constant ----------------------------
+
+tariff-05:
+  industry:
+    hvc_import_tariff: {2025: 0, 2030: 5, 2035: 5, 2040: 5, 2045: 5, 2050: 5}
+
+tariff-10:
+  industry:
+    hvc_import_tariff: {2025: 0, 2030: 10, 2035: 10, 2040: 10, 2045: 10, 2050: 10}
+
+tariff-20:
+  industry:
+    hvc_import_tariff: {2025: 0, 2030: 20, 2035: 20, 2040: 20, 2045: 20, 2050: 20}
+
+tariff-40:
+  industry:
+    hvc_import_tariff: {2025: 0, 2030: 40, 2035: 40, 2040: 40, 2045: 40, 2050: 40}
+
+# --- 5. local content, maximum import share, held constant ---------------
+
+local-40:
+  industry:
+    max_import_share:
+      ethylene:  {2025: null, 2030: 0.40, 2035: 0.40, 2040: 0.40, 2045: 0.40, 2050: 0.40}
+      propylene: {2025: null, 2030: 0.40, 2035: 0.40, 2040: 0.40, 2045: 0.40, 2050: 0.40}
+      butadiene: {2025: null, 2030: 0.40, 2035: 0.40, 2040: 0.40, 2045: 0.40, 2050: 0.40}
+      aromatics: {2025: null, 2030: 0.40, 2035: 0.40, 2040: 0.40, 2045: 0.40, 2050: 0.40}
+
+local-25:
+  industry:
+    max_import_share:
+      ethylene:  {2025: null, 2030: 0.25, 2035: 0.25, 2040: 0.25, 2045: 0.25, 2050: 0.25}
+      propylene: {2025: null, 2030: 0.25, 2035: 0.25, 2040: 0.25, 2045: 0.25, 2050: 0.25}
+      butadiene: {2025: null, 2030: 0.25, 2035: 0.25, 2040: 0.25, 2045: 0.25, 2050: 0.25}
+      aromatics: {2025: null, 2030: 0.25, 2035: 0.25, 2040: 0.25, 2045: 0.25, 2050: 0.25}
+
+local-15:
+  industry:
+    max_import_share:
+      ethylene:  {2025: null, 2030: 0.15, 2035: 0.15, 2040: 0.15, 2045: 0.15, 2050: 0.15}
+      propylene: {2025: null, 2030: 0.15, 2035: 0.15, 2040: 0.15, 2045: 0.15, 2050: 0.15}
+      butadiene: {2025: null, 2030: 0.15, 2035: 0.15, 2040: 0.15, 2045: 0.15, 2050: 0.15}
+      aromatics: {2025: null, 2030: 0.15, 2035: 0.15, 2040: 0.15, 2045: 0.15, 2050: 0.15}
+
+local-05:
+  industry:
+    max_import_share:
+      ethylene:  {2025: null, 2030: 0.05, 2035: 0.05, 2040: 0.05, 2045: 0.05, 2050: 0.05}
+      propylene: {2025: null, 2030: 0.05, 2035: 0.05, 2040: 0.05, 2045: 0.05, 2050: 0.05}
+      butadiene: {2025: null, 2030: 0.05, 2035: 0.05, 2040: 0.05, 2045: 0.05, 2050: 0.05}
+      aromatics: {2025: null, 2030: 0.05, 2035: 0.05, 2040: 0.05, 2045: 0.05, 2050: 0.05}

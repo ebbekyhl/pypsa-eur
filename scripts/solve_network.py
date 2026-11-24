@@ -919,12 +919,18 @@ def _oil_demand_shares(n: pypsa.Network) -> pd.Series:
     buses that links from the oil bus feed (land transport oil, kerosene for
     aviation, shipping oil, naphtha for industry, agriculture machinery oil),
     weighted over the year. Oil burnt in power plants or boilers is endogenous and
-    left out. The key is fixed, so the shared emissions stay linear.
+    left out. The key is fixed, so the shared emissions stay linear. With the
+    detailed HVC model (industry: HVC_detailed) the naphtha loads are the residual
+    naphtha at its own buses, found by carrier; the naphtha of the crackers is
+    endogenous and left out.
     """
     oil = n.buses.index[n.buses.carrier == "oil"]
     links = n.links[n.links.bus0.isin(oil)]
     product = links.bus1.map(n.buses.carrier) == links.carrier
-    loads = n.loads[n.loads.bus.isin(links.bus1[product])]
+    loads = n.loads[
+        n.loads.bus.isin(links.bus1[product])
+        | (n.loads.carrier == "naphtha for industry")
+    ]
     if loads.empty:
         raise ValueError("No oil-product loads found to share the oil refining emissions.")
     p_set = n.get_switchable_as_dense("Load", "p_set")[loads.index]
@@ -2564,14 +2570,27 @@ def add_clean_methanol_rules(n: pypsa.Network, rule: str, investment_year: int) 
 def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex, type: str, limit_sense: str = "<=", limit: dict | None = None) -> None:
     """
     Add constraint for limiting green energy imports (synthetic and biomass).
-    Does not include fossil fuel imports.
+    Does not include fossil fuel imports. HVC imports (petrochemicals) are
+    materials trade rather than energy and are bounded by their own capacities.
     """
 
     nyears = n.snapshot_weightings.generators.sum() / 8760
     weightings = n.snapshot_weightings.loc[sns, "generators"]
 
-    import_links = n.links.loc[n.links.carrier.str.contains("import")].index
-    import_gens = n.generators.loc[n.generators.carrier.str.contains("import")].index
+    # each HVC import has both a generator and a link on the same carrier,
+    # so leaving them in would also double-count them.
+    hvc_imports = [
+        "ethylene import", "propylene import",
+        "butadiene import", "aromatics import",
+    ]
+    import_links = n.links.index[
+        n.links.carrier.str.contains("import")
+        & ~n.links.carrier.isin(hvc_imports)
+    ]
+    import_gens = n.generators.index[
+        n.generators.carrier.str.contains("import")
+        & ~n.generators.carrier.isin(hvc_imports)
+    ]
 
     if (import_links.empty and import_gens.empty):
         return
@@ -2596,6 +2615,236 @@ def add_import_limit_constraint(n: pypsa.Network, sns: pd.DatetimeIndex, type: s
             n.model.add_constraints(lhs, limit_sense, rhs, name=f"{type}_import_limit_{c}")
             logger.info(f"Added {type} import limit constraint for {c} with {limit_sense} {lim} TWh_fuel/year")
 
+def add_hvc_new_build_limit(
+    n: pypsa.Network, config: dict, investment_year: int
+) -> None:
+    """
+    Cap the HVC conversion capacity the model may add in one myopic step,
+    in MW of feedstock input. In myopic mode every extendable HVC link in
+    the network is a new build of the current horizon (brownfield capacity
+    arrives with p_nom_extendable=False), so the sum of Link-p_nom over
+    those links is the addition in this step.
+    """
+    cf = config["industry"]
+    limits = cf.get("hvc_new_build_limit_MW")
+    if not limits:
+        return
+
+    carriers = cf["hvc_expansion_carriers"]
+    ext = n.links.index[n.links.p_nom_extendable & n.links.carrier.isin(carriers)]
+    if ext.empty:
+        return
+
+    p_nom = n.model["Link-p_nom"]
+
+    total = get(limits.get("total", {}), investment_year)
+    if total is not None:
+        n.model.add_constraints(
+            p_nom.loc[ext].sum() <= total, name="hvc_new_build_total"
+        )
+        logger.info(
+            f"HVC new-build limit {investment_year}: {total / 1e3:.1f} GW feedstock input"
+        )
+
+    for carrier, series in limits.get("per_carrier", {}).items():
+        cap = get(series, investment_year)
+        idx = ext[n.links.loc[ext, "carrier"] == carrier]
+        if cap is None or idx.empty:
+            continue
+        name = "hvc_new_build_" + carrier.replace(" ", "_").replace("-", "_")
+        n.model.add_constraints(p_nom.loc[idx].sum() <= cap, name=name)
+        logger.info(
+            f"HVC new-build limit {investment_year} for {carrier}: {cap / 1e3:.2f} GW"
+        )
+
+def add_yield_shift_limit(n: pypsa.Network, sns: pd.DatetimeIndex) -> None:
+    """
+    Bound each plant's slate flexibility by its actual ethylene production, so
+    the shift scales with what the plant is cracking. The share per cracker
+    type comes from the link's max_shift column. A life extension counts as
+    the same plant. New electric naphtha crackers are bounded per node, by all
+    their vintages together.
+    """
+    shift_i = n.links.index[n.links.carrier == "yield shift"]
+    if shift_i.empty:
+        return
+
+    p = n.model["Link-p"]
+    cracker_i = n.links.index[
+        n.links.carrier.isin(
+            [
+                "steam cracker",
+                "steam cracker extension",
+                "electric steam cracker naphtha",
+            ]
+        )
+    ]
+
+    for link in shift_i:
+        eth_bus = n.links.at[link, "bus0"]
+        frac = n.links.at[link, "max_shift"]
+        base = link.removesuffix(" yield shift")
+        prefix = (
+            base if base.endswith("Electric Cracker Naphtha")
+            else base + " steam cracker"
+        )
+
+        # find the ethylene port: it is bus2 on Flex Integrated, bus1 elsewhere
+        src = []
+        for c in cracker_i[cracker_i.str.startswith(prefix)]:
+            for i in range(1, 9):
+                if n.links.at[c, f"bus{i}"] == eth_bus:
+                    eff = n.links.at[c, "efficiency" if i == 1 else f"efficiency{i}"]
+                    src.append((c, eff))
+                    break
+
+        if not src:
+            n.model.add_constraints(
+                p.loc[:, link] <= 0, name=f"yield_shift_limit-{link}"
+            )
+            continue
+
+        production = sum(p.loc[:, c] * eff for c, eff in src)
+        n.model.add_constraints(
+            p.loc[:, link] - frac * production <= 0,
+            name=f"yield_shift_limit-{link}",
+        )
+
+    logger.info("Yield shift: %d plants bounded by own ethylene output.", len(shift_i))
+
+
+def take_out_link_ramp_limits(n: pypsa.Network) -> pd.DataFrame:
+    """
+    Take the ramp limits of links out of the network before the model is built,
+    and return them (p.u. of capacity per snapshot). PyPSA 1.0.1 cannot build ramp
+    limits for links (it looks for the variable "Link-p0"), so add_link_ramp_limits
+    adds them in extra_functionality; solve_network puts them back after the solve.
+    Here only the steam crackers and HVC expansion links of the detailed
+    petrochemical model have them.
+    """
+    cols = ["ramp_limit_up", "ramp_limit_down"]
+    limits = n.links[cols][n.links[cols].notna().any(axis=1)]
+    if limits.empty:
+        return limits
+    if n.links.loc[limits.index, "committable"].any():
+        raise NotImplementedError("Ramp limits of committable links are not supported.")
+    if any(not n.links_t[c].empty for c in cols):
+        raise NotImplementedError("Time-varying ramp limits of links are not supported.")
+    n.links.loc[limits.index, cols] = np.nan
+    return limits
+
+
+def add_link_ramp_limits(n: pypsa.Network, sns: pd.DatetimeIndex) -> None:
+    """
+    Ramp limits of links (take_out_link_ramp_limits) with the formulation PyPSA
+    uses for links that are not committable: from one snapshot to the next the
+    flow may rise by at most ramp_limit_up and fall by at most ramp_limit_down
+    times the capacity (the capacity variable for extendable links). The first
+    snapshot has no predecessor and no limit.
+    """
+    limits = getattr(n, "link_ramp_limits", None)
+    if limits is None or limits.empty or len(sns) < 2:
+        return
+
+    p = n.model["Link-p"]
+    p_nom = n.model["Link-p_nom"] if "Link-p_nom" in n.model.variables else None
+    dim = [d for d in p.dims if d != "snapshot"][0]
+    extendable = n.links.index[n.links.p_nom_extendable]
+
+    for col, sign in [("ramp_limit_up", 1.0), ("ramp_limit_down", -1.0)]:
+        rate = limits[col].dropna()
+        for ext in (False, True):
+            idx = rate.index.intersection(extendable) if ext else rate.index.difference(extendable)
+            if idx.empty:
+                continue
+            flow = p.sel({dim: idx})
+            change = (flow - flow.shift(snapshot=1)).sel(snapshot=sns[1:])
+            r = xr.DataArray(rate[idx].values, coords={dim: idx}, dims=[dim])
+            if ext:
+                cap = p_nom.sel({p_nom.dims[0]: idx}).rename({p_nom.dims[0]: dim})
+                lhs, rhs = sign * change - r * cap, 0.0
+            else:
+                lhs, rhs = sign * change, r * xr.DataArray(
+                    n.links.loc[idx, "p_nom"].values, coords={dim: idx}, dims=[dim]
+                )
+            kind = "ext" if ext else "fix"
+            n.model.add_constraints(lhs <= rhs, name=f"Link-{col}-{kind}")
+    logger.info(
+        f"Ramp limits of {len(limits)} links added in extra_functionality "
+        f"({n.links.loc[limits.index, 'carrier'].value_counts().to_dict()})."
+    )
+
+
+HVC_PRODUCTS = ["ethylene", "propylene", "butadiene", "aromatics"]
+
+def hvc_output_yield(n, link, products=HVC_PRODUCTS):
+    """
+    MWh of HVC leaving a link per MWh of feedstock entering bus0.
+
+    Only the four HVC product carriers count. Fuel gas, hydrogen, methanol,
+    naphtha and the emission ports are excluded, so intermediate technologies
+    score zero and no subsidy cascade forms along multi-step chains.
+    """
+    row = n.links.loc[link]
+    total = 0.0
+    for i in range(1, 10):
+        bus = row.get(f"bus{i}", "")
+        if not isinstance(bus, str) or not bus or bus not in n.buses.index:
+            continue
+        if n.buses.at[bus, "carrier"] in products:
+            attr = "efficiency" if i == 1 else f"efficiency{i}"
+            total += float(row.get(attr, 0.0) or 0.0)
+    return total
+
+
+def apply_hvc_policy(n, cf_industry, investment_year):
+    """Import tariff, capex subsidy, and opex subsidies for new and existing HVC assets."""
+    new_carriers = cf_industry.get("hvc_expansion_carriers", [])
+    old_carriers = cf_industry.get("hvc_existing_carriers", [])
+
+    # 1b. import tariff
+    tariff = get(cf_industry.get("hvc_import_tariff", 0.0), investment_year)
+    if tariff:
+        idx = n.links.index[n.links.carrier.isin([f"{p} import" for p in HVC_PRODUCTS])]
+        n.links.loc[idx, "marginal_cost"] += tariff
+        logger.info("HVC import tariff %.1f EUR/MWh on %d links", tariff, len(idx))
+
+    # 2. capex subsidy on new-build HVC technologies
+    capex_sub = get(cf_industry.get("hvc_capex_subsidy", 0.0), investment_year)
+    if capex_sub:
+        idx = n.links.index[n.links.carrier.isin(new_carriers) & n.links.p_nom_extendable]
+        n.links.loc[idx, "capital_cost"] *= 1.0 - capex_sub
+        logger.info("HVC capex subsidy %.0f%% on %d links", capex_sub * 100, len(idx))
+
+    # 3. opex subsidy on new-build HVC output
+    opex_sub = get(cf_industry.get("hvc_opex_subsidy", 0.0), investment_year)
+    if opex_sub:
+        idx = n.links.index[n.links.carrier.isin(new_carriers) & n.links.p_nom_extendable]
+        _apply_output_subsidy(n, idx, opex_sub, "new build")
+
+    # 4. opex subsidy on the inherited fleet
+    exist_sub = get(cf_industry.get("hvc_existing_opex_subsidy", 0.0), investment_year)
+    if exist_sub and old_carriers:
+        idx = n.links.index[n.links.carrier.isin(old_carriers) & ~n.links.p_nom_extendable]
+        _apply_output_subsidy(n, idx, exist_sub, "existing fleet")
+
+
+def _apply_output_subsidy(n, idx, rate, label):
+    touched, skipped = 0, set()
+    for link in idx:
+        y = hvc_output_yield(n, link)
+        if y <= 0:
+            skipped.add(n.links.at[link, "carrier"])
+            continue
+        n.links.at[link, "marginal_cost"] -= rate * y
+        touched += 1
+    logger.info(
+        "HVC opex subsidy (%s) %.1f EUR/MWh_HVC applied to %d links", label, rate, touched
+    )
+    if skipped:
+        logger.info(
+            "  no HVC output, skipped: %s", ", ".join(sorted(skipped))
+        )
 
 def add_co2_atmosphere_constraint(n, snapshots):
     logger.info("Adding global CO2 constraint.")
@@ -2737,6 +2986,14 @@ def extra_functionality(
             uk_settings_prepare.get("cbam_methanol_clean", "production"),
             int(snakemake.wildcards.planning_horizons),
         )
+
+    add_link_ramp_limits(n, snapshots)
+
+    if config["industry"].get("HVC_yield_shift", False):
+        add_yield_shift_limit(n, snapshots)
+
+    if config["industry"].get("HVC_detailed", False) and planning_horizons is not None:
+        add_hvc_new_build_limit(n, config, int(planning_horizons))
 
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality
@@ -3160,6 +3417,8 @@ def solve_network(
     # add to network for extra_functionality
     n.config = config
     n.params = params
+    # PyPSA 1.0.1 fails on ramp limits of links; extra_functionality adds them
+    n.link_ramp_limits = take_out_link_ramp_limits(n)
 
     if rolling_horizon and rule_name == "solve_operations_network":
         kwargs["horizon"] = cf_solving.get("horizon", 365)
@@ -3178,6 +3437,10 @@ def solve_network(
         status, condition = n.optimize.optimize_transmission_expansion_iteratively(
             **kwargs
         )
+
+    # put the ramp limits back, so that the solved network keeps them
+    limits = n.link_ramp_limits
+    n.links.loc[limits.index, limits.columns] = limits
 
     if not rolling_horizon:
         if status != "ok":
@@ -3288,6 +3551,15 @@ if __name__ == "__main__":
             countries,
             nyears,
             limit,
+        )
+
+    # HVC policy instruments (tariff, capex and opex subsidies); before the CO2
+    # split, so that class copies inherit them
+    if planning_horizons is not None:
+        apply_hvc_policy(
+            n,
+            snakemake.config.get("industry", {}),
+            int(planning_horizons),
         )
 
     # Uncapped countries must not become a sink for captured CO2.

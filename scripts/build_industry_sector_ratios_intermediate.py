@@ -92,6 +92,22 @@ def build_industry_sector_ratios_intermediate():
 
     today_sector_ratios.dropna(how="all", axis=1, inplace=True)
 
+    # With the detailed HVC model, the liquids of the sectors other than HVC are
+    # fuel burnt at the plant (cement kilns, ceramics, food, other industry), not
+    # feedstock. The rename below would count them as naphtha, whose carbon goes
+    # into the plastic waste; they become "oil" instead (oil for industry in
+    # prepare_sector_network), whose CO2 counts in the same year at the plant.
+    # Today's ratios only: the future ratios have no liquid fuels outside HVC.
+    if snakemake.config["industry"].get("HVC_detailed", False):
+        feedstock_sectors = ["HVC", "Ethylene", "Propylene", "Aromatics", "Butadiene",
+                             "Benzene", "Toluene", "Xylene"]
+        if "liquid" in today_sector_ratios.index:
+            liquid = today_sector_ratios.loc["liquid"]
+            feedstock = today_sector_ratios.columns.get_level_values(1).isin(feedstock_sectors)
+            today_sector_ratios.loc["oil"] = liquid.where(~feedstock, 0.0)
+            today_sector_ratios.loc["liquid"] = liquid.where(feedstock, 0.0)
+        future_sector_ratios.loc["oil"] = 0.0
+
     rename = {
         "waste": "biomass",
         "electricity": "elec",
@@ -118,6 +134,21 @@ def build_industry_sector_ratios_intermediate():
             today_sector_ratios_ct * (1 - fraction_future)
             + future_sector_ratios * fraction_future
         )
+
+    # Set cracker links to future ratios, which correctly set naphtha/elec/methane = 0 and output carrier only
+
+    if snakemake.config["industry"].get("HVC_detailed", False):
+        cracker_sectors = ["Ethylene", "Propylene", "Aromatics", "Butadiene",
+        "Ethylene (mechanical recycling)", "Propylene (mechanical recycling)", "Aromatics (mechanical recycling)",
+        "Butadiene (mechanical recycling)",
+        "Ethylene (chemical recycling)", "Propylene (chemical recycling)", "Aromatics (chemical recycling)",
+        "Butadiene (chemical recycling)"]
+        for ct in intermediate_sector_ratios:
+            for sector in cracker_sectors:
+                if sector in intermediate_sector_ratios[ct].columns and sector in future_sector_ratios.columns:
+                    # Cracker links handle energy in the network — use only future ratios
+                    # which correctly set naphtha/elec/methane = 0 and output carrier only
+                    intermediate_sector_ratios[ct][sector] = future_sector_ratios[sector]
 
     intermediate_sector_ratios = pd.concat(intermediate_sector_ratios, axis=1)
 

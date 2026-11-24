@@ -1,0 +1,7 @@
+# Solver threads for a job on 16 cores (qsub -l select=1:ncpus=16:...). Add after the
+# run's overlay, e.g. -v "CONFIG=config/config_caps_national_targets.yaml config/config_threads16.yaml".
+# Changes only the number of barrier threads, not the model.
+solving:
+  solver_options:
+    gurobi-default:
+      threads: 16

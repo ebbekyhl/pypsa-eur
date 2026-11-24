@@ -934,6 +934,63 @@ def _oil_demand_shares(n: pypsa.Network) -> pd.Series:
     return by_country / by_country.sum()
 
 
+# Links that book the CO2 of aviation and shipping fuel, by transport mode. The
+# fuel demand is fixed and includes domestic and international journeys. The oil
+# links book the fossil rate whatever the origin of the oil; the methanol links
+# book the carbon of the methanol.
+BUNKER_LINKS_OIL = {"kerosene for aviation": "aviation", "shipping oil": "navigation"}
+BUNKER_LINKS_METHANOL = {
+    "methanol-to-kerosene": "aviation",
+    "shipping methanol": "navigation",
+}
+
+
+def _international_bunker_shares(n: pypsa.Network, with_methanol: bool) -> pd.Series:
+    """
+    International share of the fuel that each aviation and shipping link delivers,
+    by link (BUNKER_LINKS_OIL and, ``with_methanol``, BUNKER_LINKS_METHANOL): the
+    share of international journeys in the demand of its node, as
+    prepare_sector_network builds that demand. Aviation takes both parts from the
+    energy totals of the node; shipping takes the international part from the
+    port outflows (shipping_demand) and the domestic part from the energy totals.
+    The shares are fixed, so the pooled emissions stay linear.
+    """
+    for name in ["pop_weighted_energy_totals", "shipping_demand"]:
+        if not hasattr(snakemake.input, name):
+            raise ValueError(f"co2_bunkers: shared needs the input '{name}' of the solve rule.")
+    totals = pd.read_csv(snakemake.input.pop_weighted_energy_totals, index_col=0)
+    shipping = pd.read_csv(snakemake.input.shipping_demand, index_col=0).squeeze(axis=1)
+    international = {
+        "aviation": totals["total international aviation"],
+        "navigation": shipping.reindex(totals.index, fill_value=0.0),
+    }
+    domestic = {
+        "aviation": totals["total domestic aviation"],
+        "navigation": totals["total domestic navigation"],
+    }
+    share = {
+        mode: (international[mode] / (international[mode] + domestic[mode])).fillna(0.0)
+        for mode in international
+    }
+
+    carriers = dict(BUNKER_LINKS_OIL, **(BUNKER_LINKS_METHANOL if with_methanol else {}))
+    links = n.links[n.links.carrier.isin(carriers)]
+    # node of a link: the location of the first of its buses that sits at a node
+    ports = sorted(links.filter(regex=r"^bus\d+$"), key=lambda c: int(c[3:]))
+    location = links[ports].apply(lambda bus: bus.map(n.buses.location))
+    at_node = location.where(location.isin(totals.index))
+    node = at_node.bfill(axis=1).iloc[:, 0]
+    if node.isna().any():
+        raise ValueError(
+            "Aviation and shipping links without a node (co2_bunkers: shared needs "
+            f"regional_oil_demand and regional_methanol_demand): {list(node.index[node.isna()][:3])}"
+        )
+    mode = links.carrier.map(carriers)
+    return pd.Series(
+        [share[m][nd] for m, nd in zip(mode, node)], index=links.index, dtype=float
+    )
+
+
 def uncapped_countries(investment_year) -> list:
     """
     Countries outside every CO2 constraint in this horizon. co2_uncapped is a list,
@@ -946,24 +1003,45 @@ def uncapped_countries(investment_year) -> list:
 
 
 def plan_interconnectors(
-    n: pypsa.Network, projects_file: str, countries: list, investment_year: int
+    n: pypsa.Network,
+    projects_file: str,
+    countries: list,
+    investment_year: int,
+    rule: str = "fixed",
 ) -> None:
     """
-    Cross-border cables of the given countries follow planned projects only. Without
-    this, every cable could grow by up to 20 GW (links: max_extension) and GB-EU
-    capacity reached 89 GW by 2040. Listed links get the largest listed capacity
-    whose from_year has passed (0 before), projects missing from the network are
-    added as copies of a template cable, and every other cable keeps its rating.
+    Planned cross-border cables of the given countries (projects_file). Listed links
+    get the largest listed capacity whose from_year has passed (0 before), and
+    projects missing from the network are added as copies of a template cable.
+
+    rule "fixed": the cables follow planned projects only. Listed cables are fixed at
+    their planned capacity and every other cross-border cable of the countries at
+    its rating. Without this, every cable could grow by up to 20 GW (links:
+    max_extension) and GB-EU capacity reached 89 GW by 2040.
+
+    rule "minimum": the list only says what stands at each horizon, and the cables
+    expand like those of every other country. Listed cables get their planned
+    capacity as existing capacity and as lower bound and keep their extendability.
+    Cables added from a template stay at their planned capacity: they are added
+    anew in every horizon, so add_brownfield could not carry an expansion; their
+    corridor expands on the cables that are in the network. Unlisted cables are
+    left alone.
     """
+    if rule not in ("fixed", "minimum"):
+        raise ValueError(
+            f"planned_interconnectors: rule must be 'fixed' or 'minimum', not {rule!r}."
+        )
     if not countries:
         return
     projects = pd.read_csv(projects_file)
     projects = projects[projects.include.astype(str).str.lower() == "true"]
 
     # projects missing from the network: copies of an existing cable (both halves)
+    added = []
     for link, row in projects.dropna(subset=["template"]).groupby("link").first().iterrows():
         if link in n.links.index:
             continue
+        added += [link, link + "-reversed"]
         for suffix in ["", "-reversed"]:
             new = n.links.loc[[row.template + suffix]].copy()
             # PyPSA needs the index name ("name") to build the model
@@ -989,12 +1067,86 @@ def plan_interconnectors(
     cable = cross.str.replace("-reversed", "", regex=False)
     listed = cable.isin(capacity.index)
     n.links.loc[cross[listed], "p_nom"] = cable[listed].map(capacity).values
-    n.links.loc[cross, "p_nom_min"] = n.links.loc[cross, "p_nom"]
-    n.links.loc[cross, "p_nom_extendable"] = False
+    if rule == "fixed":
+        n.links.loc[cross, "p_nom_min"] = n.links.loc[cross, "p_nom"]
+        n.links.loc[cross, "p_nom_extendable"] = False
+        logger.info(
+            f"Planned cross-border cables for {list(countries)} in {investment_year}: "
+            f"{len(cross)} links fixed, {listed.sum()} of them from {projects_file}."
+        )
+        return
+    # planned capacity as lower bound; an earlier expansion (p_nom_min set by
+    # add_brownfield) stays. A cable that cannot expand (base year) is at its
+    # planned capacity.
+    idx = cross[listed]
+    p_nom = n.links.loc[idx, "p_nom"].values
+    n.links.loc[idx, "p_nom_min"] = np.where(
+        n.links.loc[idx, "p_nom_extendable"].values.astype(bool),
+        np.maximum(n.links.loc[idx, "p_nom_min"].values, p_nom),
+        p_nom,
+    )
+    n.links.loc[idx, "p_nom_max"] = np.maximum(
+        n.links.loc[idx, "p_nom_max"].values, n.links.loc[idx, "p_nom_min"].values
+    )
+    fixed = cross[cross.isin(added)]
+    n.links.loc[fixed, "p_nom_min"] = n.links.loc[fixed, "p_nom"]
+    n.links.loc[fixed, "p_nom_extendable"] = False
     logger.info(
         f"Planned cross-border cables for {list(countries)} in {investment_year}: "
-        f"{len(cross)} links fixed, {listed.sum()} of them from {projects_file}."
+        f"{listed.sum()} links at their planned capacity or above ({projects_file}), "
+        f"{len(fixed)} of them added from a template and fixed; "
+        f"{int(n.links.loc[cross, 'p_nom_extendable'].sum())} of {len(cross)} "
+        "cross-border links extendable."
     )
+
+
+def align_transmission_volume_limit(n: pypsa.Network) -> None:
+    """
+    Make a limit on the transmission volume (electricity: transmission_limit:
+    v<factor>) hold for the whole grid of this horizon.
+
+    The limit is a multiple of the volume [MW km] of the base network, and PyPSA
+    applies it to the extendable lines and cables only. Two things would
+    otherwise go wrong. (1) Lines and cables that a rule fixes (the base-year
+    freeze, planned_interconnectors) would drop out of the limit and leave their
+    share to the others, so their volume is taken off the limit. (2) The lower
+    bounds hold what earlier horizons built and what planned projects add; where
+    they exceed the limit, the solve would be infeasible, so the limit is raised
+    to them and the grid cannot grow further.
+
+    Runs before the split: the class copies of a cable carry no length
+    (duplicate_transmission), so the limit counts every cable once. No-op without
+    such a limit (transmission_limit: vopt).
+    """
+    glc = n.global_constraints
+    names = glc.index[glc.type == "transmission_volume_expansion_limit"]
+    if names.empty:
+        return
+    dc = n.links[n.links.carrier == "DC"]
+    fixed = (
+        (dc.p_nom * dc.length)[~dc.p_nom_extendable].sum()
+        + (n.lines.s_nom * n.lines.length)[~n.lines.s_nom_extendable].sum()
+    )
+    standing = (
+        (dc.p_nom_min * dc.length)[dc.p_nom_extendable].sum()
+        + (n.lines.s_nom_min * n.lines.length)[n.lines.s_nom_extendable].sum()
+    )
+    for name in names:
+        limit = glc.at[name, "constant"]
+        room = limit - fixed
+        if room < standing * (1 + 1e-6):
+            logger.warning(
+                f"Transmission volume limit {name}: the grid that stands or is planned "
+                f"({(fixed + standing) / 1e6:.1f} TWkm) reaches the limit "
+                f"({limit / 1e6:.1f} TWkm); no further expansion in this horizon."
+            )
+            room = standing * (1 + 1e-6)
+        n.global_constraints.at[name, "constant"] = room
+        logger.info(
+            f"Transmission volume limit {name}: {limit / 1e6:.1f} TWkm for the whole "
+            f"grid, {fixed / 1e6:.1f} TWkm of it fixed, {standing / 1e6:.1f} TWkm "
+            f"standing in extendable lines and cables, {room / 1e6:.1f} TWkm for them."
+        )
 
 
 def restrict_new_gas_pipelines(n: pypsa.Network, countries: list) -> None:
@@ -1013,6 +1165,48 @@ def restrict_new_gas_pipelines(n: pypsa.Network, countries: list) -> None:
     idx = links.index[new & touches]
     n.links.loc[idx, "p_nom_extendable"] = False
     logger.info(f"No new gas pipelines for {list(countries)}: {len(idx)} candidates removed.")
+
+
+def add_gas_supply(
+    n: pypsa.Network, countries: list, price: float, p_nom: float
+) -> None:
+    """
+    Give the gas buses of the given countries a gas supply of their own, of
+    ``p_nom`` [MW] at ``price`` [EUR/MWh], for countries that the gas network does
+    not reach and that have no entry point (LNG terminal, pipeline or production).
+    Montenegro has neither. With no new gas pipelines in the Balkans, only load
+    shedding could serve its industrial high-temperature heat in the base year
+    (0.45 TWh at 1e5 EUR/MWh, i.e. 45 bn EUR), and from 2030 a Sabatier plant
+    made the gas on the spot. The supply stands for the fuels this industry burns
+    today, so it is kept small enough not to feed gas power plants.
+
+    The generator has the carrier of the LNG terminals ("import gas"); its CO2 is
+    booked where the gas is burnt. With an infinite lifetime it is not carried
+    into the next horizon by add_brownfield: every solve adds it anew.
+    """
+    if not countries:
+        return
+    country = n.buses.location.map(n.buses.country[n.buses.carrier == "AC"])
+    buses = n.buses.index[(n.buses.carrier == "gas") & country.isin(countries)]
+    if missing := sorted(set(countries) - set(country[buses])):
+        raise ValueError(f"No gas bus found for the gas supply of {missing}.")
+    names = buses + " import"
+    if existing := sorted(set(names) & set(n.generators.index)):
+        raise ValueError(f"Gas supply already present: {existing[:3]}")
+    if "import gas" not in n.carriers.index:
+        n.add("Carrier", "import gas")
+    n.add(
+        "Generator",
+        names,
+        bus=buses,
+        carrier="import gas",
+        marginal_cost=price,
+        p_nom=p_nom,
+    )
+    logger.info(
+        f"Gas supply of {p_nom:.0f} MW at {price} EUR/MWh added for {list(countries)} "
+        f"at {len(buses)} gas buses."
+    )
 
 
 def allow_early_retirement(
@@ -1087,6 +1281,12 @@ def add_split_co2_constraints(
       budget only to be stored (add_co2_imports_for_storage_only).
     - methanol_carries_carbon: methanol crossing between such zones takes its
       carbon along (_build_methanol_carbon_expressions).
+    - co2_bunkers: "national" (default) counts the CO2 of aviation and shipping
+      fuel in the country that sells it. "shared" takes the international share of
+      the oil-based fuel (and of the methanol-based fuel, unless
+      methanol_carries_carbon) out of the national sums into one account, whose
+      shortfall against co2_bunker_allowance every zone carries in proportion to
+      its 1990 CO2 without bunkers; the caps then use that 1990 CO2 too.
     """
     co2_totals_file = snakemake.input.co2_totals
     co2_totals = 1e6 * pd.read_csv(co2_totals_file, index_col=0) # convert Mt to tCO2
@@ -1098,6 +1298,21 @@ def add_split_co2_constraints(
 
     investment_year = int(snakemake.wildcards.planning_horizons)
 
+    # International aviation and shipping: counted in the country that sells the
+    # fuel ("national"), or as one account that all capped countries share
+    # ("shared"). With the shared account, the caps cover what national
+    # inventories cover, so the 1990 CO2 of a country leaves the bunkers out.
+    bunker_mode = snakemake.config.get("co2_bunkers", "national")
+    if bunker_mode not in ("national", "shared"):
+        raise ValueError(f"co2_bunkers must be 'national' or 'shared', not {bunker_mode!r}.")
+    bunker_sectors = [
+        s for s in ["international aviation", "international navigation"] if s in sectors
+    ]
+    co2_1990_bunkers = pd.Series(0.0, index=co2_totals.index)
+    if bunker_mode == "shared":
+        co2_1990_bunkers = co2_totals[bunker_sectors].sum(axis=1)
+        sectors = [s for s in sectors if s not in bunker_sectors]
+
     # 1990 CO2 by country over the emission sectors [tCO2]
     co2_1990_by_country = co2_totals[sectors].sum(axis=1)
     override = snakemake.config.get("co2_1990_override") or {}
@@ -1107,6 +1322,9 @@ def add_split_co2_constraints(
             co2_1990_by_country.index.union(override.index)
         )
         co2_1990_by_country.update(override)
+        # an override is the whole 1990 CO2 of its country, without bunkers
+        co2_1990_bunkers = co2_1990_bunkers.reindex(co2_1990_by_country.index, fill_value=0.0)
+        co2_1990_bunkers[override.index] = 0.0
         logger.info(f"1990 CO2 from co2_1990_override [Mt]: {(override / 1e6).to_dict()}")
 
     def allowance(region):
@@ -1122,12 +1340,21 @@ def add_split_co2_constraints(
     # is part of the collective and GB<->EU flows are no transfer at all).
     local_co2_regions = []
     for region in local_co2:
-        if region not in co2_1990_by_country.index or investment_year not in local_co2[region]:
+        if investment_year not in local_co2[region]:
             logger.info(
-                f"No local CO2 target for {region} in {investment_year} (or no "
-                "co2_totals): it is part of the collective budget."
+                f"No local CO2 target for {region} in {investment_year}: it is part "
+                "of the collective budget."
             )
             continue
+        # A share of 1990 needs the 1990 CO2. Without it the region used to join
+        # the collective budget without notice (or got a cap of zero).
+        absolute = local_co2[region].get("unit") == "MtCO2"
+        if not absolute and not co2_1990_by_country.get(region, np.nan) > 0:
+            raise ValueError(
+                f"{region} has a CO2 target for {investment_year} as a share of its "
+                "1990 CO2, but co2_totals has no 1990 CO2 for it; set "
+                "co2_1990_override or give the cap in Mt (unit: MtCO2)."
+            )
         local_co2_regions.append(region)
 
     # pooled regions bring their cap into the collective budget
@@ -1152,6 +1379,29 @@ def add_split_co2_constraints(
     # PyPSA 1.x labels the component dimension "name"; earlier versions used the
     # component name ("Link"). Selecting on the wrong label raises KeyError.
     link_dim = "name" if "name" in expr.coords else "Link"
+
+    # The caps count the CO2 of links, which the constraints below select as
+    # group 0 of the expression (one group per component type). Make sure that
+    # group 0 holds the links, and that nothing but links and the atmosphere
+    # store exchanges CO2 with the atmosphere, which no cap would count.
+    co2_buses = n.buses.index[n.buses.carrier == "co2"]
+    for component in ["Generator", "Load", "StorageUnit"]:
+        static = n.components[component].static
+        attached = static.index[static.bus.isin(co2_buses)]
+        if len(attached):
+            raise ValueError(
+                f"{component}s at the CO2 atmosphere bus are in no CO2 constraint: "
+                f"{list(attached[:3])}"
+            )
+    first = expr.sel(group=0)
+    other_dims = [d for d in first.vars.dims if d != link_dim]
+    held = (first.vars >= 0).any(other_dims)
+    held_names = held[link_dim].to_index()[held.values]
+    if held_names.empty or not held_names.isin(n.links.index).all():
+        raise ValueError(
+            "Group 0 of the CO2 balance does not hold the links; the CO2 "
+            "constraints would count the wrong components."
+        )
 
     # Match emissions to countries by location; a match on names would count
     # e.g. every CHP towards CH.
@@ -1213,6 +1463,93 @@ def add_split_co2_constraints(
     if zones and snakemake.config.get("co2_imports_for_storage_only", False):
         add_co2_imports_for_storage_only(n, zones)
 
+    # Shared account for international aviation and shipping (co2_bunkers: shared).
+    # The international share of the CO2 that the bunker links of the capped
+    # countries book leaves the national sums and forms one account. Each zone
+    # carries the shortfall of the account (its CO2 less its allowance) by a fixed
+    # key, the share of the zone in the 1990 CO2 without bunkers of all capped
+    # countries. The key adds up to one, so the constraints still add up to the
+    # same total. Where methanol carries its carbon across borders, the methanol
+    # bunker links stay national: their carbon already sits with the exporter of
+    # the methanol, and pooling them would leave the importer its deduction as a
+    # credit.
+    capped = [c for c in snakemake.params.countries if c not in uncapped]
+    bunker_key = pd.Series(0.0, index=capped)
+    bunker_allowance = 0.0
+    bunkers_of = None  # countries -> pooled CO2 of their bunker links
+    if bunker_mode == "shared":
+        key_base = co2_1990_by_country.reindex(capped)
+        if not (key_base > 0).all():
+            raise ValueError(
+                "co2_bunkers: shared needs the 1990 CO2 of every capped country "
+                f"(co2_1990_override): missing for {list(key_base.index[~(key_base > 0)])}."
+            )
+        bunker_key = key_base / key_base.sum()
+
+        spec = snakemake.config.get("co2_bunker_allowance")
+        if not isinstance(spec, dict):
+            raise ValueError(
+                "co2_bunkers: shared needs co2_bunker_allowance, {year: share of the "
+                "1990 CO2 of international aviation and shipping}, or in Mt with "
+                "unit: MtCO2."
+            )
+        spec = dict(spec)
+        unit = spec.pop("unit", None)
+        if investment_year not in spec:
+            raise ValueError(f"co2_bunker_allowance has no value for {investment_year}.")
+        if unit == "MtCO2":
+            bunker_allowance = spec[investment_year] * 1e6 * nyears
+        else:
+            bunker_allowance = (
+                spec[investment_year] * co2_1990_bunkers.reindex(capped).sum() * nyears
+            )
+
+        with_methanol = not snakemake.config.get("methanol_carries_carbon", False)
+        intl = _international_bunker_shares(n, with_methanol)
+        intl = intl[intl.index.isin(names)]
+        bunker_names = names[names.isin(intl.index)]
+        bunker_country = pd.Series(name_countries, index=names)[bunker_names]
+        in_capped = bunker_country.isin(capped).values
+        bunker_names, bunker_country = bunker_names[in_capped], bunker_country[in_capped]
+        expr_bunker_links = expr.sel(
+            {link_dim: xr.DataArray(names.isin(bunker_names), coords={link_dim: names}),
+             "group": 0}
+        )
+        expr_bunker_links = expr_bunker_links * xr.DataArray(
+            intl[bunker_names].values, coords={link_dim: bunker_names}
+        )
+
+        def bunkers_of(countries):
+            mask = bunker_country.isin(countries).values
+            if not mask.any():
+                return None
+            return expr_bunker_links.sel(
+                {link_dim: xr.DataArray(mask, coords={link_dim: bunker_names})}
+            ).sum()
+
+        expr_bunkers = bunkers_of(capped)
+        if expr_bunkers is None:
+            raise ValueError("co2_bunkers: shared found no aviation or shipping links.")
+        logger.info(
+            f"Shared account for international aviation and shipping: {len(bunker_names)} "
+            f"links ({n.links.carrier[bunker_names].value_counts().to_dict()}), mean "
+            f"international share {intl[bunker_names].mean():.2f}, allowance "
+            f"{bunker_allowance / 1e6:.1f} Mt, key of the largest countries "
+            f"{bunker_key.nlargest(5).round(3).to_dict()}"
+        )
+
+    def with_bunker_account(lhs, countries):
+        """National sum of the countries -> sum without their pooled bunker CO2,
+        plus their share of the account; and the allowance they bring."""
+        share = bunker_key.reindex(countries).sum()
+        if bunker_mode != "shared" or set(capped) <= set(countries):
+            # one zone holds every capped country: the account is its own
+            return lhs, share * bunker_allowance
+        own = bunkers_of(countries)
+        if own is not None:
+            lhs = lhs - own
+        return lhs + share * expr_bunkers, share * bunker_allowance
+
     # add local CO2 emissions constraints
     for region in local_co2_regions:
 
@@ -1225,6 +1562,10 @@ def add_split_co2_constraints(
         expr_c_group = expr.sel({link_dim: mask, "group": 0}) # group 0 corresponds to links
 
         lhs = expr_c_group.sum()
+
+        # International aviation and shipping as a shared account
+        lhs, bunker_share_allowance = with_bunker_account(lhs, [region])
+        net_co2_allowance = net_co2_allowance + bunker_share_allowance
 
         # Share of the emissions at EU-level buses (co2_unlocated: oil_demand)
         if shares.get(region, 0) > 0:
@@ -1272,6 +1613,13 @@ def add_split_co2_constraints(
         lhs = expr.sel({link_dim: located_in(collective), "group": 0}).sum()
         if shares[shares.index.isin(collective)].sum() > 0:
             lhs = lhs + shares[shares.index.isin(collective)].sum() * expr_unlocated
+
+    # International aviation and shipping as a shared account
+    lhs, bunker_share_allowance = with_bunker_account(lhs, collective)
+    net_co2_allowance = net_co2_allowance + bunker_share_allowance
+    logger.info(
+        f"Collective CO2 emissions budget with the bunker allowance: {net_co2_allowance}"
+    )
 
     # Emission transfer: add net imported embodied emissions to collective zone.
     if "collective" in transfer_exprs:
@@ -2061,6 +2409,12 @@ def add_battery_constraints(n, battery_techs):
 
 
 def add_lossy_bidirectional_link_constraints(n):
+    """
+    Give the reverse half of every two-way link the capacity of its forward half:
+    "<link>-reversed" of a lossy link (lossy_bidirectional_links) and
+    "<line>_reverse" of a converted AC line (convert_HVAC_to_HVDC), also where the
+    CO2 split has appended the class to the name.
+    """
     if not n.links.p_nom_extendable.any() or not any(n.links.get("reversed", [])):
         return
 
@@ -2068,7 +2422,20 @@ def add_lossy_bidirectional_link_constraints(n):
     backwards = n.links.query(
         "carrier in @carriers and p_nom_extendable and reversed"
     ).index
-    forwards = backwards.str.replace("-reversed", "")
+    forwards = backwards.str.replace("-reversed", "", regex=False).str.replace(
+        r"_reverse(?=$| )", "", regex=True
+    )
+    unpaired = backwards[(forwards == backwards) | ~forwards.isin(n.links.index)]
+    if len(unpaired):
+        raise ValueError(
+            f"Reverse halves without a forward link: {list(unpaired[:3])}"
+        )
+    not_extendable = forwards[~n.links.p_nom_extendable[forwards].values]
+    if len(not_extendable):
+        raise ValueError(
+            "Forward halves that cannot be expanded although their reverse half "
+            f"can: {list(not_extendable[:3])}"
+        )
     lhs = n.model["Link-p_nom"].loc[backwards]
     rhs = n.model["Link-p_nom"].loc[forwards]
     n.model.add_constraints(lhs == rhs, name="Link-bidirectional_sync")
@@ -3298,8 +3665,20 @@ if __name__ == "__main__":
     # split, so that the class copies inherit the changes.
     planned = uk_settings.get("planned_interconnectors") or {}
     if planned:
-        plan_interconnectors(n, planned["file"], planned["countries"], investment_year)
+        plan_interconnectors(
+            n,
+            planned["file"],
+            planned["countries"],
+            investment_year,
+            planned.get("rule", "fixed"),
+        )
+    align_transmission_volume_limit(n)
     restrict_new_gas_pipelines(n, uk_settings.get("no_new_gas_pipelines") or [])
+    gas_supply = uk_settings.get("gas_supply") or {}
+    if gas_supply:
+        add_gas_supply(
+            n, gas_supply["countries"], gas_supply["price"], gas_supply["p_nom"]
+        )
     retirement = uk_settings.get("early_retirement") or {}
     # the base year keeps the fleet in operation
     if retirement and investment_year > base_year:

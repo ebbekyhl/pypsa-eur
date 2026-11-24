@@ -5693,8 +5693,13 @@ def add_aviation(
             efficiency=1 / costs.at[tech, "methanol-input"],
             efficiency2=-costs.at[tech, "hydrogen-input"]
             / costs.at[tech, "methanol-input"],
-            efficiency3=costs.at["oil", "CO2 intensity"]
-            / costs.at[tech, "methanol-input"],
+            # The link books all the carbon of the methanol it takes (as every
+            # other methanol user does): the carbon of the kerosene, which is
+            # burnt at the demand bus this link feeds, plus the surplus carbon of
+            # the methanol input (1.076 MWh per MWh of kerosene). With the CO2 of
+            # the kerosene alone (upstream PyPSA-Eur), 3.7% of the carbon that
+            # methanolisation takes from CO2 storage was counted nowhere.
+            efficiency3=1 / options["MWh_MeOH_per_tCO2"],
             p_nom_extendable=True,
             lifetime=costs.at[tech, "lifetime"],
         )
@@ -6861,6 +6866,19 @@ def scale_UK_gas_network(n):
             logger.info(f"No scaling applied to {region} gas pipelines from {interconnections[0]}, as current capacity satisfies annual gas flow from {interconnections[0]} to {region}.")
 
 def convert_HVAC_to_HVDC(n):
+    """
+    Turn every AC line into a pair of lossless one-way links (carrier "DC"),
+    "<line>" and "<line>_reverse", i.e. a transport model without Kirchhoff's
+    voltage law.
+
+    The pair is one physical line. Both halves carry its rating, its bounds and
+    whether it can be expanded (s_nom_min, s_nom_max, s_nom_extendable, as set by
+    prepare_network and limit_individual_line_extension), so a converted line
+    expands like any HVDC link. The forward half alone carries the investment
+    cost; the reverse half is marked "reversed", as the reverse halves of lossy
+    HVDC links are, and solve_network.add_lossy_bidirectional_link_constraints
+    ties its capacity to that of the forward half.
+    """
     lines = n.lines.copy()
 
     if lines.empty:
@@ -6881,9 +6899,15 @@ def convert_HVAC_to_HVDC(n):
     forward_links = lines[list(shared_attrs)].copy()
     forward_links["p_nom"] = lines["s_nom"] # MVA -> MW
     forward_links["p_min_pu"]  = 0.0 # Unidirectional
-    forward_links["p_max_pu"]  = lines["s_max_pu"] 
+    forward_links["p_max_pu"]  = lines["s_max_pu"]
     forward_links["carrier"]   = "DC"
     forward_links["dc"] = 1.0 # boolean indicating DC link
+    # The line can be expanded as far as it could before the conversion.
+    forward_links["p_nom_extendable"] = lines["s_nom_extendable"]
+    forward_links["p_nom_min"] = lines["s_nom_min"]
+    forward_links["p_nom_max"] = lines["s_nom_max"]
+    forward_links["length_original"] = lines["length"]
+    forward_links["reversed"] = False
 
     # ------------------------------------------------------------------ #
     #  Build reverse links (bus1 -> bus0), with "_reverse" postfix        #
@@ -6892,6 +6916,11 @@ def convert_HVAC_to_HVDC(n):
     reverse_links.index = lines.index + "_reverse"
     reverse_links["bus0"] = forward_links["bus1"].values  # Swap buses
     reverse_links["bus1"] = forward_links["bus0"].values
+    # One line is paid for once: the reverse half is free and has no length of
+    # its own, as the reverse halves of lossy_bidirectional_links.
+    reverse_links["capital_cost"] = 0.0
+    reverse_links["length"] = 0.0
+    reverse_links["reversed"] = True
 
     # ------------------------------------------------------------------ #
     #  Combine forward + reverse                                           #
@@ -6903,6 +6932,10 @@ def convert_HVAC_to_HVDC(n):
     # ------------------------------------------------------------------ #
     n.remove("Line", lines.index)
     n.add("Link", all_new_links.index, **{col: all_new_links[col] for col in all_new_links.columns})
+
+    # The custom columns are empty for the links that were there before.
+    n.links["reversed"] = n.links["reversed"].astype("boolean").fillna(False).astype(bool)
+    n.links["length_original"] = n.links["length_original"].fillna(n.links["length"])
 
     return n
 
@@ -7242,8 +7275,11 @@ def duplicate_transmission(n, co2_intensity_lvls, shared_capacity=True):
 
             # A border expansion must only be paid for once. Charging every copy
             # would multiply the cost of a cable by the number of emission classes.
+            # Its length counts once as well, so that a limit on the transmission
+            # volume (electricity: transmission_limit) sees one cable.
             if k > 0:
                 dc_i["capital_cost"] = 0.0
+                dc_i["length"] = 0.0
 
         for j in range(len(dc_i)):
             links.loc[dc_i.index[j]] = dc_i.iloc[j]

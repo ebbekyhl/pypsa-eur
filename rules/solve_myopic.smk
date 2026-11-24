@@ -145,6 +145,11 @@ rule solve_sector_network_myopic:
     input:
         eurostat="data/eurostat/Balances-April2023",
         co2_totals = resources("co2_totals.csv"),
+        # international share of aviation and shipping fuel (co2_bunkers: shared)
+        pop_weighted_energy_totals=resources(
+            "pop_weighted_energy_totals_s_{clusters}.csv"
+        ),
+        shipping_demand=resources("shipping_demand_s_{clusters}.csv"),
         network=resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}_brownfield.nc"
         ),

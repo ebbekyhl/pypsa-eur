@@ -191,6 +191,21 @@ co2_uncapped: []
 co2_imports_for_storage_only: false
 methanol_carries_carbon: false
 
+# International aviation and shipping ("bunkers") under local CO2 caps. Their fuel
+# demand is fixed and its CO2 is booked where the fuel is sold.
+#   national  the CO2 counts in the cap of the country that sells the fuel
+#   shared    the international share of the oil-based fuel is one account for all
+#             capped countries. The caps then cover what national inventories
+#             cover (1990 CO2 without international aviation and navigation), and
+#             each country carries the shortfall of the account, its CO2 less
+#             co2_bunker_allowance, in proportion to its 1990 CO2. Methanol-based
+#             fuel stays national where methanol_carries_carbon is on.
+# co2_bunker_allowance: {year: share of the 1990 CO2 of international aviation and
+# navigation}, or in Mt with unit: MtCO2. With the shares of the caps themselves,
+# the caps and the account add up to the budget they had with "national".
+co2_bunkers: national
+# co2_bunker_allowance: {2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#co2-budget
 co2_budget:
   2025: 0.628 # Historical GHG emissions by EU members in 2024 relative to 1990, https://www.eea.europa.eu/en/analysis/publications/trends-and-projections-in-europe-2025/total-net-ghg-emissions?activeTab=570bee2d-1316-48cf-adde-4b640f92119b 

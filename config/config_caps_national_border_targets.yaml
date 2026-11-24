@@ -8,6 +8,17 @@ run:
   name: "caps_national_border_targets"
 co2_imports_for_storage_only: true
 methanol_carries_carbon: true
+# International aviation and shipping are one account of all countries, as in
+# config.caps.yaml. Each country brings to the account the share of its 1990 CO2 of
+# the two sectors that its target gives it in that year, so the allowance [MtCO2/a] is
+# the sum over the countries of that share (local_co2 below, 0.628 in 2025) times
+# their 1990 CO2 of international aviation and navigation (182.2 Mt in all). The caps
+# and the account then add up to the budget that the caps have with bunker fuel
+# counted where it is sold (2,291.8 Mt in 2030): the account moves bunker CO2 between
+# countries and leaves the total as it is. Recompute the values when the targets
+# below change.
+co2_bunkers: shared
+co2_bunker_allowance: {unit: MtCO2, 2025: 114.426, 2030: 91.261, 2035: 54.225, 2040: 26.150, 2045: 11.726, 2050: 0.0}
 local_co2:
   AL: {2030: 1.038, 2035: 0.763, 2040: 0.508, 2045: 0.254, 2050: 0.0}
   AT: {2030: 0.723, 2035: 0.542, 2040: 0.361, 2045: 0.181, 2050: 0.0}

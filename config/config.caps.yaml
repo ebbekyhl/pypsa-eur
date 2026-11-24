@@ -55,6 +55,22 @@ co2_unlocated: oil_demand
 # every country is capped
 co2_uncapped: []
 
+# International aviation and shipping are one account that all countries share, so
+# the national caps cover what national inventories cover. The account gets the
+# share of its 1990 CO2 that every cap gets (config_caps_*.yaml), so that the caps
+# and the account add up to the continental budget.
+co2_bunkers: shared
+co2_bunker_allowance: {2025: 0.628, 2030: 0.45, 2035: 0.25, 2040: 0.10, 2045: 0.05, 2050: 0.0}
+
+# The grid expands without a limit on the total (electricity: transmission_limit:
+# vopt, config.default.yaml); only each line and cable is limited (max_extension).
+# For a cap on the volume of the whole grid [MW km] as a multiple of today's, set e.g.
+#   electricity:
+#     transmission_limit: v1.25
+# and let prepare_network run again (--forcerun prepare_network). solve_network keeps
+# the cap on the whole grid, fixed and planned cables included
+# (align_transmission_volume_limit), and a line counts once on the labelled network.
+
 uk_settings:
   prepare:
     # CBAM: off in the runs without the split. The runs on the split network switch
@@ -75,13 +91,24 @@ uk_settings:
     cbam_deduction: {}
     cbam_default_intensity: {GB: 0.430, AL: 0.0, BA: 1.148, ME: 0.979, MK: 0.887, RS: 1.041, UA: 0.907}
   solve:
-    # Cross-border cables of GB and the Balkans follow planned projects only
-    # (TYNDP 2024, in permitting or under construction).
+    # The electricity grid expands under one rule in every country: AC lines and
+    # HVDC cables are optimised, each by up to lines: max_extension. The list of
+    # planned cables of GB and the Balkans (TYNDP 2024, in permitting or under
+    # construction) no longer fixes them. It only says what stands at each
+    # horizon (rule: minimum): Greenlink, one pole of MONITA until 2027, and the
+    # projects that the network lacks (AQUIND, MaresConnect).
     planned_interconnectors:
       file: data/cbam/interconnectors_tyndp2024.csv
       countries: [GB, AL, BA, ME, MK, RS]
+      rule: minimum
     # No new gas pipelines into or within the Balkans.
     no_new_gas_pipelines: [AL, BA, ME, MK, RS]
+    # Montenegro has no gas source and no pipeline; its industry gets a small
+    # supply at the price of LNG (uk_settings: prepare: gas_prices: imports).
+    gas_supply:
+      countries: [ME]
+      price: 50.0  # EUR/MWh
+      p_nom: 100.0  # MW, twice its demand for industrial high-temperature heat
     # Balkan coal may retire early, at its fixed O&M cost.
     early_retirement:
       carriers: [coal, lignite]

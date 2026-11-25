@@ -1713,6 +1713,9 @@ def extra_functionality(
         add_utilization_constraint_keadby(n, df_keadby, uk_settings_prepare, investment_year)
         add_ammonia_demand(n, df_billingham, uk_settings_prepare, investment_year)
 
+    if config["sector"]["electrolysis_annual_utilisation"] and (int(investment_year) > int(base_year)):
+        add_electrolyser_utilization_constraint(n, config["sector"]["electrolysis_annual_utilisation"])
+
     if isinstance(config["local_co2"], dict):
         logger.info("Adding local CO2 constraint.")
         add_split_co2_constraints(n, config["local_co2"])
@@ -1765,10 +1768,12 @@ def save_duals(n: pypsa.Network) -> None:
     co2_constraints = constraints.loc[constraints.str.contains("co2", case=False)]
     heating_UK_constraints = constraints.loc[constraints.str.contains("maximum_electric_heating_UK", case=False)]
     keadby_constraints = constraints.loc[constraints.str.contains("keadby", case=False)]
+    billingham_constraints = constraints.loc[constraints.str.contains("billingham", case=False)]
 
     constraints_to_save = pd.concat([co2_constraints, 
                                      heating_UK_constraints, 
-                                     keadby_constraints])
+                                     keadby_constraints,
+                                     billingham_constraints])
 
     # loop over constraints and save duals
     for constraint_name in constraints_to_save:
@@ -1832,41 +1837,137 @@ def freeze_uk_wind_projects(n, dictionary):
             df.loc[element_tf_special.index, f"{att}_nom"] = df.loc[element_tf_special.index, f"{att}_nom"] + df.loc[element_tf_special.index, f"{att}_nom_min"]
             df.loc[elements_to_freeze.index, f"{att}_nom_extendable"] = False
 
+def add_electrolyser_utilization_constraint(n, utilization_rate):
+    """
+    Enforce a minimum annual utilisation rate for H2 electrolysers
+    across all countries.
+
+    Parameters
+    ----------
+    n : pypsa.Network
+        PyPSA network with an initialized optimization model.
+    utilization_rate : float
+        Minimum annual utilisation rate (between 0 and 1).
+        For example, 0.2 corresponds to 20%.
+    """
+    if not 0 <= utilization_rate <= 1:
+        raise ValueError("utilization_rate must be between 0 and 1.")
+
+    # Select all H2 electrolysers across all countries
+    carrier = "H2 Electrolysis"
+
+    # Select all electrolysers
+    links = n.links.index[n.links.carrier == carrier]
+
+    # Separate extendable and fixed electrolysers
+    extendable = links[n.links.loc[links, "p_nom_extendable"]]
+    fixed = links[~n.links.loc[links, "p_nom_extendable"]]
+
+    # Snapshot weights [hours]
+    weights = xr.DataArray(
+        n.snapshot_weightings.generators.reindex(n.snapshots),
+        dims=["snapshot"],
+        coords={"snapshot": n.snapshots},
+    )
+
+    total_hours = weights.sum().item()
+
+    # 1. Extendable electrolysers
+    if len(extendable) > 0:
+
+        p_ext = n.model["Link-p"].sel(Link=extendable)
+
+        p_nom_ext = (
+            n.model["Link-p_nom"]
+            .sel({"Link-ext": extendable})
+            .rename({"Link-ext": "Link"})
+        )
+
+        annual_ext = (p_ext * weights).sum("snapshot")
+
+        n.model.add_constraints(
+            annual_ext >= utilization_rate * p_nom_ext * total_hours,
+            name="electrolyser_minimum_utilization_extendable",
+        )
+
+    # 2. Existing (fixed-capacity) electrolysers
+    if len(fixed) > 0:
+
+        p_fixed = n.model["Link-p"].sel(Link=fixed)
+
+        p_nom_fixed = xr.DataArray(
+            n.links.loc[fixed, "p_nom"].to_numpy(),
+            dims=["Link"],
+            coords={"Link": fixed},
+        )
+
+        annual_fixed = (p_fixed * weights).sum("snapshot")
+
+        n.model.add_constraints(
+            annual_fixed >= utilization_rate * p_nom_fixed * total_hours,
+            name="electrolyser_minimum_utilization_fixed",
+        )
+
 def add_utilization_constraint_keadby(n, df, uk_settings, year):
     year = int(year)
     demand_level = uk_settings["planned_hydrogen_projects"]["demand_level"]
+    infrastructure_floor = uk_settings["planned_hydrogen_projects"]["infrastructure_floor"]
     df = pd.read_csv(df, index_col = 0)
+
+    if not infrastructure_floor:
+        logger.info("Infrastructure floor is set to False, skipping Keadby minimum output constraint.")
+        return
 
     # H2 consumption at Keadby power plant in GWh LHV
     keadby_y_s = df.query("year == @year and scenario == @demand_level")
     keadby_minimum_output = keadby_y_s["hydrogen_demand_gwh_lhv"].item() * 1e3 # converted to MWh hydrogen consumed
 
+    # Select H2 turbines supplying the relevant electricity buses
     buses = keadby_y_s["bus"].values
     carrier = "H2 turbine"
-    uk_power_generation_links = n.links.query("bus1.isin(@buses) and carrier == @carrier")
-    keadby_output = n.model.variables["Link-p"].loc[:, uk_power_generation_links.index].sum() # in units of MWh hydrogen consumed
-    
-    n.model.add_constraints(-keadby_output + keadby_minimum_output <= 0, name="keadby_minimum_output_constraint_{year}")
+    links = n.links.loc[n.links["bus1"].isin(buses) & n.links["carrier"].eq(carrier)]
+
+    # Link-p = input power at bus0 (MW H2)
+    p_h2 = n.model.variables["Link-p"].loc[:, links.index]
+
+    # Snapshot weights represent hours
+    weights = n.snapshot_weightings.generators.reindex(
+        n.snapshots
+    )
+
+    # Annual H2 consumption (MWh H2)
+    h2_consumption = (p_h2 * weights).sum()
+
+    # Enforce minimum hydrogen consumption
+    n.model.add_constraints(-h2_consumption + keadby_minimum_output <= 0, name="keadby_minimum_output_constraint")
 
 def add_ammonia_demand(n, df, uk_settings, year):
     year = int(year)
     links = getattr(n, "links")
-    demand_level = uk_settings["northumbria_projects"]["demand_level"]
+    demand_level = uk_settings["planned_hydrogen_projects"]["demand_level"]
     df = pd.read_csv(df, index_col = 0)
 
     tech = "Haber-Bosch" # we assume Haber-Bosch process for ammonia production
-    logger.info("Adding committed projects on ", tech, " in North East region")
-
+    logger.info("Adding committed projects on %s in North East region", tech)
+    
+    # hydrogen demand for ammonia production at Billingham in MWh LHV
     df_nh3_y_s = df.query("year == @year and scenario == @demand_level")
     bus = df_nh3_y_s.bus.item()
     link_i = links.query("carrier.str.contains(@tech) and bus0 == @bus")
+    billingham_minimum_output = df_nh3_y_s["hydrogen_demand_gwh_lhv"].item() * 1e3 # converting from GWh to MWh
+    
+    efficiency = -link_i["efficiency2"]
+    weights = n.snapshot_weightings.generators.reindex(n.snapshots)
 
-    # add constraint:
-    efficiency = -link_i.efficiency2 # efficiency is negative because the link is a multilink
-    hydrogen_consumption = n.model.variables["Link-p"].loc[:, link_i.index].sum() * efficiency # in units of MWh
-    billingham_minimum_output = df_nh3_y_s["hydrogen_demand_gwh_lhv"].item() * 1e3 # converted to MWh
+    # Link input power (MW)
+    p = n.model.variables["Link-p"].loc[:, link_i.index]
 
-    n.model.add_constraints(-hydrogen_consumption + billingham_minimum_output <= 0, name="billingham_minimum_h2_consumption_constraint_{year}")
+    # Total hydrogen consumption (MWh H2 LHV)
+    hydrogen_consumption = (
+        p * efficiency * weights
+    ).sum()
+
+    n.model.add_constraints(-hydrogen_consumption + billingham_minimum_output <= 0, name="billingham_minimum_h2_consumption_constraint")
 
 def remove_storage(n, carrier):
     df = getattr(n, "stores")
@@ -1938,6 +2039,7 @@ def freeze_uk_capacities(n, base_year):
                       "H2 Electrolysis", # hydrogen production
                       "methanolisation", # hydrogen to methanol
 
+                      "H2 pipeline", # hydrogen transport
                       "H2 turbine", # electricity storage (emerging)
                       "H2 Fuel Cell", # electricity storage (emerging)
                       "redox flow", # electricity storage (emerging) 
@@ -1961,15 +2063,20 @@ def freeze_uk_capacities(n, base_year):
 
     emerging_techs_UK = [
                         "Haber-Bosch",
-                        "ammonia cracker"
+                        "ammonia cracker",
                         ]
     
     # Ensure that all technologies in the list cannot expand
     for ET in emerging_techs_UK:
-        condition = "carrier.str.contains(@ET) and bus1.str.contains('GB')" if not ET == "CC" else "carrier.str.endswith(@ET) and bus1.str.contains('GB')"
-        df = getattr(n, "links")
-        df_carrier = df.query(condition)
-        df.loc[df_carrier.index, "p_nom_extendable"] = False
+        condition_l = "carrier.str.contains(@ET) and bus1.str.contains('GB')" if not ET == "CC" else "carrier.str.endswith(@ET) and bus1.str.contains('GB')"
+        df_links = getattr(n, "links")
+        df_links_carrier = df_links.query(condition_l)
+        df_links.loc[df_links_carrier.index, "p_nom_extendable"] = False
+
+        condition_g = "carrier.str.contains(@ET) and bus.str.contains('GB')" if not ET == "CC" else "carrier.str.endswith(@ET) and bus.str.contains('GB')"
+        df_generators = getattr(n, "generators")
+        df_generators_carrier = df_generators.query(condition_g)
+        df_generators.loc[df_generators_carrier.index, "p_nom_extendable"] = False
 
     # Add load shedding everywhere
     add_load_shedding(n)

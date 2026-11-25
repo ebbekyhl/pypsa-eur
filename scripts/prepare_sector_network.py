@@ -1964,19 +1964,36 @@ def add_storage_and_grids(
     n.add("Bus", nodes + " H2", location=nodes, carrier="H2", unit="MWh_LHV")
 
     electrolysis_p_min_pu = options.get("electrolysis_p_min_pu", 0.0)
+    electrolysis_ramp_rate = options.get("electrolysis_ramp_rate", False)
 
-    n.add(
-        "Link",
-        nodes + " H2 Electrolysis",
-        bus1=nodes + " H2",
-        bus0=nodes,
-        p_nom_extendable=True,
-        carrier="H2 Electrolysis",
-        efficiency=costs.at["electrolysis", "efficiency"],
-        capital_cost=costs.at["electrolysis", "capital_cost"],
-        lifetime=costs.at["electrolysis", "lifetime"],
-        p_min_pu = electrolysis_p_min_pu
-    )
+    if electrolysis_ramp_rate:
+        n.add(
+            "Link",
+            nodes + " H2 Electrolysis",
+            bus1=nodes + " H2",
+            bus0=nodes,
+            p_nom_extendable=True,
+            carrier="H2 Electrolysis",
+            efficiency=costs.at["electrolysis", "efficiency"],
+            capital_cost=costs.at["electrolysis", "capital_cost"],
+            lifetime=costs.at["electrolysis", "lifetime"],
+            p_min_pu = electrolysis_p_min_pu,
+            ramp_limit_down = electrolysis_ramp_rate,
+            ramp_limit_up = electrolysis_ramp_rate
+            )
+    else:
+        n.add(
+            "Link",
+            nodes + " H2 Electrolysis",
+            bus1=nodes + " H2",
+            bus0=nodes,
+            p_nom_extendable=True,
+            carrier="H2 Electrolysis",
+            efficiency=costs.at["electrolysis", "efficiency"],
+            capital_cost=costs.at["electrolysis", "capital_cost"],
+            lifetime=costs.at["electrolysis", "lifetime"],
+            p_min_pu = electrolysis_p_min_pu,
+            )
 
     if options["hydrogen_fuel_cell"]:
         logger.info("Adding hydrogen fuel cell for re-electrification.")
@@ -6741,108 +6758,114 @@ def add_import_options(
     import_options = import_config["price"]
     logger.info(f"Adding {type} import options:\n{pd.Series(import_options)}")
 
-    if "methanol" in import_options:
-        co2_intensity = costs.at["methanolisation", "carbondioxide-input"]
+    if type == "green": 
 
-        n.add(
-            "Link",
-            spatial.methanol.nodes,
-            suffix=" import",
-            carrier="import methanol",
-            bus0="co2 atmosphere",
-            bus1=spatial.methanol.nodes,
-            efficiency=1 / co2_intensity,
-            marginal_cost=import_options["methanol"] / co2_intensity,
-            p_nom=1e7,
-        )
+        if "methanol" in import_options:
+            co2_intensity = costs.at["methanolisation", "carbondioxide-input"]
 
-    if "oil" in import_options:
-        co2_intensity = costs.at["oil", "CO2 intensity"]
+            n.add(
+                "Link",
+                spatial.methanol.nodes,
+                suffix=" import",
+                carrier="import methanol",
+                bus0="co2 atmosphere",
+                bus1=spatial.methanol.nodes,
+                efficiency=1 / co2_intensity,
+                marginal_cost=import_options["methanol"] / co2_intensity,
+                p_nom=1e7,
+            )
 
-        n.add(
-            "Link",
-            spatial.oil.nodes,
-            suffix=" import",
-            carrier="import oil",
-            bus0="co2 atmosphere",
-            bus1=spatial.oil.nodes,
-            efficiency=1 / co2_intensity,
-            marginal_cost=import_options["oil"] / co2_intensity,
-            p_nom=1e7,
-        )
+        if "oil" in import_options:
+            co2_intensity = costs.at["oil", "CO2 intensity"]
 
-    if "gas" in import_options and type == "green":
-        co2_intensity = costs.at["gas", "CO2 intensity"]
+            n.add(
+                "Link",
+                spatial.oil.nodes,
+                suffix=" import",
+                carrier="import oil",
+                bus0="co2 atmosphere",
+                bus1=spatial.oil.nodes,
+                efficiency=1 / co2_intensity,
+                marginal_cost=import_options["oil"] / co2_intensity,
+                p_nom=1e7,
+            )
 
-        p_nom = gas_input_nodes["lng"].dropna()
-        p_nom.rename(lambda x: x + " gas", inplace=True)  #
-        if len(spatial.gas.nodes) == 1:
-            p_nom = p_nom.sum()
-            nodes = spatial.gas.nodes
-        else:
-            nodes = p_nom.index
+        if "gas" in import_options:
+            co2_intensity = costs.at["gas", "CO2 intensity"]
 
-        n.add(
-            "Link",
-            nodes,
-            suffix=" import",
-            carrier="import gas",
-            bus0="co2 atmosphere",
-            bus1=nodes,
-            efficiency=1 / co2_intensity,
-            marginal_cost=import_options["gas"] / co2_intensity,
-            p_nom=p_nom / co2_intensity,
-        )
+            p_nom = gas_input_nodes["lng"].dropna()
+            p_nom.rename(lambda x: x + " gas", inplace=True)  #
+            if len(spatial.gas.nodes) == 1:
+                p_nom = p_nom.sum()
+                nodes = spatial.gas.nodes
+            else:
+                nodes = p_nom.index
 
-    if "gas" in import_options and type == "fossil":
-        p_nom = gas_input_nodes["lng"].dropna()
-        p_nom.rename(lambda x: x + " gas", inplace=True)  #
-        if len(spatial.gas.nodes) == 1:
-            p_nom = p_nom.sum()
-            nodes = spatial.gas.nodes
-        else:
-            nodes = p_nom.index
+            n.add(
+                "Link",
+                nodes,
+                suffix=" import",
+                carrier="import gas",
+                bus0="co2 atmosphere",
+                bus1=nodes,
+                efficiency=1 / co2_intensity,
+                marginal_cost=import_options["gas"] / co2_intensity,
+                p_nom=p_nom / co2_intensity,
+            )
 
-        n.add(
-            "Generator",
-            nodes,
-            suffix=" import",
-            carrier="import gas",
-            bus=nodes,
-            marginal_cost=import_options["gas"],
-            p_nom=p_nom,
-        )
+    if type == "fossil":
+        if "gas" in import_options and type == "fossil":
+            p_nom = gas_input_nodes["lng"].dropna()
+            p_nom.rename(lambda x: x + " gas", inplace=True)  #
+            if len(spatial.gas.nodes) == 1:
+                p_nom = p_nom.sum()
+                nodes = spatial.gas.nodes
+            else:
+                nodes = p_nom.index
 
-    if "NH3" in import_options:
-        if options["ammonia"]:
+            n.add(
+                "Generator",
+                nodes,
+                suffix=" import",
+                carrier="import gas",
+                bus=nodes,
+                marginal_cost=import_options["gas"],
+                p_nom=p_nom,
+            )
+
+    if type == "other":
+        if "NH3" in import_options and options["ammonia"]:
             n.add(
                 "Generator",
                 spatial.ammonia.nodes,
                 suffix=" import",
                 bus=spatial.ammonia.nodes,
                 carrier="import NH3",
-                p_nom=1e7,
+                p_nom=1e7, # 10 TWh / h, as we do not want to limit the imports of ammonia, but rather let the model decide how much to import.
                 marginal_cost=import_options["NH3"],
             )
 
-        else:
-            logger.warning(
-                "Skipping specified ammonia imports because ammonia carrier is not present."
+        if "methanol" in import_options and options["methanol"]:
+            n.add(
+                "Generator",
+                spatial.methanol.nodes,
+                suffix=" import",
+                bus=spatial.methanol.nodes,
+                carrier="import methanol",
+                p_nom=1e7, # 10 TWh / h, as we do not want to limit the imports of ammonia, but rather let the model decide how much to import.
+                marginal_cost=import_options["methanol"],
             )
 
-    if "H2" in import_options:
-        p_nom = gas_input_nodes["pipeline"].dropna()
-        p_nom.rename(lambda x: x + " H2", inplace=True)
-
-        n.add(
-            "Generator",
-            p_nom.index,
-            suffix=" import",
-            bus=p_nom.index,
-            carrier="import H2",
-            p_nom=p_nom,
-            marginal_cost=import_options["H2"],
-        )
+        if "H2" in import_options:
+            n.add(
+                "Generator",
+                spatial.h2.nodes, #p_nom.index,
+                suffix=" import",
+                bus=spatial.h2.nodes, #p_nom.index,
+                carrier="import H2",
+                p_nom=1e7, # 10 TWh / h, as we do not want to limit the imports of ammonia, but rather let the model decide how much to import.
+                marginal_cost=import_options["H2"],
+            )
 
 def scale_UK_gas_network(n):
 
@@ -7176,6 +7199,7 @@ def add_planned_hydrogen_projects(n, planned_projects_settings, regions_onshore,
     scenario = planned_projects_settings["scenario"]
     demand_level = planned_projects_settings["demand_level"]
     implementation_year = int(planned_projects_settings["implementation_year"])
+    infrastructure_floor = planned_projects_settings["infrastructure_floor"]
 
     links = getattr(n, "links")
     stores = getattr(n, "stores")
@@ -7198,10 +7222,10 @@ def add_planned_hydrogen_projects(n, planned_projects_settings, regions_onshore,
         bus1 = bus1s[i]
         capacity_floor_i = df_h2_pipeline["Capacity floor (GW)"][i]
         capacity_ceil_i = df_h2_pipeline["Capacity ceil (GW)"][i]
-        links_i = links.query("carrier == 'H2 pipeline' and (bus0 == @bus0 and bus1 == @bus1) or (bus0 == @bus1 and bus1 == @bus0)")
+        links_i = links.query("carrier == 'H2 pipeline' and ((bus0 == @bus0 and bus1 == @bus1) or (bus0 == @bus1 and bus1 == @bus0))")
         links_lst = links_lst.append(links_i.index)
 
-        if year == implementation_year:
+        if year == implementation_year and infrastructure_floor:
             links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
 
         # only set upper bound if scenario is network-upgrades-led
@@ -7211,7 +7235,8 @@ def add_planned_hydrogen_projects(n, planned_projects_settings, regions_onshore,
     # if scenario is network-upgrades led, then only allow committed projects to be built
     NE_remaining_pipelines = NE_pipelines.drop(NE_pipelines.index.intersection(links_lst))
     if scenario == "network-upgrades-led":
-        links.loc[NE_remaining_pipelines.index, "p_nom_extendable"] = False
+        # links.loc[NE_remaining_pipelines.index, "p_nom_extendable"] = False
+        links.loc[NE_remaining_pipelines.index, "p_nom_max"] = 10 # setting a small number as upper limit
     ######################################################################################################
 
     ########### Add H2 production to the network ############
@@ -7224,25 +7249,27 @@ def add_planned_hydrogen_projects(n, planned_projects_settings, regions_onshore,
         for i in range(len(df_h2_production.query("Category == @tech"))):
             bus = df_h2_production.query("Category == @tech").bus.iloc[i]
 
+            # capacities are given in units of H2 output
             capacity_floor_i = df_h2_production.query("bus == @bus and Category == @tech")["Capacity floor (GW)"].item()
-            capacity_ceil_i = df_h2_production.query("bus == @bus and Category == @tech")["Capacity ceil (GW)"].item()
+            capacity_ceil_i = df_h2_production.query("bus == @bus and Category == @tech")["Capacity ceil (GW)"].item() * 1.2 # allowing a small room for expansion
 
             links_i = links.query("carrier == @tech and bus1 == @bus")
             links_lst = links_lst.append(links_i.index)
 
             # set capacity floor 
-            if year == implementation_year:
+            if year == implementation_year and infrastructure_floor:
                 links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
 
-            # only set upper bound if scenario is network-upgrades-led
+        #     # only set upper bound if scenario is network-upgrades-led
             if scenario == "network-upgrades-led":
                 links.loc[links_i.index, "p_nom_max"] = capacity_ceil_i * 1e3 # MW
 
-        # for the remaining production sites either fix or allow expansion depending on the scenario
+        # # for the remaining production sites either fix or allow expansion depending on the scenario
         NE_H2_production = links.query("carrier == @tech and bus1.str.contains('GBNE')")
         NE_remaining_production = NE_H2_production.drop(links_lst)
         if scenario == "network-upgrades-led":
-            links.loc[NE_remaining_production.index, "p_nom_extendable"] = False
+            # links.loc[NE_remaining_production.index, "p_nom_extendable"] = False
+            links.loc[NE_remaining_production.index, "p_nom_max"] = 10 # setting a small number as upper limit
     ######################################################################################################
 
     ########### Add H2 storage to the network ############
@@ -7256,14 +7283,17 @@ def add_planned_hydrogen_projects(n, planned_projects_settings, regions_onshore,
             bus = df_h2_storage.query("Category == @tech").bus.iloc[i]
 
             capacity_floor_i = df_h2_storage.query("bus == @bus and Category == @tech")["Storage capacity (GWh)"].item()
-            capacity_ceil_i = df_h2_storage.query("bus == @bus and Category == @tech")["Storage capacity (GWh)"].item()
+            capacity_ceil_i = df_h2_storage.query("bus == @bus and Category == @tech")["Storage capacity (GWh)"].item() * 1.2 # allowing a small room for expansion
 
             stores_i = stores.query("index.str.contains(@tech) and bus == @bus")
             stores_lst = stores_lst.append(stores_i.index)
 
             # set capacity floor 
-            if year == implementation_year:
+            if year == implementation_year and infrastructure_floor:
                 stores.loc[stores_i.index, "e_nom_min"] = capacity_floor_i * 1e3 # MWh
+
+            if scenario == "network-upgrades-led":
+                stores.loc[stores_i.index, "e_nom_max"] = capacity_ceil_i * 1e3 # MWh
 
             # capacity ceilings are set according to geotechnical potentials
 
@@ -7273,7 +7303,8 @@ def add_planned_hydrogen_projects(n, planned_projects_settings, regions_onshore,
 
         # if scenario is network-upgrades led, then only allow committed projects to be built
         if scenario == "network-upgrades-led":
-            stores.loc[NE_remaining_stores.index, "e_nom_extendable"] = False
+            # stores.loc[NE_remaining_stores.index, "e_nom_extendable"] = False
+            stores.loc[NE_remaining_stores.index, "e_nom_max"] = 10 # setting a small number as upper limit
     ######################################################################################################
     
     ########### Add H2 power plants to the network ############
@@ -7287,18 +7318,22 @@ def add_planned_hydrogen_projects(n, planned_projects_settings, regions_onshore,
             bus = df_powerplant.query("Category == @tech").bus.iloc[i]
 
             capacity_floor_i = df_powerplant.query("bus == @bus and Category == @tech")["Capacity floor (GW)"].item()
-            capacity_ceil_i = df_powerplant.query("bus == @bus and Category == @tech")["Capacity ceil (GW)"].item()
+            capacity_ceil_i = df_powerplant.query("bus == @bus and Category == @tech")["Capacity ceil (GW)"].item() * 1.2 # allowing a small room for expansion
 
             links_i = links.query("carrier == @tech and bus1 == @bus")
             links_lst = links_lst.append(links_i.index)
 
+            efficiency = links_i.efficiency.mean()
+
+            capacity_floor_i = capacity_floor_i / efficiency # capacity is given in units of H2 input
+            capacity_ceil_i = capacity_ceil_i / efficiency # capacity is given in units of H2 input
+
             # set capacity floor 
-            if year == implementation_year:
+            if year == implementation_year and infrastructure_floor:
                 links.loc[links_i.index, "p_nom_min"] = capacity_floor_i * 1e3 # MW
 
-            # only set upper bound if scenario is network-upgrades-led
-            if scenario == "network-upgrades-led":
-                links.loc[links_i.index, "p_nom_max"] = capacity_ceil_i * 1e3 # MW
+            # for scenario network-upgrades-led, we do not set an upper limit on the power plant capacity.  
+            # If we are both limiting capacity and setting a minimum output in terms of H2 consumption, we are overconstraining the model.
 
     keadby = df_reduced["powerplant_h2_demand"].query("year == @year")
     keadby.to_csv(snakemake.output.keadby_h2_demand, index=False)
@@ -7348,6 +7383,7 @@ def limit_UK_transmission_lines(n, investment_year, uk_transmission_limits):
     maxext = uk_transmission_limits.get(investment_year, False)
 
     if maxext is False:
+        logger.info(f"No limit on UK transmission lines for year {investment_year}")
         return
 
     logger.info(f"Limiting HVAC and HVDC extensions in UK by {int(maxext*100)}%")
@@ -7364,6 +7400,8 @@ def limit_UK_transmission_lines(n, investment_year, uk_transmission_limits):
     # set future UK lines and links to 0 as they are not built yet:
     lines.loc[future_AC_lines.index, "s_nom"] = 0
     links.loc[future_DC_links.index, "p_nom"] = 0
+    lines.loc[future_AC_lines.index, "s_nom_extendable"] = False
+    links.loc[future_DC_links.index, "p_nom_extendable"] = False
 
     # if maxext is 0, disallow any extensions of UK transmission lines and links
     if maxext == 0:
@@ -7371,8 +7409,8 @@ def limit_UK_transmission_lines(n, investment_year, uk_transmission_limits):
         links.loc[UK_links.index, "p_nom_extendable"] = False
 
     else:
-        lines.loc[UK_lines.index, "s_nom_max"] = UK_lines["s_nom_max"] * (1 + maxext) 
-        links.loc[UK_links.index, "p_nom_max"] = UK_links["p_nom_max"] * (1 + maxext)
+        lines.loc[UK_lines.index, "s_nom_max"] = UK_lines["s_nom"] * (1 + maxext) 
+        links.loc[UK_links.index, "p_nom_max"] = UK_links["p_nom"] * (1 + maxext)
 
 if __name__ == "__main__":
     if "snakemake" not in globals():
@@ -7711,7 +7749,7 @@ if __name__ == "__main__":
     fix_gas_storage(n)
 
     uk_transmission_limits = uk_settings_prepare.get("uk_transmission_limits", None)
-    if isinstance(uk_transmission_limits, list):
+    if isinstance(uk_transmission_limits, dict):
         limit_UK_transmission_lines(n, investment_year, uk_transmission_limits)
         
     factor = uk_settings_prepare.get("uk_scale_up_offwind_potential", None)
@@ -7742,5 +7780,11 @@ if __name__ == "__main__":
     planned_h2_settings = uk_settings_prepare["planned_hydrogen_projects"]
     if isinstance(planned_h2_settings, dict):
         add_planned_hydrogen_projects(n, planned_h2_settings, regions_onshore, investment_year)
+
+    else:
+        df_1 = pd.DataFrame()
+        df_2 = pd.DataFrame()
+        df_1.to_csv(snakemake.output.keadby_h2_demand, index=False)
+        df_2.to_csv(snakemake.output.billingham_h2_demand, index=False)
 
     n.export_to_netcdf(snakemake.output[0])

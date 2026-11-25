@@ -399,7 +399,7 @@ def add_planned_storage_capacities(n, year, file):
                 carrier=new_phs_df["carrier"],
                 p_nom=new_phs_df["p_nom"],
                 build_year = year,
-                lifetime = new_phs_df["lifetime"],
+                lifetime = 70, # assume 70 years lifetime for PHS
                 capital_cost=new_phs_df["capital_cost"],
                 max_hours=new_phs_df["max_hours"],
                 efficiency_store = new_phs_df["efficiency_store"],

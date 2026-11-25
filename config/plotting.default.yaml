@@ -106,11 +106,9 @@ plotting:
     - gas
     - oil
     - methanol
-    # - co2 stored
     - urban central heat
     - kerosene for aviation
-    # - steel
-    # - hbi
+    - NH3
     AC:
       unit: TWh
       unit_conversion: 1_000_000
@@ -190,6 +188,20 @@ plotting:
       - 100
       branch_sizes:
     methanol:
+      unit: TWh
+      unit_conversion: 1_000_000
+      cmap: Greens
+      vmin:
+      vmax:
+      region_unit: €/MWh
+      bus_factor: 0.005
+      branch_factor: 0.1
+      flow_factor: 100
+      bus_sizes:
+      - 20
+      - 10
+      branch_sizes:
+    NH3:
       unit: TWh
       unit_conversion: 1_000_000
       cmap: Greens

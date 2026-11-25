@@ -92,6 +92,7 @@ uk_settings:
     uk_electricity_demand_year: 2025 # UK electricity demand data (ESPENI)
     uk_new_gas_storage_data: true # whether to use new UK gas storage data (various sources)
     uk_new_powerplants_data: true # whether to use new UK powerplant data (OpenStreetMap)  
+    uk_new_distribution_key: true # whether to use new UK distribution key (NAEI)
     uk_new_industry_data: false # whether to use new UK industry energy demand data from UK gov (DUKES)
   
   # settings for the UK defined in the "prepare_sector_network.py" script
@@ -101,10 +102,10 @@ uk_settings:
     uk_transmission_limits: 
       2025: 0
       2030: 0
-      2035: 0.15 # max expansion of existing transmission in percentage of today's capacity 
-      2040: 0.15 
-      2045: 0.15
-      2050: 0.15
+      2035: false
+      2040: false
+      2045: false
+      2050: false
     reduce_model_in_the_east: false # whether to reduce the model in the eastern part of Europe by clustering Balkan, Baltic and East European countries into three representative regions, respectively. 
     use_dynamic_gas_prices: false
     gas_prices: 
@@ -112,12 +113,13 @@ uk_settings:
       EU: 34.0 # [EUR/MWh], source: https://tradingeconomics.com/commodity/eu-natural-gas (2025 average)
       imports: 50.0 # [EUR/MWh], source: https://lngprice.com/ (17.92 USD / MMBtu)
     planned_hydrogen_projects:
-      scenario: "pipeline-led"
+      scenario: "combined"
       demand_level: "high"
       implementation_year: 2030
+      infrastructure_floor: false
   # settings for the UK defined in the "solve_network.py" script    
   solve:
-    uk_only: true # whether the study is intended to only include the UK. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
+    uk_only: false # whether the study is intended to only include the UK. If true, for data flow structure concerns, IE needs to be included in the list of countries above.
     uk_freeze_base_year_capacities: true # only in the base year: if true, only brownfield capacities are allowed in the UK, i.e., disallowing capacity expansion.
     uk_freeze_wind_projects: 
       onwind: [2030,] # we assume that UK wind projects for 2030 are already established and will not be subject to expansion decisions in the model.
@@ -125,7 +127,7 @@ uk_settings:
     uk_brownfield_minimum_capacity_factors: # minimum capacity factors of brownfield capacities 
       CCGT: 
         2025: 0.35
-    uk_max_electric_heating_share: false # upper limit of electric heating share in the UK applied to the base year for calibration purpose.
+    uk_max_electric_heating_share: 0.1 # upper limit of electric heating share in the UK applied to the base year for calibration purpose.
     uk_fixed_electricity_generation_mix: false # fix electricity generation mix to historical levels
     uk_remove_storage: false
     uk_deployment_rate_limits: 
@@ -932,6 +934,7 @@ sector:
     limit_sense: <=
     price: 
       NH3: 125 # EUR/MWh (0.89 USD per kg ammonia, according to https://businessanalytiq.com/procurementanalytics/index/ammonia-price-index/ 22 september 2026)
+      H2: 120 # EUR/MWh
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#industry
 industry:

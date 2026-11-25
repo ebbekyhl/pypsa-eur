@@ -482,7 +482,7 @@ if __name__ == "__main__":
 
     # get UK settings
     uk_settings = snakemake.params["uk_settings"]
-    if uk_settings["uk_new_industry_data"]:
+    if uk_settings["uk_new_distribution_key"]:
         naei_uk = prepare_NAEI_UK(regions)
 
         df_uk = gpd.GeoDataFrame(index = naei_uk.index, columns = hotmaps.columns, geometry="coordinates", crs="EPSG:4326")
